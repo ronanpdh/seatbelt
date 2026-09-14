@@ -18,6 +18,7 @@ dependencies = [
 
 [project.scripts]
 seatbelt = "seatbelt:main"
+seatbelt-cli = "seatbelt.cli:app"
 
 [build-system]
 requires = ["uv_build>=0.11.13,<0.12.0"]
@@ -61,3 +62,12 @@ pythonVersion = "3.12"
 typeCheckingMode = "strict"
 venvPath = "."
 venv = ".venv"
+
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+  "integration: needs Docker; skipped when it is absent",
+]
+addopts = "-ra --strict-markers"
