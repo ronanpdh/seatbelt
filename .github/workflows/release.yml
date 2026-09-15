@@ -22,16 +22,18 @@ jobs:
       - run: uv run pytest
       - run: uv build
       - name: CycloneDX SBOM
-        run: uv export --locked --format cyclonedx1.5 --no-dev --all-extras -o "dist/seatbelt-${GITHUB_REF_NAME#v}.cdx.json"
-      - uses: actions/attest-build-provenance@v4
+        run: uv export --locked --format cyclonedx1.5 --no-dev --all-extras -o dist/sbom.cdx.json
+      - name: Build provenance attestation
+        uses: actions/attest@v4
         with:
           subject-path: |
             dist/*.whl
             dist/*.tar.gz
-      - uses: actions/attest-sbom@v4
+      - name: SBOM attestation
+        uses: actions/attest@v4
         with:
           subject-path: dist/*.whl
-          sbom-path: dist/seatbelt-*.cdx.json
+          sbom-path: dist/sbom.cdx.json  # literal path; globs only work in subject-path
       - name: GitHub release with changelog notes
         env:
           GH_TOKEN: ${{ github.token }}
