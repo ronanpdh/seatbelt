@@ -1,6 +1,6 @@
 [project]
 name = "seatbelt"
-version = "0.1.0"
+version = "0.0.10"
 description = "Add your description here"
 readme = "README.md"
 authors = [
@@ -8,6 +8,7 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "anthropic>=1.5.0",
     "jinja2>=3.1.6",
     "pydantic>=2.13.5",
     "pyyaml>=6.0.3",
@@ -19,6 +20,11 @@ dependencies = [
 [project.scripts]
 seatbelt = "seatbelt:main"
 seatbelt-cli = "seatbelt.cli:app"
+
+[project.optional-dependencies]
+anthropic = [
+    "anthropic>=1.5.0",
+]
 
 [build-system]
 requires = ["uv_build>=0.11.13,<0.12.0"]
