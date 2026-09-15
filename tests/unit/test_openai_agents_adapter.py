@@ -33,11 +33,14 @@ class FakeSpan:
     span_data: SpanData
     span_id: str
     parent_id: str | None = None
+    trace_id: str = "trace_1"
     error: None = None
 
 
-def span(data: SpanData, span_id: str, parent_id: str | None = None) -> Span[Any]:
-    return cast(Span[Any], FakeSpan(data, span_id, parent_id))
+def span(
+    data: SpanData, span_id: str, parent_id: str | None = None, trace_id: str = "trace_1"
+) -> Span[Any]:
+    return cast(Span[Any], FakeSpan(data, span_id, parent_id, trace_id))
 
 
 @pytest.fixture
@@ -91,6 +94,7 @@ def test_generation_and_function_spans(run: tuple[Recorder, Path]) -> None:
     assert "gen_ai.usage.input_tokens_details" not in resp.attrs
     assert call.attrs["gen_ai.tool.call.arguments"] == {"order_id": "1001"}
     assert call.attrs["mcp.server"] == "shop"
+    assert call.parent_id == resp.id
     assert result.parent_id == call.id
     assert result.attrs["gen_ai.tool.call.result"] == {"status": "delivered"}
 
@@ -123,6 +127,23 @@ def test_agent_and_handoff_are_decisions_in_the_authority_chain(
     assert handoff.attrs["decision.authority"] == "triage"
     assert "refunds" in handoff.attrs["decision.summary"]
     assert handoff.attrs["decision.basis"] == [agent.id]
+
+
+def test_concurrent_traces_link_tools_to_their_own_response(
+    run: tuple[Recorder, Path],
+) -> None:
+    rec, path = run
+    proc = SeatbeltProcessor(rec)
+    proc.on_span_end(span(GenerationSpanData(model="a"), "g1", trace_id="t1"))
+    proc.on_span_end(span(GenerationSpanData(model="b"), "g2", trace_id="t2"))
+    proc.on_span_end(span(FunctionSpanData("tool_a", "{}", "x"), "f1", trace_id="t1"))
+
+    evs = events(path)
+    response_a = next(
+        e for e in evs if e.kind == Kind.MODEL_RESPONSE and e.attrs["gen_ai.response.model"] == "a"
+    )
+    call = next(e for e in evs if e.kind == Kind.TOOL_CALL)
+    assert call.parent_id == response_a.id
 
 
 def test_bad_tool_input_does_not_raise(run: tuple[Recorder, Path]) -> None:

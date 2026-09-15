@@ -43,12 +43,14 @@ class RecordedMessages:
                 "input_tokens": response.usage.input_tokens,
                 "output_tokens": response.usage.output_tokens,
             }
-            call.respond(response.model_dump(mode="json"), usage, response_model=response.model)
+            answer = call.respond(
+                response.model_dump(mode="json"), usage, response_model=response.model
+            )
         for block in response.content:
             if block.type == "tool_use":
                 arguments = cast(dict[str, Any], block.input)  # SDK types input as a dict
                 self._open_calls[block.id] = self._rec.tool_called(
-                    block.name, arguments, call_id=block.id
+                    block.name, arguments, call_id=block.id, parent_id=answer.id
                 )
         return response
 

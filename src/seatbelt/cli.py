@@ -26,11 +26,17 @@ def version() -> None:
 
 @app.command()
 def verify(ledger: Path) -> None:
-    """Check a run ledger's hash chain. Exit code 1 if it has been altered."""
+    """Check a run ledger's hash chain. Exit code 1 if it is altered or incomplete."""
     verdict = verify_file(ledger)
-    if verdict.ok:
+    if verdict.ok and verdict.complete:
         console.print(f"[green]ok[/] {verdict.events} events, chain intact")
         return
+    if verdict.ok:
+        console.print(
+            f"[yellow]INCOMPLETE[/] {verdict.events} events, chain intact but no matching "
+            "run.end: truncated or still running"
+        )
+        raise typer.Exit(code=1)
     where = "" if verdict.first_bad_seq is None else f" at seq {verdict.first_bad_seq}"
     console.print(f"[red]BROKEN[/]{where}: {escape(verdict.reason or '')}")
     raise typer.Exit(code=1)

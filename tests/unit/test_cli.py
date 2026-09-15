@@ -1,9 +1,12 @@
 from pathlib import Path
 
+from rich.console import Console
 from typer.testing import CliRunner
 
 from seatbelt import __version__
 from seatbelt.cli import app
+from seatbelt.record.recorder import Recorder
+from seatbelt.report.timeline import timeline
 
 runner = CliRunner()
 
@@ -31,6 +34,28 @@ def test_verify_fails_on_tampered_ledger(tmp_path: Path) -> None:
     result = runner.invoke(app, ["verify", str(ledger)])
     assert result.exit_code == 1
     assert "BROKEN" in result.output
+
+
+def test_verify_flags_truncated_ledger(tmp_path: Path) -> None:
+    runner.invoke(app, ["demo", "--out", str(tmp_path)])
+    ledger = next(tmp_path.glob("*.jsonl"))
+    lines = ledger.read_text().splitlines()
+    ledger.write_text("\n".join(lines[:-2]) + "\n")
+    result = runner.invoke(app, ["verify", str(ledger)])
+    assert result.exit_code == 1
+    assert "INCOMPLETE" in result.output
+
+
+def test_reconstruct_shows_ledger_text_literally(tmp_path: Path) -> None:
+    with Recorder.start(tmp_path, agent_id="bot", run_id="r") as rec:
+        rec.decision("refund " + "y" * 120, authority="agent:auto", basis=[])
+        rec.outcome("line one\n" + "[black on black]hidden[/] " + "x" * 200, success=True)
+    console = Console(width=300, record=True)
+    timeline(tmp_path / "r.jsonl", console)
+    out = console.export_text()
+    assert "[authority: agent:auto]" in out
+    assert "[black on black]hidden[/]" in out
+    assert "x" * 100 not in out
 
 
 def test_verify_fails_cleanly_on_corrupt_or_missing_ledger(tmp_path: Path) -> None:

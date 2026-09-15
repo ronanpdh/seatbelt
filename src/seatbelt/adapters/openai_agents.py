@@ -31,17 +31,20 @@ class SeatbeltProcessor(TracingProcessor):
         self._rec = rec
         self._lock = threading.Lock()  # SDK may end spans from several threads; seq must not race
         self._agents: dict[str, tuple[str, str]] = {}  # span_id -> (agent name, decision id)
+        self._last_response: dict[str, str] = {}  # trace_id -> response event id
 
     def attach(self, rec: Recorder) -> None:
         with self._lock:
             self._rec = rec
             self._agents.clear()
+            self._last_response.clear()
 
     def on_trace_start(self, trace: Trace) -> None:
         pass
 
     def on_trace_end(self, trace: Trace) -> None:
-        pass
+        with self._lock:
+            self._last_response.pop(trace.trace_id, None)
 
     def on_span_start(self, span: Span[Any]) -> None:
         data = span.span_data
@@ -58,16 +61,23 @@ class SeatbeltProcessor(TracingProcessor):
             match data:
                 case GenerationSpanData():
                     request = {"input": data.input, "model_config": data.model_config}
-                    self._model_call(data.model or "unknown", request, data.output, data.usage)
+                    self._model_call(
+                        span, data.model or "unknown", request, data.output, data.usage
+                    )
                 case ResponseSpanData():
                     response = data.response
                     model = response.model if response else None
                     output = response.output if response else None
                     request = {"input": data.input}
-                    self._model_call(model or "unknown", request, output, data.usage, model)
+                    self._model_call(span, model or "unknown", request, output, data.usage, model)
                 case FunctionSpanData():
                     mcp = {f"mcp.{k}": v for k, v in (data.mcp_data or {}).items()}
-                    call = self._rec.tool_called(data.name, _arguments(data.input), attrs=mcp)
+                    call = self._rec.tool_called(
+                        data.name,
+                        _arguments(data.input),
+                        attrs=mcp,
+                        parent_id=self._last_response.get(span.trace_id),
+                    )
                     error = span.error
                     self._rec.tool_returned(call, data.output, error["message"] if error else None)
                 case HandoffSpanData():
@@ -88,6 +98,7 @@ class SeatbeltProcessor(TracingProcessor):
 
     def _model_call(
         self,
+        span: Span[Any],
         model: str,
         request: dict[str, Any],
         output: Any,
@@ -96,7 +107,8 @@ class SeatbeltProcessor(TracingProcessor):
     ) -> None:
         tokens = {k: v for k, v in (usage or {}).items() if isinstance(v, int)}
         with self._rec.model_call(model, request, provider="openai") as call:
-            call.respond({"output": output}, tokens, response_model=response_model)
+            answer = call.respond({"output": output}, tokens, response_model=response_model)
+        self._last_response[span.trace_id] = answer.id  # function spans don't name their generation
 
     def _parent_agent(self, span: Span[Any], fallback: str | None) -> tuple[str, list[str]]:
         name, decision_id = self._agents.get(span.parent_id or "", (fallback or "unknown", ""))

@@ -14,7 +14,7 @@ uv run ruff check . && uv run ruff format --check .
 uv run pyright                            # strict; covers src, tests, examples
 uv run pre-commit run --all-files         # everything CI checks, plus whitespace/EOF fixers
 uv run seatbelt demo --out runs           # write a sample ledger
-uv run seatbelt verify runs/<id>.jsonl    # exit 1 if broken, corrupt or missing
+uv run seatbelt verify runs/<id>.jsonl    # exit 1 if broken, incomplete, corrupt or missing
 uv run seatbelt reconstruct runs/<id>.jsonl
 ```
 
@@ -31,8 +31,8 @@ Data flows one way: **adapter → Recorder → redact → Ledger (hash chain) �
 - `ledger/redact.py`: regex secret scrubbing, recursive over dicts, lists, tuples and Pydantic models (models are dumped to JSON first, which is also what makes SDK objects hashable).
 - `record/recorder.py`: the only API adapters call. Every write goes through `Recorder._emit`, which always redacts before appending; nothing else should call `Ledger.append`. `Recorder.start` is a context manager that emits `run.start`/`run.end` (with `run.ok=False` on exception). Lineage is via `parent_id` (response→request, tool result→tool call, policy check→subject, action→decision).
 - `adapters/`: one module per framework, translation only, no interpretation (`base.Adapter` protocol). Framework SDKs are optional dependencies (extras, also in the dev group). The Anthropic adapter wraps `client.messages`: `tool_use` blocks in a response become `tool.call` events, and matching `tool_result` blocks in the *next* request's history become `tool.result` events. The OpenAI Agents adapter is a `TracingProcessor`: it records agent spans as decisions in `on_span_start` (authority precedes the actions it covers) and everything else in `on_span_end`; default agents emit `ResponseSpanData`, not `GenerationSpanData`, so both are handled.
-- `verify/chain.py`: `verify_events` checks seq order, `prev_hash` links and content hashes, returning a `Verdict` with the first bad seq. Truncation of the tail is not detectable (see `docs/adr/0001-hash-chained-jsonl-ledger.md`; attestation is planned).
-- `report/timeline.py`: Rich table reconstruction; `_summary` has a case per `Kind`, so add one when adding a new `Kind`.
+- `verify/chain.py`: `verify_events` checks seq order, `prev_hash` links and content hashes, returning a `Verdict` with the first bad seq. A separate `complete` flag requires a final `run.end` with a matching `run.events` count (CLI: INCOMPLETE, exit 1); a forged tail still passes (see `docs/adr/0001-hash-chained-jsonl-ledger.md`; attestation is planned).
+- `report/timeline.py`: Rich table reconstruction; `_describe` has a case per `Kind`, so add one when adding a new `Kind`. Cells are `rich.text.Text`, never markup strings: ledger content is untrusted.
 - `cli.py`: Typer app, exposed as the `seatbelt` console script. The package version comes from `pyproject.toml` via `importlib.metadata`.
 
 Event `attrs` keys follow OpenTelemetry GenAI semantic conventions where one exists (`gen_ai.request.model`, `gen_ai.usage.*`, `gen_ai.tool.*`); anything else is namespaced (`policy.*`, `decision.*`, `action.*`, `outcome.*`).

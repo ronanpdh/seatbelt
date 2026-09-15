@@ -79,6 +79,7 @@ def test_two_turn_tool_loop_is_recorded(tmp_path: Path) -> None:
     call, result = events[3], events[4]
     assert call.attrs["gen_ai.tool.name"] == "lookup_order"
     assert call.attrs["gen_ai.tool.call.id"] == "toolu_01"
+    assert call.parent_id == response.id
     assert result.parent_id == call.id
     assert result.actor.id == "lookup_order"
 

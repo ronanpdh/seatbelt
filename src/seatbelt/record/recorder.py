@@ -100,9 +100,10 @@ class Recorder:
         arguments: dict[str, Any],
         call_id: str | None = None,
         attrs: dict[str, Any] | None = None,
+        parent_id: str | None = None,
     ) -> Event:
-        """Record that the agent asked for a tool. Adapters use this when they only
-        observe the call and do not execute it themselves."""
+        """Record that the agent asked for a tool. `parent_id` is the model response that
+        requested it, when the adapter knows it."""
         return self._emit(
             Kind.TOOL_CALL,
             self.agent,
@@ -112,6 +113,7 @@ class Recorder:
                 "gen_ai.tool.call.arguments": arguments,
                 **(attrs or {}),
             },
+            parent_id=parent_id,
         )
 
     def tool_returned(self, call: Event, result: Any, error: str | None = None) -> Event:

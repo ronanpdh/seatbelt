@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from seatbelt.ledger.events import GENESIS_HASH, Event
+from seatbelt.ledger.events import GENESIS_HASH, Event, Kind
 from seatbelt.ledger.store import Ledger, LedgerError
 
 
@@ -15,6 +15,7 @@ class Verdict:
     events: int
     first_bad_seq: int | None = None
     reason: str | None = None
+    complete: bool = False  # ends in a run.end whose event count matches
 
 
 def verify_file(path: Path) -> Verdict:
@@ -35,4 +36,10 @@ def verify_events(events: list[Event]) -> Verdict:
         if event.compute_hash() != event.hash:
             return Verdict(False, len(events), event.seq, "content does not match its hash")
         prev = event.hash
-    return Verdict(True, len(events))
+    last = events[-1] if events else None
+    complete = (
+        last is not None
+        and last.kind == Kind.RUN_END
+        and last.attrs.get("run.events") == len(events)
+    )
+    return Verdict(True, len(events), complete=complete)
