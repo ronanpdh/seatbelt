@@ -1,4 +1,4 @@
-<p align="center"><img src="docs/assets/seatbelt-cover.png" alt="Seatbelt" width="640"></p>
+<img src="docs/assets/seatbelt-cover.png" alt="Seatbelt" width="100%">
 
 # seatbelt
 
