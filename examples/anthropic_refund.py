@@ -49,10 +49,8 @@ def main() -> None:
         ]
         while True:
             response = messages.create(model=MODEL, max_tokens=16000, tools=TOOLS, messages=history)
-            # Send back the full content (thinking blocks included) as plain JSON,
-            # so seatbelt's redaction can see into it.
-            content = response.model_dump(mode="json")["content"]
-            history.append({"role": "assistant", "content": content})
+            # Send back the full content, thinking blocks included.
+            history.append({"role": "assistant", "content": response.content})
             if response.stop_reason != "tool_use":
                 break
             results = [

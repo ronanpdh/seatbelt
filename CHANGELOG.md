@@ -13,6 +13,13 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 - Recorded fixture `tests/fixtures/anthropic_refund.json` and replay tests; adapter tests skip when the extra is absent.
 - `examples/anthropic_refund.py`, a one-tool live example.
 
+### Fixed
+- Redaction now converts Pydantic models to JSON before redacting. SDK content blocks passed back in the request history were previously neither redacted nor hashable, so the Anthropic adapter's `create` raised.
+- `seatbelt verify` reports a corrupt or missing ledger as BROKEN (exit 1) instead of raising.
+- The `seatbelt` console script pointed at a missing `seatbelt:main`.
+- Package version now comes from `pyproject.toml`.
+- CI now actually runs on Python 3.13; previously every matrix leg used 3.12.
+
 ### Planned for this release
 - OpenAI Agents SDK adapter (tracing processor).
 

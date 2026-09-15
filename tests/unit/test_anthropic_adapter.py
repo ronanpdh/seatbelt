@@ -83,6 +83,27 @@ def test_two_turn_tool_loop_is_recorded(tmp_path: Path) -> None:
     assert result.actor.id == "lookup_order"
 
 
+def test_sdk_objects_in_history_are_redacted(tmp_path: Path) -> None:
+    replies = load_replies()
+    leaky = replies[0].model_copy(deep=True)
+    leaky.content[0].text = "key sk-ant-abcdefghijklmnopqrstuvwxyz1234"  # type: ignore[union-attr]
+    client = FakeClient(replies[1:])
+    with Recorder.start(tmp_path, agent_id="bot", run_id="r3") as rec:
+        messages = AnthropicAdapter(rec).messages(client)  # type: ignore[arg-type]
+        messages.create(
+            model="m",
+            max_tokens=10,
+            messages=[
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": leaky.content},  # SDK objects, not dicts
+            ],
+        )
+    text = (tmp_path / "r3.jsonl").read_text()
+    assert "sk-ant-" not in text
+    assert "[REDACTED:anthropic_key]" in text
+    assert verify_file(tmp_path / "r3.jsonl").ok
+
+
 def test_unmatched_tool_result_is_ignored(tmp_path: Path) -> None:
     client = FakeClient(load_replies()[1:])
     with Recorder.start(tmp_path, agent_id="bot", run_id="r2") as rec:
