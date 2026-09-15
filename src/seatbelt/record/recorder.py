@@ -95,7 +95,11 @@ class Recorder:
         yield ModelCall(self, req, model)
 
     def tool_called(
-        self, name: str, arguments: dict[str, Any], call_id: str | None = None
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        call_id: str | None = None,
+        attrs: dict[str, Any] | None = None,
     ) -> Event:
         """Record that the agent asked for a tool. Adapters use this when they only
         observe the call and do not execute it themselves."""
@@ -106,6 +110,7 @@ class Recorder:
                 "gen_ai.tool.name": name,
                 "gen_ai.tool.call.id": call_id,
                 "gen_ai.tool.call.arguments": arguments,
+                **(attrs or {}),
             },
         )
 

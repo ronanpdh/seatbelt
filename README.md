@@ -31,6 +31,8 @@ with Recorder.start(Path("runs"), agent_id="support-bot") as rec:
 
 Using the Anthropic SDK? Wrap the client and every `messages.create` is recorded, tool calls included. See [`examples/anthropic_refund.py`](examples/anthropic_refund.py).
 
+Using the OpenAI Agents SDK? Register `agents.add_trace_processor(SeatbeltProcessor(rec))` once at startup. See [`examples/openai_agents_refund.py`](examples/openai_agents_refund.py).
+
 ## Status
 
 Pre-1.0 and moving quickly: the ledger schema may change between minor versions. See [ROADMAP.md](ROADMAP.md) and [CHANGELOG.md](CHANGELOG.md).

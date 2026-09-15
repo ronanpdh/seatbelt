@@ -12,6 +12,9 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 - Optional dependency group `anthropic`.
 - Recorded fixture `tests/fixtures/anthropic_refund.json` and replay tests; adapter tests skip when the extra is absent.
 - `examples/anthropic_refund.py`, a one-tool live example.
+- OpenAI Agents SDK adapter (`seatbelt.adapters.openai_agents.SeatbeltProcessor`), a tracing processor: generation and response spans become `model.request`/`model.response`, function spans `tool.call`/`tool.result` (MCP data under `mcp.*`), agent, handoff and guardrail spans `decision` events with the agent as authority.
+- Optional dependency group `openai-agents`; `examples/openai_agents_refund.py`, the same refund agent.
+- `Recorder.tool_called` accepts extra `attrs`.
 
 ### Fixed
 - Redaction now converts Pydantic models to JSON before redacting. SDK content blocks passed back in the request history were previously neither redacted nor hashable, so the Anthropic adapter's `create` raised.
@@ -19,9 +22,6 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 - The `seatbelt` console script pointed at a missing `seatbelt:main`.
 - Package version now comes from `pyproject.toml`.
 - CI now actually runs on Python 3.13; previously every matrix leg used 3.12.
-
-### Planned for this release
-- OpenAI Agents SDK adapter (tracing processor).
 
 ## [0.0.1] - 2026-09-14
 

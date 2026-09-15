@@ -7,7 +7,7 @@ Seatbelt is a model-agnostic harness for AI agents. It records an agent run as a
 ## Commands
 
 ```sh
-uv sync                                   # package + dev group (includes the optional anthropic SDK)
+uv sync                                   # package + dev group (includes the optional framework SDKs)
 uv run pytest                             # all tests
 uv run pytest tests/unit/test_ledger.py::test_chain_links_and_verifies   # one test
 uv run ruff check . && uv run ruff format --check .
@@ -30,7 +30,7 @@ Data flows one way: **adapter → Recorder → redact → Ledger (hash chain) �
 - `ledger/store.py`: `Ledger` appends one sealed event per line and, on construction, reads an existing file to resume `seq` and the last hash.
 - `ledger/redact.py`: regex secret scrubbing, recursive over dicts, lists, tuples and Pydantic models (models are dumped to JSON first, which is also what makes SDK objects hashable).
 - `record/recorder.py`: the only API adapters call. Every write goes through `Recorder._emit`, which always redacts before appending; nothing else should call `Ledger.append`. `Recorder.start` is a context manager that emits `run.start`/`run.end` (with `run.ok=False` on exception). Lineage is via `parent_id` (response→request, tool result→tool call, policy check→subject, action→decision).
-- `adapters/`: one module per framework, translation only, no interpretation (`base.Adapter` protocol). Framework SDKs are optional dependencies imported under `TYPE_CHECKING`. The Anthropic adapter wraps `client.messages`: `tool_use` blocks in a response become `tool.call` events, and matching `tool_result` blocks in the *next* request's history become `tool.result` events.
+- `adapters/`: one module per framework, translation only, no interpretation (`base.Adapter` protocol). Framework SDKs are optional dependencies (extras, also in the dev group). The Anthropic adapter wraps `client.messages`: `tool_use` blocks in a response become `tool.call` events, and matching `tool_result` blocks in the *next* request's history become `tool.result` events. The OpenAI Agents adapter is a `TracingProcessor`: it records agent spans as decisions in `on_span_start` (authority precedes the actions it covers) and everything else in `on_span_end`; default agents emit `ResponseSpanData`, not `GenerationSpanData`, so both are handled.
 - `verify/chain.py`: `verify_events` checks seq order, `prev_hash` links and content hashes, returning a `Verdict` with the first bad seq. Truncation of the tail is not detectable (see `docs/adr/0001-hash-chained-jsonl-ledger.md`; attestation is planned).
 - `report/timeline.py`: Rich table reconstruction; `_summary` has a case per `Kind`, so add one when adding a new `Kind`.
 - `cli.py`: Typer app, exposed as the `seatbelt` console script. The package version comes from `pyproject.toml` via `importlib.metadata`.

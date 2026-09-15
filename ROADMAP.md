@@ -9,7 +9,7 @@ Event model, hash-chained JSONL ledger, redaction, Recorder API, verification, t
 ## 0.0.2 (in progress)
 
 - Anthropic Messages API adapter (done)
-- OpenAI Agents SDK adapter, via a tracing processor
+- OpenAI Agents SDK adapter, via a tracing processor (done)
 
 ## 0.0.3
 
