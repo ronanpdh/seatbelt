@@ -4,6 +4,14 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 
 ## [Unreleased]
 
+### Added
+- Anthropic adapter covers every call style: `messages.stream()`, `AsyncAnthropic` via `AnthropicAdapter.async_messages()`, and the beta endpoint by passing `client.beta`. All record the same ledger shape. A stream the caller abandons (break or `close()`) is recorded as what was received, with `stop_reason: null` and no tool calls; the wrapper never reads further, so exits behave exactly like the SDK's.
+- Model requests also record `thinking`, `output_config`, `stop_sequences` and `betas`.
+
+### Fixed
+- `Ledger.append` is thread-safe. Concurrent appends from several threads previously corrupted the chain (sequence gaps).
+- `create(stream=True)` raised after recording the request, leaving it unanswered; it now fails up front with a pointer to `.stream()`.
+
 ## [0.0.2] - 2026-09-15
 
 ### Changed

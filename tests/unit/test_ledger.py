@@ -1,3 +1,4 @@
+import threading
 from pathlib import Path
 
 from hypothesis import given
@@ -106,6 +107,23 @@ def test_unversioned_ledger_is_rejected_as_old_format_not_tampering(tmp_path: Pa
     assert not verdict.ok
     assert verdict.reason is not None
     assert "schema_version" in verdict.reason
+
+
+def test_concurrent_appends_keep_the_chain_intact(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "r.jsonl", "r")
+
+    def write() -> None:
+        for _ in range(200):
+            ledger.append(Kind.ACTION, AGENT, {"x": "y" * 50})
+
+    threads = [threading.Thread(target=write) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    verdict = verify_file(tmp_path / "r.jsonl")
+    assert verdict.ok, verdict.reason
+    assert verdict.events == 1600
 
 
 def test_redaction_catches_keys() -> None:

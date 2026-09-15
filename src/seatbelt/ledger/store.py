@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,7 @@ class Ledger:
         self.run_id = run_id
         self._seq = 0
         self._last_hash = GENESIS_HASH
+        self._lock = threading.Lock()  # seq and prev_hash must advance atomically
         if path.exists():
             for event in self.read():
                 self._seq = event.seq + 1
@@ -35,22 +37,23 @@ class Ledger:
         attrs: dict[str, Any] | None = None,
         parent_id: str | None = None,
     ) -> Event:
-        event = Event(
-            schema_version=SCHEMA_VERSION,
-            run_id=self.run_id,
-            seq=self._seq,
-            kind=kind,
-            actor=actor,
-            parent_id=parent_id,
-            attrs=attrs or {},
-            prev_hash=self._last_hash,
-        ).sealed()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as fh:
-            fh.write(event.model_dump_json() + "\n")
-        self._seq += 1
-        self._last_hash = event.hash
-        return event
+        with self._lock:
+            event = Event(
+                schema_version=SCHEMA_VERSION,
+                run_id=self.run_id,
+                seq=self._seq,
+                kind=kind,
+                actor=actor,
+                parent_id=parent_id,
+                attrs=attrs or {},
+                prev_hash=self._last_hash,
+            ).sealed()
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.open("a", encoding="utf-8") as fh:
+                fh.write(event.model_dump_json() + "\n")
+            self._seq += 1
+            self._last_hash = event.hash
+            return event
 
     def read(self) -> Iterator[Event]:
         with self.path.open(encoding="utf-8") as fh:
