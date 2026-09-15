@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/assets/seatbelt-cover.png" alt="Seatbelt" width="640"></p>
+
 # seatbelt
 
 Seatbelt is a model-agnostic harness for AI agents. It records what an agent did as a tamper-evident ledger you can verify and replay as a timeline.
