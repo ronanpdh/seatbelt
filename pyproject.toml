@@ -3,6 +3,8 @@ name = "seatbelt"
 version = "0.0.1"
 description = "Seatbelt is a model-agnostic harness for AI agents."
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [
     { name = "ronanpdh", email = "ronan@rpdh.uk" }
 ]
@@ -59,7 +61,7 @@ ignore = ["ANN401"]   # allow Any where explicitly commented
 "tests/**" = ["S101", "ANN"]   # asserts are fine in tests; annotations optional there
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["src", "tests", "examples"]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
 venvPath = "."
