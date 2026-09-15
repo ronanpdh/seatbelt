@@ -16,6 +16,7 @@ uv run pre-commit run --all-files         # everything CI checks, plus whitespac
 uv run seatbelt demo --out runs           # write a sample ledger
 uv run seatbelt verify runs/<id>.jsonl    # exit 1 if broken, incomplete, corrupt or missing
 uv run seatbelt reconstruct runs/<id>.jsonl
+scripts/walkthrough.sh [workdir]         # live Anthropic run + verify, reconstruct, lineage, tamper (costs cents)
 ```
 
 CI (`.github/workflows/ci.yml`) runs `uv sync --locked`, ruff, pyright and pytest on Python 3.12 and 3.13. If you change dependencies, run `uv lock` or CI fails.
