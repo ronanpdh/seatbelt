@@ -12,6 +12,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 GENESIS_HASH = "0" * 64  # prev_hash of the first event in a run
+SCHEMA_VERSION = 1  # bump on any change to Event fields or their meaning
 
 
 class Kind(StrEnum):
@@ -55,6 +56,7 @@ class Event(BaseModel):
     is namespaced by the adapter that produced it.
     """
 
+    schema_version: int  # required, so pre-versioning ledgers fail loudly on read
     id: str = Field(default_factory=lambda: uuid4().hex)
     run_id: str
     seq: int

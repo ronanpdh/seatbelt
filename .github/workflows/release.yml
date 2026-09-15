@@ -1,0 +1,42 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write      # create the GitHub release
+      id-token: write      # Sigstore signing
+      attestations: write  # provenance and SBOM attestations
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0
+      - name: Tag matches package version
+        run: test "${GITHUB_REF_NAME#v}" = "$(uv version --short)"
+      - run: uv sync --locked
+      - run: uv run pytest
+      - run: uv build
+      - name: CycloneDX SBOM
+        run: uv export --locked --format cyclonedx1.5 --no-dev --all-extras -o "dist/seatbelt-${GITHUB_REF_NAME#v}.cdx.json"
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            dist/*.whl
+            dist/*.tar.gz
+      - uses: actions/attest-sbom@v4
+        with:
+          subject-path: dist/*.whl
+          sbom-path: dist/seatbelt-*.cdx.json
+      - name: GitHub release with changelog notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '$0 ~ "^## \\[" v "\\]" {f=1; next} /^## \[/ {f=0} f' CHANGELOG.md > notes.md
+          test -s notes.md
+          gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --notes-file notes.md

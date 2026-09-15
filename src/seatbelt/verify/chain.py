@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from seatbelt.ledger.events import GENESIS_HASH, Event, Kind
+from seatbelt.ledger.events import GENESIS_HASH, SCHEMA_VERSION, Event, Kind
 from seatbelt.ledger.store import Ledger, LedgerError
 
 
@@ -29,6 +29,9 @@ def verify_file(path: Path) -> Verdict:
 def verify_events(events: list[Event]) -> Verdict:
     prev = GENESIS_HASH
     for expected_seq, event in enumerate(events):
+        if event.schema_version != SCHEMA_VERSION:
+            reason = f"unsupported schema version {event.schema_version}"
+            return Verdict(False, len(events), event.seq, reason)
         if event.seq != expected_seq:
             return Verdict(False, len(events), event.seq, "sequence gap or reorder")
         if event.prev_hash != prev:

@@ -4,7 +4,13 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 
 ## [Unreleased]
 
+## [0.0.2] - 2026-09-15
+
+### Changed
+- **Ledger schema version 1.** Every event now carries a required `schema_version`, and `verify` rejects versions it does not know. Ledgers written by 0.0.1 have no version and are rejected as an old format; they cannot be verified by 0.0.2.
+
 ### Added
+- Release workflow: tagged builds attach the wheel, sdist and a CycloneDX SBOM to a GitHub release, with Sigstore-signed SLSA build provenance and SBOM attestations.
 - `Recorder.tool_called` and `Recorder.tool_returned` primitives for adapters that observe tool calls without executing them; `tool_call` context manager now built on them.
 - `gen_ai.tool.call.id` attribute on `tool.call` events (provider's own call id).
 - `Adapter` protocol (`seatbelt.adapters.base`).
@@ -39,5 +45,6 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 - Tests: hash determinism, chain link and resume, property test that any edit breaks the chain, deletion detection, redaction, recorder lineage and failure path, CLI round trip and tamper detection.
 - Project scaffolding: uv, ruff, pyright strict, pytest, Hypothesis, pre-commit, CI, Dependabot, Scorecard, SECURITY.md, CONTRIBUTING.md, STANDARDS.md, ROADMAP.md.
 
-[Unreleased]: https://github.com/ronanpdh/seatbelt/compare/v0.0.1...HEAD
+[Unreleased]: https://github.com/ronanpdh/seatbelt/compare/v0.0.2...HEAD
+[0.0.2]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.0.2
 [0.0.1]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.0.1

@@ -6,10 +6,9 @@ Versions are targets, not promises. Released work is recorded in [CHANGELOG.md](
 
 Event model, hash-chained JSONL ledger, redaction, Recorder API, verification, timeline reconstruction, CLI.
 
-## 0.0.2 (in progress)
+## 0.0.2 (released)
 
-- Anthropic Messages API adapter (done)
-- OpenAI Agents SDK adapter, via a tracing processor (done)
+Anthropic Messages API and OpenAI Agents SDK adapters, ledger schema version, signed releases with SBOM and provenance.
 
 ## 0.0.3
 

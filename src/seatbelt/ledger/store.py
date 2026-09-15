@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from seatbelt.ledger.events import GENESIS_HASH, Actor, Event, Kind
+from seatbelt.ledger.events import GENESIS_HASH, SCHEMA_VERSION, Actor, Event, Kind
 
 
 class LedgerError(Exception):
@@ -36,6 +36,7 @@ class Ledger:
         parent_id: str | None = None,
     ) -> Event:
         event = Event(
+            schema_version=SCHEMA_VERSION,
             run_id=self.run_id,
             seq=self._seq,
             kind=kind,
