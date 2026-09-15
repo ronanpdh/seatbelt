@@ -31,3 +31,12 @@ def test_verify_fails_on_tampered_ledger(tmp_path: Path) -> None:
     result = runner.invoke(app, ["verify", str(ledger)])
     assert result.exit_code == 1
     assert "BROKEN" in result.output
+
+
+def test_verify_fails_cleanly_on_corrupt_or_missing_ledger(tmp_path: Path) -> None:
+    corrupt = tmp_path / "r.jsonl"
+    corrupt.write_text("not json\n")
+    for path in (corrupt, tmp_path / "missing.jsonl"):
+        result = runner.invoke(app, ["verify", str(path)])
+        assert result.exit_code == 1
+        assert "BROKEN" in result.output

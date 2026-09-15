@@ -29,5 +29,5 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 - Tests: hash determinism, chain link and resume, property test that any edit breaks the chain, deletion detection, redaction, recorder lineage and failure path, CLI round trip and tamper detection.
 - Project scaffolding: uv, ruff, pyright strict, pytest, Hypothesis, pre-commit, CI, Dependabot, Scorecard, SECURITY.md, CONTRIBUTING.md, STANDARDS.md, ROADMAP.md.
 
-[Unreleased]: https://github.com/OWNER/seatbelt/compare/v0.0.1...HEAD
-[0.0.1]: https://github.com/OWNER/seatbelt/releases/tag/v0.0.1
+[Unreleased]: https://github.com/ronanpdh/seatbelt/compare/v0.0.1...HEAD
+[0.0.1]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.0.1

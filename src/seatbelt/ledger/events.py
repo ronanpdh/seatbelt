@@ -1,3 +1,5 @@
+"""Event model and canonical hashing for the ledger."""
+
 from __future__ import annotations
 
 import hashlib
@@ -9,9 +11,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-"""First event links to hash chain log"""
-
-GENESIS_HASH = "0" * 64
+GENESIS_HASH = "0" * 64  # prev_hash of the first event in a run
 
 
 class Kind(StrEnum):

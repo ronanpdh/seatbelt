@@ -1,25 +1,20 @@
 [project]
 name = "seatbelt"
-version = "0.0.10"
-description = "Add your description here"
+version = "0.0.1"
+description = "Seatbelt is a model-agnostic harness for AI agents."
 readme = "README.md"
 authors = [
     { name = "ronanpdh", email = "ronan@rpdh.uk" }
 ]
 requires-python = ">=3.12"
 dependencies = [
-    "anthropic>=1.5.0",
-    "jinja2>=3.1.6",
     "pydantic>=2.13.5",
-    "pyyaml>=6.0.3",
     "rich>=15.0.0",
-    "structlog>=26.1.0",
     "typer>=0.27.2",
 ]
 
 [project.scripts]
-seatbelt = "seatbelt:main"
-seatbelt-cli = "seatbelt.cli:app"
+seatbelt = "seatbelt.cli:app"
 
 [project.optional-dependencies]
 anthropic = [
@@ -32,6 +27,7 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "anthropic>=1.5.0",  # adapter tests and pyright need the optional SDK
     "hypothesis>=6.168.0",
     "pre-commit>=4.6.2",
     "pyright>=1.1.414",

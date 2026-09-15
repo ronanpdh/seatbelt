@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from seatbelt.ledger.events import GENESIS_HASH, Event
-from seatbelt.ledger.store import Ledger
+from seatbelt.ledger.store import Ledger, LedgerError
 
 
 @dataclass(frozen=True)
@@ -18,8 +18,11 @@ class Verdict:
 
 
 def verify_file(path: Path) -> Verdict:
-    ledger = Ledger(path, run_id=path.stem)
-    return verify_events(list(ledger.read()))
+    try:
+        events = list(Ledger(path, run_id=path.stem).read())
+    except (OSError, LedgerError) as exc:
+        return Verdict(False, 0, None, str(exc))
+    return verify_events(events)
 
 
 def verify_events(events: list[Event]) -> Verdict:

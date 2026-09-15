@@ -2,8 +2,10 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 
 from seatbelt import __version__
+from seatbelt.record.recorder import Recorder
 from seatbelt.report.timeline import timeline
 from seatbelt.verify.chain import verify_file
 
@@ -29,7 +31,8 @@ def verify(ledger: Path) -> None:
     if verdict.ok:
         console.print(f"[green]ok[/] {verdict.events} events, chain intact")
         return
-    console.print(f"[red]BROKEN[/] at seq {verdict.first_bad_seq}: {verdict.reason}")
+    where = "" if verdict.first_bad_seq is None else f" at seq {verdict.first_bad_seq}"
+    console.print(f"[red]BROKEN[/]{where}: {escape(verdict.reason or '')}")
     raise typer.Exit(code=1)
 
 
@@ -42,8 +45,6 @@ def reconstruct(ledger: Path) -> None:
 @app.command()
 def demo(out: Path = Path("runs")) -> None:
     """Record a scripted example run so you can try verify and reconstruct."""
-    from seatbelt.record.recorder import Recorder
-
     with Recorder.start(out, agent_id="demo-agent", agent_version="0.1") as rec:
         u = rec.user_message("user-42", "Refund order 1001, key sk-ant-abcdefghijklmnopqrstuvwxyz")
         with rec.model_call("claude-sonnet-4-5", {"messages": ["..."]}, provider="anthropic") as m:
