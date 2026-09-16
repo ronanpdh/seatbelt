@@ -75,3 +75,16 @@ def test_answered_model_call_that_then_fails_is_not_answered_twice(tmp_path: Pat
         raise ValueError("after")
     kinds = [e.kind for e in read_events(tmp_path / "r5.jsonl")]
     assert kinds.count(Kind.MODEL_RESPONSE) == 1
+
+
+def test_failed_tool_call_records_an_error_result(tmp_path: Path) -> None:
+    with (
+        pytest.raises(RuntimeError),
+        Recorder.start(tmp_path, agent_id="bot", run_id="r6") as rec,
+        rec.tool_call("pay", {}),
+    ):
+        raise RuntimeError("exploded")
+    call, result = list(read_events(tmp_path / "r6.jsonl"))[1:3]
+    assert result.kind == Kind.TOOL_RESULT
+    assert result.parent_id == call.id
+    assert result.attrs["error"] == "RuntimeError: exploded"

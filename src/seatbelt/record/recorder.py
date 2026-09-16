@@ -6,13 +6,17 @@ import re
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from seatbelt import __version__
 from seatbelt.ledger.events import Actor, ActorType, Event, Kind
 from seatbelt.ledger.redact import redact
 from seatbelt.ledger.store import Ledger
+from seatbelt.policy.engine import PolicyDenied
+
+if TYPE_CHECKING:
+    from seatbelt.policy.engine import Policy
 
 _RUN_ID = re.compile(r"[A-Za-z0-9_.-]+")
 
@@ -31,9 +35,10 @@ class Recorder:
             rec.outcome("refund issued", success=True)
     """
 
-    def __init__(self, ledger: Ledger, agent: Actor) -> None:
+    def __init__(self, ledger: Ledger, agent: Actor, policy: Policy | None = None) -> None:
         self.ledger = ledger
         self.agent = agent
+        self.policy = policy
         self.run_id = ledger.run_id
 
     @classmethod
@@ -45,6 +50,7 @@ class Recorder:
         agent_version: str | None = None,
         run_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        policy: Policy | None = None,
     ) -> Generator[Recorder]:
         run_id = run_id or uuid4().hex
         if not _RUN_ID.fullmatch(run_id):
@@ -54,7 +60,7 @@ class Recorder:
             raise FileExistsError(f"{path} already holds a run")
         ledger = Ledger(path, run_id)
         agent = Actor(type=ActorType.AGENT, id=agent_id, version=agent_version)
-        rec = cls(ledger, agent)
+        rec = cls(ledger, agent, policy)
         rec._emit(
             Kind.RUN_START,
             Actor(type=ActorType.SYSTEM, id="seatbelt", version=__version__),
@@ -145,7 +151,24 @@ class Recorder:
 
     @contextmanager
     def tool_call(self, name: str, arguments: dict[str, Any]) -> Generator[ToolCall]:
-        yield ToolCall(self, self.tool_called(name, arguments), name)
+        """Record the call, check it against the policy (raises `PolicyDenied`), then run it.
+        A body that raises before `result` gets an error `tool.result`, like `model_call`."""
+        call = self.tool_called(name, arguments)
+        if self.policy is not None:
+            denied: PolicyDenied | None = None
+            for rule, reason in self.policy.evaluate(name, arguments):
+                self.policy_check(rule, call.id, reason is None, reason or "allowed")
+                if reason and denied is None:
+                    denied = PolicyDenied(rule, reason, call)
+            if denied:
+                raise denied
+        tool = ToolCall(self, call, name)
+        try:
+            yield tool
+        except BaseException as exc:
+            if tool.answer is None:
+                tool.result(None, error=_describe(exc))
+            raise
 
     def policy_check(self, policy: str, subject_id: str, allowed: bool, reason: str) -> Event:
         return self._emit(
@@ -215,6 +238,8 @@ class ToolCall:
         self._rec = rec
         self.call = call
         self.name = name
+        self.answer: Event | None = None
 
     def result(self, result: Any, error: str | None = None) -> Event:
-        return self._rec.tool_returned(self.call, result, error)
+        self.answer = self._rec.tool_returned(self.call, result, error)
+        return self.answer

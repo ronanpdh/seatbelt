@@ -11,7 +11,8 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 - `Recorder.start` rejects a `run_id` that is not a safe filename and refuses to append to an existing ledger.
 
 ### Added
-- `run.end` carries `run.error` (exception type and message) when a run fails, and a `model_call` whose body raises records a `model.response` with `error` before re-raising.
+- Policy engine at the tool boundary (`seatbelt.policy.engine`): `Recorder.start(..., policy=Policy(*rules))` evaluates every `Rule` against each `Recorder.tool_call`, records one `policy.check` per rule linked to the `tool.call`, and raises `PolicyDenied` before the tool body runs if any rule denies. A rule that raises counts as a denial (fail closed) and is recorded as one. Built-in rules `allowlist(*tools)` and `denylist(*tools)`. The Anthropic and OpenAI Agents adapters only observe tool calls the framework dispatches, so they record no checks; enforce through `Recorder.tool_call`.
+- `run.end` carries `run.error` (exception type and message) when a run fails, and a `model_call` whose body raises records a `model.response` with `error` before re-raising; likewise a `tool_call` whose body raises records a `tool.result` with `error`.
 - `seatbelt reconstruct` verifies first: BROKEN (exit 1) on a tampered ledger, a warning on an incomplete one. `run.start` and `run.end` rows now show the harness version and `ok`/`FAILED: <error>`.
 - `verify` reports `complete` only when the ledger has exactly one `run.start`, at seq 0.
 - `seatbelt.ledger.store.read_events`.
