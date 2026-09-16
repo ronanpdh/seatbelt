@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from seatbelt.ledger.events import Event, Kind
-from seatbelt.ledger.store import Ledger
+from seatbelt.ledger.store import read_events
 from seatbelt.record.recorder import Recorder
 from seatbelt.verify.chain import verify_file
 
@@ -133,16 +133,19 @@ def test_every_call_style_records_the_same_ledger(
             asyncio.run(_async(rec, style, beta))
 
     path = tmp_path / "r.jsonl"
-    events: list[Event] = list(Ledger(path, "r").read())
+    events: list[Event] = list(read_events(path))
     assert [e.kind for e in events] == SHAPE
     assert verify_file(path).complete
     request, response, call, result = events[1:5]
     assert response.parent_id == request.id
     assert response.actor.version == "claude-sonnet-4-5-20250929"
     assert response.attrs["gen_ai.usage.output_tokens"] == 31
+    assert call.attrs["gen_ai.tool.name"] == "lookup_order"
+    assert call.attrs["gen_ai.tool.call.id"] == "toolu_01"
     assert call.attrs["gen_ai.tool.call.arguments"] == {"order_id": 1001}
     assert call.parent_id == response.id
     assert result.parent_id == call.id
+    assert result.actor.id == "lookup_order"
 
 
 def test_create_with_stream_true_points_to_stream(tmp_path: Path) -> None:
@@ -216,7 +219,7 @@ def test_abandoned_stream_exits_like_the_sdk_and_records_partial(
     elapsed = time.monotonic() - started
 
     assert elapsed < 2.0, f"wrapper waited for the stream to finish ({elapsed:.1f}s)"
-    events = list(Ledger(tmp_path / "r.jsonl", "r").read())
+    events = list(read_events(tmp_path / "r.jsonl"))
     assert [e.kind for e in events] == [
         Kind.RUN_START,
         Kind.MODEL_REQUEST,
@@ -238,5 +241,53 @@ def test_stream_exited_before_any_event_records_request_only(
         .stream(model="m", max_tokens=5, messages=[{"role": "user", "content": "hi"}]),
     ):
         pass
-    kinds = [e.kind for e in Ledger(tmp_path / "r.jsonl", "r").read()]
+    kinds = [e.kind for e in read_events(tmp_path / "r.jsonl")]
     assert kinds == [Kind.RUN_START, Kind.MODEL_REQUEST, Kind.RUN_END]
+
+
+class _FakeClient:
+    """Enough of the SDK client to hand back canned replies without a transport."""
+
+    def __init__(self, replies: list[dict[str, Any]]) -> None:
+        self.messages = self
+        self._replies = [anthropic.types.Message.model_validate(r) for r in replies]
+
+    def create(self, **_: Any) -> Any:
+        return self._replies.pop(0)
+
+
+def _fake(replies: list[dict[str, Any]]) -> Any:
+    return _FakeClient(replies)
+
+
+def test_sdk_objects_in_history_are_redacted(tmp_path: Path) -> None:
+    replies = json.loads(FIXTURE.read_text())
+    leaky = anthropic.types.Message.model_validate(replies[0])
+    leaky.content[0].text = "key sk-ant-abcdefghijklmnopqrstuvwxyz1234"  # type: ignore[union-attr]
+    with Recorder.start(tmp_path, agent_id="bot", run_id="r") as rec:
+        AnthropicAdapter(rec).messages(_fake(replies[1:])).create(
+            model="m",
+            max_tokens=10,
+            messages=[
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": leaky.content},  # SDK objects, not dicts
+            ],
+        )
+    text = (tmp_path / "r.jsonl").read_text()
+    assert "sk-ant-" not in text
+    assert "[REDACTED:anthropic_key]" in text
+    assert verify_file(tmp_path / "r.jsonl").ok
+
+
+def test_unmatched_tool_result_is_ignored(tmp_path: Path) -> None:
+    replies = json.loads(FIXTURE.read_text())
+    with Recorder.start(tmp_path, agent_id="bot", run_id="r") as rec:
+        AnthropicAdapter(rec).messages(_fake(replies[1:])).create(
+            model="m",
+            max_tokens=10,
+            messages=[
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "nope"}]}
+            ],
+        )
+    kinds = [e.kind for e in read_events(tmp_path / "r.jsonl")]
+    assert Kind.TOOL_RESULT not in kinds

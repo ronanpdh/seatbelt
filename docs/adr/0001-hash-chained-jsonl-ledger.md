@@ -25,4 +25,6 @@ Verification walks the file and fails on the first event whose `seq` is out of o
 - Removing events from the end of the file is caught only by a completeness check: `verify` expects a final `run.end` whose `run.events` count matches. Anyone able to rewrite the file can forge that too, so closing the gap needs the final hash recorded somewhere the writer cannot rewrite, which is the job of signed attestation (planned for 0.0.4).
 - JSONL can be read with standard tools and appended without rewriting the file, and a run can resume after a restart by reading the last hash.
 - A write interrupted halfway through a line leaves an invalid final line. The ledger then fails to load and the run cannot resume until the line is removed.
-- The canonical form is tied to the Pydantic model. Changing a field changes every hash, so schema changes need a version bump.
+- The canonical form is tied to the Pydantic model. Changing a field changes every hash, so schema changes need a version bump. The models forbid unknown keys: the canonical form is a re-dump, so an ignored extra key would otherwise survive verification.
+- Each append is fsynced and the file is created mode 0600. Durability and confidentiality cost a syscall per event, which is nothing at agent speeds.
+- `Recorder.start` refuses a file that already exists. Resuming a run is the ledger's job (it reads the last hash), not the recorder's; a second `run.start` in one file is reported as incomplete.

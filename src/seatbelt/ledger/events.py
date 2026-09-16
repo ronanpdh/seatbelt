@@ -9,7 +9,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 GENESIS_HASH = "0" * 64  # prev_hash of the first event in a run
 SCHEMA_VERSION = 1  # bump on any change to Event fields or their meaning
@@ -43,6 +43,8 @@ class ActorType(StrEnum):
 class Actor(BaseModel):
     """Who did it. `id` is whatever identifies them in the host system."""
 
+    model_config = ConfigDict(extra="forbid")  # unknown keys would otherwise survive verification
+
     type: ActorType
     id: str
     version: str | None = None  # model version, tool version, agent build
@@ -55,6 +57,8 @@ class Event(BaseModel):
     exists (gen_ai.request.model, gen_ai.usage.input_tokens, ...). Anything else
     is namespaced by the adapter that produced it.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     schema_version: int  # required, so pre-versioning ledgers fail loudly on read
     id: str = Field(default_factory=lambda: uuid4().hex)

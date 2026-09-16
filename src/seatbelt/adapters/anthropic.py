@@ -152,9 +152,6 @@ class AnthropicAdapter:
     def __init__(self, rec: Recorder) -> None:
         self._rec = rec
 
-    def attach(self, rec: Recorder) -> None:
-        self._rec = rec
-
     def messages(self, client: Anthropic | Beta) -> RecordedMessages:
         return RecordedMessages(client, self._rec)
 

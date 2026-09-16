@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from collections.abc import Iterator
 from pathlib import Path
@@ -16,6 +17,18 @@ class LedgerError(Exception):
     """Raised when the ledger cannot be trusted."""
 
 
+def read_events(path: Path) -> Iterator[Event]:
+    with path.open(encoding="utf-8") as fh:
+        for lineno, line in enumerate(fh, start=1):
+            if not line.strip():
+                continue
+            try:
+                yield Event.model_validate_json(line)
+            except (ValidationError, UnicodeDecodeError) as exc:
+                msg = f"{path}:{lineno} is not a valid event: {exc}"
+                raise LedgerError(msg) from exc
+
+
 class Ledger:
     """One file per run. Every append links to the previous event's hash."""
 
@@ -26,7 +39,7 @@ class Ledger:
         self._last_hash = GENESIS_HASH
         self._lock = threading.Lock()  # seq and prev_hash must advance atomically
         if path.exists():
-            for event in self.read():
+            for event in read_events(path):
                 self._seq = event.seq + 1
                 self._last_hash = event.hash
 
@@ -49,22 +62,14 @@ class Ledger:
                 prev_hash=self._last_hash,
             ).sealed()
             self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.touch(mode=0o600)
             with self.path.open("a", encoding="utf-8") as fh:
                 fh.write(event.model_dump_json() + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())  # an audit record that can vanish on power loss is not one
             self._seq += 1
             self._last_hash = event.hash
             return event
-
-    def read(self) -> Iterator[Event]:
-        with self.path.open(encoding="utf-8") as fh:
-            for lineno, line in enumerate(fh, start=1):
-                if not line.strip():
-                    continue
-                try:
-                    yield Event.model_validate_json(line)
-                except ValidationError as exc:
-                    msg = f"{self.path}:{lineno} is not a valid event: {exc}"
-                    raise LedgerError(msg) from exc
 
     @property
     def last_hash(self) -> str:

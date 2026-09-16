@@ -12,7 +12,7 @@ jobs:
       id-token: write      # Sigstore signing
       attestations: write  # provenance and SBOM attestations
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0
@@ -24,13 +24,13 @@ jobs:
       - name: CycloneDX SBOM
         run: uv export --locked --format cyclonedx1.5 --no-dev --all-extras -o dist/sbom.cdx.json
       - name: Build provenance attestation
-        uses: actions/attest@v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4
         with:
           subject-path: |
             dist/*.whl
             dist/*.tar.gz
       - name: SBOM attestation
-        uses: actions/attest@v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4
         with:
           subject-path: dist/*.whl
           sbom-path: dist/sbom.cdx.json  # literal path; globs only work in subject-path

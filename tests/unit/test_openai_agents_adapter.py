@@ -7,7 +7,7 @@ from typing import Any, cast
 import pytest
 
 from seatbelt.ledger.events import Event, Kind
-from seatbelt.ledger.store import Ledger
+from seatbelt.ledger.store import read_events
 from seatbelt.record.recorder import Recorder
 from seatbelt.verify.chain import verify_file
 
@@ -50,7 +50,7 @@ def run(tmp_path: Path) -> Iterator[tuple[Recorder, Path]]:
 
 
 def events(path: Path) -> list[Event]:
-    return list(Ledger(path, path.stem).read())
+    return list(read_events(path))
 
 
 def test_generation_and_function_spans(run: tuple[Recorder, Path]) -> None:

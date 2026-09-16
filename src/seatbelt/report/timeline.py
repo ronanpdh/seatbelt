@@ -9,16 +9,24 @@ from rich.table import Table
 from rich.text import Text
 
 from seatbelt.ledger.events import Event, Kind
-from seatbelt.ledger.store import Ledger
+from seatbelt.ledger.store import read_events
 
 
 def _summary(event: Event) -> str:
     return " ".join(_describe(event).split())[:80]
 
 
+def _failed(error: object) -> str:
+    return f"FAILED: {error}" if error else "FAILED"
+
+
 def _describe(event: Event) -> str:
     a = event.attrs
     match event.kind:
+        case Kind.RUN_START:
+            return f"seatbelt {a.get('harness.version')}"
+        case Kind.RUN_END:
+            return "ok" if a.get("run.ok") else _failed(a.get("run.error"))
         case Kind.USER_MESSAGE:
             msgs = a.get("gen_ai.input.messages", [])
             return str(msgs[-1]["content"]) if msgs else ""
@@ -26,7 +34,7 @@ def _describe(event: Event) -> str:
             return f"-> {a.get('gen_ai.request.model')}"
         case Kind.MODEL_RESPONSE:
             out = a.get("gen_ai.usage.output_tokens", "?")
-            return f"<- {a.get('gen_ai.response.model')} ({out} out)"
+            return a.get("error") or f"<- {a.get('gen_ai.response.model')} ({out} out)"
         case Kind.TOOL_CALL:
             return f"{a.get('gen_ai.tool.name')}({a.get('gen_ai.tool.call.arguments')})"
         case Kind.TOOL_RESULT:
@@ -52,7 +60,7 @@ def timeline(path: Path, console: Console | None = None) -> None:
     table.add_column("actor")
     table.add_column("what")
     table.add_column("hash", style="dim")
-    for e in Ledger(path, run_id=path.stem).read():
+    for e in read_events(path):
         actor = f"{e.actor.type}:{e.actor.id}" + (f"@{e.actor.version}" if e.actor.version else "")
         cells = (
             str(e.seq),

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from seatbelt.ledger.events import GENESIS_HASH, SCHEMA_VERSION, Event, Kind
-from seatbelt.ledger.store import Ledger, LedgerError
+from seatbelt.ledger.store import LedgerError, read_events
 
 
 @dataclass(frozen=True)
@@ -20,8 +20,8 @@ class Verdict:
 
 def verify_file(path: Path) -> Verdict:
     try:
-        events = list(Ledger(path, run_id=path.stem).read())
-    except (OSError, LedgerError) as exc:
+        events = list(read_events(path))
+    except (OSError, UnicodeDecodeError, LedgerError) as exc:
         return Verdict(False, 0, None, str(exc))
     return verify_events(events)
 
@@ -42,6 +42,8 @@ def verify_events(events: list[Event]) -> Verdict:
     last = events[-1] if events else None
     complete = (
         last is not None
+        and events[0].kind == Kind.RUN_START
+        and sum(e.kind == Kind.RUN_START for e in events) == 1
         and last.kind == Kind.RUN_END
         and last.attrs.get("run.events") == len(events)
     )

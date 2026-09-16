@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -12,6 +13,8 @@ from seatbelt import __version__
 from seatbelt.ledger.events import Actor, ActorType, Event, Kind
 from seatbelt.ledger.redact import redact
 from seatbelt.ledger.store import Ledger
+
+_RUN_ID = re.compile(r"[A-Za-z0-9_.-]+")
 
 
 class Recorder:
@@ -44,7 +47,12 @@ class Recorder:
         metadata: dict[str, Any] | None = None,
     ) -> Generator[Recorder]:
         run_id = run_id or uuid4().hex
-        ledger = Ledger(root / f"{run_id}.jsonl", run_id)
+        if not _RUN_ID.fullmatch(run_id):
+            raise ValueError(f"run_id {run_id!r} must match {_RUN_ID.pattern}")
+        path = root / f"{run_id}.jsonl"
+        if path.exists():
+            raise FileExistsError(f"{path} already holds a run")
+        ledger = Ledger(path, run_id)
         agent = Actor(type=ActorType.AGENT, id=agent_id, version=agent_version)
         rec = cls(ledger, agent)
         rec._emit(
@@ -52,14 +60,18 @@ class Recorder:
             Actor(type=ActorType.SYSTEM, id="seatbelt", version=__version__),
             {"harness.version": __version__, **(metadata or {})},
         )
-        ok = True
+        error: str | None = None
         try:
             yield rec
-        except BaseException:
-            ok = False
+        except BaseException as exc:
+            error = _describe(exc)
             raise
         finally:
-            rec._emit(Kind.RUN_END, agent, {"run.ok": ok, "run.events": ledger.length + 1})
+            rec._emit(
+                Kind.RUN_END,
+                agent,
+                {"run.ok": error is None, "run.error": error, "run.events": ledger.length + 1},
+            )
 
     # -- primitives ---------------------------------------------------------
 
@@ -92,7 +104,13 @@ class Recorder:
                 "gen_ai.request": request,
             },
         )
-        yield ModelCall(self, req, model)
+        call = ModelCall(self, req, model)
+        try:
+            yield call
+        except BaseException as exc:
+            if call.response is None:
+                call.respond({}, error=_describe(exc))
+            raise
 
     def tool_called(
         self,
@@ -159,29 +177,37 @@ class Recorder:
         )
 
 
+def _describe(exc: BaseException) -> str:
+    return f"{type(exc).__name__}: {exc}"
+
+
 class ModelCall:
     def __init__(self, rec: Recorder, request: Event, model: str) -> None:
         self._rec = rec
         self.request = request
         self.model = model
+        self.response: Event | None = None
 
     def respond(
         self,
         response: dict[str, Any],
         usage: dict[str, int] | None = None,
         response_model: str | None = None,
+        error: str | None = None,
     ) -> Event:
         """`response_model` is the exact version string the provider returned, if any."""
-        return self._rec._emit(  # pyright: ignore[reportPrivateUsage]
+        self.response = self._rec._emit(  # pyright: ignore[reportPrivateUsage]
             Kind.MODEL_RESPONSE,
             Actor(type=ActorType.MODEL, id=self.model, version=response_model),
             {
                 "gen_ai.response.model": response_model or self.model,
                 "gen_ai.response": response,
+                "error": error,
                 **{f"gen_ai.usage.{k}": v for k, v in (usage or {}).items()},
             },
             parent_id=self.request.id,
         )
+        return self.response
 
 
 class ToolCall:

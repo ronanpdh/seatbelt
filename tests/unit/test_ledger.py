@@ -1,12 +1,16 @@
+import json
+import stat
 import threading
 from pathlib import Path
 
+import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
 from seatbelt.ledger.events import GENESIS_HASH, SCHEMA_VERSION, Actor, ActorType, Event, Kind
 from seatbelt.ledger.redact import redact_text
 from seatbelt.ledger.store import Ledger
+from seatbelt.record.recorder import Recorder
 from seatbelt.verify.chain import verify_events, verify_file
 
 AGENT = Actor(type=ActorType.AGENT, id="a")
@@ -130,3 +134,89 @@ def test_redaction_catches_keys() -> None:
     assert "sk-ant-" not in redact_text("key sk-ant-abcdefghijklmnopqrstuvwxyz1234")
     assert "AKIA" not in redact_text("AKIAABCDEFGHIJKLMNOP")
     assert redact_text("nothing here") == "nothing here"
+
+
+def test_extra_keys_on_a_line_break_verification(tmp_path: Path) -> None:
+    path = tmp_path / "r.jsonl"
+    Ledger(path, "r").append(Kind.RUN_START, AGENT)
+    line = json.loads(path.read_text())
+    line["reviewer_note"] = "approved"
+    line["actor"]["role"] = "admin"
+    path.write_text(json.dumps(line) + "\n")
+    verdict = verify_file(path)
+    assert not verdict.ok
+    assert verdict.reason is not None
+    assert "extra" in verdict.reason.lower()
+
+
+def test_complete_requires_exactly_one_run_start_at_seq_zero(tmp_path: Path) -> None:
+    with Recorder.start(tmp_path, agent_id="a", run_id="r"):
+        pass
+    assert verify_file(tmp_path / "r.jsonl").complete
+    ledger = Ledger(tmp_path / "r.jsonl", "r")
+    ledger.append(Kind.RUN_START, AGENT)
+    ledger.append(Kind.RUN_END, AGENT, {"run.events": 4})
+    verdict = verify_file(tmp_path / "r.jsonl")
+    assert verdict.ok
+    assert not verdict.complete
+
+
+def test_recorder_refuses_an_existing_ledger(tmp_path: Path) -> None:
+    with Recorder.start(tmp_path, agent_id="a", run_id="r"):
+        pass
+    with pytest.raises(FileExistsError), Recorder.start(tmp_path, agent_id="a", run_id="r"):
+        pass
+
+
+@pytest.mark.parametrize("run_id", ["../escape", "a/b", "a b", "x\\y"])
+def test_recorder_rejects_unsafe_run_ids(tmp_path: Path, run_id: str) -> None:
+    with (
+        pytest.raises(ValueError, match="run_id"),
+        Recorder.start(tmp_path, agent_id="a", run_id=run_id),
+    ):
+        pass
+    assert not list(tmp_path.rglob("*.jsonl"))
+
+
+def test_ledger_is_private_to_the_writer(tmp_path: Path) -> None:
+    path = tmp_path / "r.jsonl"
+    Ledger(path, "r").append(Kind.RUN_START, AGENT)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize(
+    "secret",
+    [
+        "sk-ant-abcdefghijklmnopqrstuvwxyz1234",
+        "sk-proj-abcdefghijklmnopqrstuvwxyz1234",
+        "AKIAABCDEFGHIJKLMNOP",
+        "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+        "github_pat_11ABCDEFG0123456789abcdefghijklmnopqrstuvwxyz0123456789",
+        "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc",
+        "Bearer abc123def456ghi7",
+    ],
+)
+def test_redaction_catches_each_secret_format(secret: str) -> None:
+    assert secret not in redact_text(f"token {secret} here")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "key_sk-ant-abcdefghijklmnopqrstuvwxyz1234",
+        "AKIAABCDEFGHIJKLMNOP_x",
+        "x=sk-abcdefghijklmnopqrstuvwxyz1234",
+    ],
+)
+def test_redaction_catches_secrets_glued_to_punctuation(text: str) -> None:
+    assert "REDACTED" in redact_text(text)
+
+
+@given(st.from_regex(r"\A([a-z]{1,12} ){1,20}\Z"))
+def test_redaction_leaves_ordinary_prose_alone(prose: str) -> None:
+    assert redact_text(prose) == prose
+
+
+@pytest.mark.parametrize("text", ["the bearer of bad news", "desk-abcdefghijklmnopqrstuvwxyz"])
+def test_redaction_does_not_fire_on_word_fragments(text: str) -> None:
+    assert redact_text(text) == text

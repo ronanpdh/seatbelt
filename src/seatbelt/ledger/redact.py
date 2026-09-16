@@ -7,13 +7,14 @@ from typing import Any
 
 from pydantic import BaseModel
 
-# Deliberately conservative: better to redact a false positive than leak a key.
+# Redaction is irreversible once hashed, so each pattern needs a token shape, not just a
+# prefix: `sk-` may not follow a letter (desk-...), and a bearer token is 16+ characters.
 PATTERNS: dict[str, re.Pattern[str]] = {
     "anthropic_key": re.compile(r"sk-ant-[A-Za-z0-9_\-]{20,}"),
-    "openai_key": re.compile(r"sk-[A-Za-z0-9_\-]{20,}"),
+    "openai_key": re.compile(r"(?<![A-Za-z])sk-[A-Za-z0-9_\-]{20,}"),
     "aws_access_key": re.compile(r"AKIA[0-9A-Z]{16}"),
-    "bearer": re.compile(r"(?i)bearer\s+[A-Za-z0-9\-._~+/]+=*"),
-    "github_token": re.compile(r"gh[pousr]_[A-Za-z0-9]{30,}"),
+    "bearer": re.compile(r"(?i)\bbearer\s+[A-Za-z0-9\-._~+/]{16,}=*"),
+    "github_token": re.compile(r"gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}"),
 }
 
 

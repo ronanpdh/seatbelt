@@ -7,7 +7,7 @@ from rich.markup import escape
 from seatbelt import __version__
 from seatbelt.record.recorder import Recorder
 from seatbelt.report.timeline import timeline
-from seatbelt.verify.chain import verify_file
+from seatbelt.verify.chain import Verdict, verify_file
 
 app = typer.Typer(help="Attributable, reconstructable, provable records of agent interactions.")
 console = Console()
@@ -24,27 +24,34 @@ def version() -> None:
     console.print(__version__)
 
 
-@app.command()
-def verify(ledger: Path) -> None:
-    """Check a run ledger's hash chain. Exit code 1 if it is altered or incomplete."""
+def _check(ledger: Path) -> Verdict:
+    """Exit 1 on a broken chain; warn on an incomplete one."""
     verdict = verify_file(ledger)
-    if verdict.ok and verdict.complete:
-        console.print(f"[green]ok[/] {verdict.events} events, chain intact")
-        return
-    if verdict.ok:
+    if not verdict.ok:
+        where = "" if verdict.first_bad_seq is None else f" at seq {verdict.first_bad_seq}"
+        console.print(f"[red]BROKEN[/]{where}: {escape(verdict.reason or '')}")
+        raise typer.Exit(code=1)
+    if not verdict.complete:
         console.print(
             f"[yellow]INCOMPLETE[/] {verdict.events} events, chain intact but no matching "
             "run.end: truncated or still running"
         )
+    return verdict
+
+
+@app.command()
+def verify(ledger: Path) -> None:
+    """Check a run ledger's hash chain. Exit code 1 if it is altered or incomplete."""
+    verdict = _check(ledger)
+    if not verdict.complete:
         raise typer.Exit(code=1)
-    where = "" if verdict.first_bad_seq is None else f" at seq {verdict.first_bad_seq}"
-    console.print(f"[red]BROKEN[/]{where}: {escape(verdict.reason or '')}")
-    raise typer.Exit(code=1)
+    console.print(f"[green]ok[/] {verdict.events} events, chain intact")
 
 
 @app.command()
 def reconstruct(ledger: Path) -> None:
-    """Print the run as a timeline a reviewer can read."""
+    """Print the run as a timeline a reviewer can read. Refuses an altered ledger."""
+    _check(ledger)
     timeline(ledger, console)
 
 

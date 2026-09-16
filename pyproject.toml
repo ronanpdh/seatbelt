@@ -38,7 +38,6 @@ dev = [
     "pre-commit>=4.6.2",
     "pyright>=1.1.414",
     "pytest>=9.1.1",
-    "pytest-asyncio>=1.4.0",
     "ruff>=0.16.7",
 ]
 
@@ -74,7 +73,6 @@ venv = ".venv"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-asyncio_mode = "auto"
 markers = [
   "integration: needs Docker; skipped when it is absent",
 ]

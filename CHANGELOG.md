@@ -4,12 +4,27 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 
 ## [Unreleased]
 
+### Security
+- `Event` and `Actor` forbid unknown keys. A key injected into a ledger line previously survived `verify`, because the canonical form is a re-dump of the parsed model.
+- Redaction patterns are anchored to token shapes: `bearer` needs a 16+ character token and `sk-` may not follow a letter, so ordinary prose (`the bearer of`, `desk-...`) is no longer destroyed in the record. Fine-grained GitHub tokens (`github_pat_`) are redacted.
+- Ledger files are created mode 0600 and each event is fsynced.
+- `Recorder.start` rejects a `run_id` that is not a safe filename and refuses to append to an existing ledger.
+
 ### Added
+- `run.end` carries `run.error` (exception type and message) when a run fails, and a `model_call` whose body raises records a `model.response` with `error` before re-raising.
+- `seatbelt reconstruct` verifies first: BROKEN (exit 1) on a tampered ledger, a warning on an incomplete one. `run.start` and `run.end` rows now show the harness version and `ok`/`FAILED: <error>`.
+- `verify` reports `complete` only when the ledger has exactly one `run.start`, at seq 0.
+- `seatbelt.ledger.store.read_events`.
 - Anthropic adapter covers every call style: `messages.stream()`, `AsyncAnthropic` via `AnthropicAdapter.async_messages()`, and the beta endpoint by passing `client.beta`. All record the same ledger shape. A stream the caller abandons (break or `close()`) is recorded as what was received, with `stop_reason: null` and no tool calls; the wrapper never reads further, so exits behave exactly like the SDK's.
 - Model requests also record `thinking`, `output_config`, `stop_sequences` and `betas`.
 
+### Removed
+- `seatbelt.adapters.base.Adapter` protocol and `AnthropicAdapter.attach`: nothing consumed the protocol, and `attach` did not affect wrappers already created.
+- `Ledger.read`: use `seatbelt.ledger.store.read_events(path)`.
+
 ### Fixed
 - `Ledger.append` is thread-safe. Concurrent appends from several threads previously corrupted the chain (sequence gaps).
+- `seatbelt reconstruct` raised a traceback on a corrupt or missing ledger.
 - `create(stream=True)` raised after recording the request, leaving it unanswered; it now fails up front with a pointer to `.stream()`.
 
 ## [0.0.2] - 2026-09-15
