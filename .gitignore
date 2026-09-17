@@ -15,3 +15,6 @@ runs/
 # Signing keys from `seatbelt keygen`
 *.key
 keys/
+
+# Local agent instructions
+CLAUDE.md
