@@ -1,0 +1,157 @@
+{
+  "$defs": {
+    "NoMatch": {
+      "additionalProperties": false,
+      "properties": {
+        "no_match": {
+          "title": "No Match",
+          "type": "string"
+        }
+      },
+      "required": [
+        "no_match"
+      ],
+      "title": "NoMatch",
+      "type": "object"
+    },
+    "NoToolCall": {
+      "additionalProperties": false,
+      "properties": {
+        "no_tool_call": {
+          "title": "No Tool Call",
+          "type": "string"
+        }
+      },
+      "required": [
+        "no_tool_call"
+      ],
+      "title": "NoToolCall",
+      "type": "object"
+    },
+    "PolicyDeniedCheck": {
+      "additionalProperties": false,
+      "properties": {
+        "policy_denied": {
+          "title": "Policy Denied",
+          "type": "string"
+        }
+      },
+      "required": [
+        "policy_denied"
+      ],
+      "title": "PolicyDeniedCheck",
+      "type": "object"
+    },
+    "RunOk": {
+      "additionalProperties": false,
+      "properties": {
+        "run_ok": {
+          "title": "Run Ok",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "run_ok"
+      ],
+      "title": "RunOk",
+      "type": "object"
+    },
+    "Severity": {
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ],
+      "title": "Severity",
+      "type": "string"
+    },
+    "ToolCallCheck": {
+      "additionalProperties": false,
+      "properties": {
+        "tool_call": {
+          "title": "Tool Call",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool_call"
+      ],
+      "title": "ToolCallCheck",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "pattern": "^[a-z0-9-]+$",
+      "title": "Id",
+      "type": "string"
+    },
+    "title": {
+      "title": "Title",
+      "type": "string"
+    },
+    "owasp": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Owasp",
+      "type": "array"
+    },
+    "atlas": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Atlas",
+      "type": "array"
+    },
+    "severity": {
+      "$ref": "#/$defs/Severity"
+    },
+    "user_message": {
+      "title": "User Message",
+      "type": "string"
+    },
+    "tool_results": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Tool Results",
+      "type": "object"
+    },
+    "checks": {
+      "items": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/NoToolCall"
+          },
+          {
+            "$ref": "#/$defs/ToolCallCheck"
+          },
+          {
+            "$ref": "#/$defs/PolicyDeniedCheck"
+          },
+          {
+            "$ref": "#/$defs/NoMatch"
+          },
+          {
+            "$ref": "#/$defs/RunOk"
+          }
+        ]
+      },
+      "minItems": 1,
+      "title": "Checks",
+      "type": "array"
+    }
+  },
+  "required": [
+    "id",
+    "title",
+    "severity",
+    "user_message",
+    "checks"
+  ],
+  "title": "Scenario",
+  "type": "object"
+}

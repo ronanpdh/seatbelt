@@ -20,7 +20,7 @@ Signed Ed25519 attestation of each run (`seatbelt.attest`, `keygen`, `attest`, `
 
 ## 0.1.0
 
-- Adversarial scenario pack (`seatbelt.scenarios`) with a shipped YAML corpus, each scenario mapped to the OWASP Agentic Top 10 and, where one exists, a MITRE ATLAS technique
+- Done: adversarial scenario pack (`seatbelt.scenarios`) with a shipped YAML corpus, each scenario mapped to the OWASP Agentic Top 10 and, where one exists, a MITRE ATLAS technique
 - Sandboxed target runs in Docker, no network unless a scenario declares egress
 - Evidence pack format, documented as a versioned spec
 - Signed releases (Sigstore), CycloneDX SBOM and SLSA provenance

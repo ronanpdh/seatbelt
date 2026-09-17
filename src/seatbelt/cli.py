@@ -1,9 +1,13 @@
+import importlib
+import os
+import sys
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast
 
 import typer
 from rich.console import Console
 from rich.markup import escape
+from rich.table import Column, Table
 
 from seatbelt import __version__
 from seatbelt.attest.manifest import AttestError, sidecar
@@ -12,6 +16,9 @@ from seatbelt.attest.sign import attest as sign_ledger
 from seatbelt.attest.sign import keygen as make_keys
 from seatbelt.record.recorder import Recorder
 from seatbelt.report.timeline import timeline
+from seatbelt.scenarios.model import OWASP_AGENTIC, ScenarioError, load_corpus
+from seatbelt.scenarios.runner import Target
+from seatbelt.scenarios.runner import run as run_corpus
 from seatbelt.verify.attest import Attestation, AttestVerdict, verify_attestation
 from seatbelt.verify.chain import Verdict, verify_file
 
@@ -121,3 +128,65 @@ def demo(out: Path = Path("runs")) -> None:
         rec.action("POST /refunds", target="payments-api", decision_id=d.id)
         rec.outcome("refund issued", success=True)
         console.print(f"wrote {rec.ledger.path}")
+
+
+def _import_target(spec: str) -> Target:
+    sys.path.insert(0, os.getcwd())  # console scripts do not put the cwd on the path
+    module, _, attr = spec.partition(":")
+    try:  # user code runs at import, so anything can go wrong
+        fn = getattr(importlib.import_module(module), attr)
+    except Exception as exc:
+        console.print(f"[red]cannot import target {escape(spec)}[/]: {escape(str(exc))}")
+        raise typer.Exit(code=2) from exc
+    if not callable(fn):
+        console.print(f"[red]target {escape(spec)} is not callable[/]")
+        raise typer.Exit(code=2)
+    return cast(Target, fn)  # the callable's signature cannot be checked at runtime
+
+
+@app.command()
+def scenarios(
+    corpus: Path,
+    target: Annotated[
+        str | None, typer.Option(help="module:function that drives your agent")
+    ] = None,
+    out: Path = Path("runs"),
+    key: Annotated[
+        Path | None, typer.Option(help="private key from keygen; signs each ledger")
+    ] = None,
+    list_: Annotated[bool, typer.Option("--list", help="show the corpus and exit")] = False,
+) -> None:
+    """Run the adversarial corpus against a target. Exit 1 on any finding."""
+    try:
+        pack = load_corpus(corpus)
+    except ScenarioError as exc:
+        console.print(f"[red]{escape(str(exc))}[/]")
+        raise typer.Exit(code=1) from exc
+    if list_:
+        table = Table(Column("scenario", no_wrap=True), "owasp", "severity", "title")
+        for s in pack:
+            owasp = ", ".join(f"{i} {OWASP_AGENTIC[i]}" for i in s.owasp) or "control"
+            table.add_row(s.id, owasp, s.severity, escape(s.title))
+        console.print(table)
+        return
+    if target is None:
+        console.print("[red]pass --target module:function, or --list to see the corpus[/]")
+        raise typer.Exit(code=2)
+    fn = _import_target(target)
+    try:
+        signer = Signer.from_file(key) if key else None
+        report = run_corpus(corpus, fn, out, signer=signer)
+    except (AttestError, ScenarioError) as exc:
+        console.print(f"[red]{escape(str(exc))}[/]")
+        raise typer.Exit(code=1) from exc
+    table = Table(Column("scenario", no_wrap=True), "owasp", "severity", "result", "findings")
+    for s, r in zip(pack, report.results, strict=True):
+        verdict = "[green]PASS[/]" if r.findings == 0 else "[red]FAIL[/]"
+        table.add_row(s.id, ", ".join(s.owasp) or "control", s.severity, verdict, str(r.findings))
+    console.print(table)
+    for f in report.findings:
+        evidence = escape(", ".join(f.evidence))
+        console.print(f"  {escape(f.scenario_id)}: {escape(f.check)} (evidence: {evidence})")
+    console.print(f"wrote {escape(str(out / 'findings.json'))}")
+    if report.findings:
+        raise typer.Exit(code=1)

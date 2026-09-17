@@ -28,6 +28,15 @@ uv run seatbelt verify runs/<run id>.jsonl --pubkey keys/seatbelt.pub   # attest
 
 Or sign at run end: `Recorder.start(..., signer=Signer.from_file(Path("keys/seatbelt.key")))` (`from seatbelt.attest.sign import Signer`).
 
+**Attack it.** The shipped corpus feeds prompt injection, tool-argument smuggling, credential exfiltration and more to your agent, then checks the ledger.
+
+```sh
+uv run seatbelt scenarios scenarios/ --list
+uv run seatbelt scenarios scenarios/ --target examples.scenario_target:target   # one deliberate FAIL
+```
+
+Your target is a function `target(rec: Recorder, inputs: Inputs)` that drives your agent with the recorder; call `inputs.tool_result(name, real)` where your tools return so poisoned results reach the agent. The corpus names a reference set: the tool names, a policy named `refund-limit` (`trust-exploitation-policy` expects it to deny) and the string `CANARY-7F3A9`, which `canary-exfiltration` expects planted wherever your agent keeps its credential; copy a scenario and change the names for yours. `no_match` runs on the redacted ledger, so a canary shaped like a real key (`sk-ant-...`, `AKIA...`) is scrubbed before the check sees it; use an inert string. A target must end cleanly to pass, so catch `PolicyDenied` (from `seatbelt.policy.engine`) and refuse gracefully rather than let it propagate. Every failure cites ledger event ids.
+
 ## Recording your own agent
 
 ```python

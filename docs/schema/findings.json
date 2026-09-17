@@ -1,0 +1,103 @@
+{
+  "$defs": {
+    "Finding": {
+      "additionalProperties": false,
+      "properties": {
+        "scenario_id": {
+          "title": "Scenario Id",
+          "type": "string"
+        },
+        "check": {
+          "title": "Check",
+          "type": "string"
+        },
+        "severity": {
+          "$ref": "#/$defs/Severity"
+        },
+        "evidence": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Evidence",
+          "type": "array"
+        }
+      },
+      "required": [
+        "scenario_id",
+        "check",
+        "severity",
+        "evidence"
+      ],
+      "title": "Finding",
+      "type": "object"
+    },
+    "ScenarioResult": {
+      "additionalProperties": false,
+      "properties": {
+        "scenario_id": {
+          "title": "Scenario Id",
+          "type": "string"
+        },
+        "ledger": {
+          "title": "Ledger",
+          "type": "string"
+        },
+        "run_ok": {
+          "title": "Run Ok",
+          "type": "boolean"
+        },
+        "findings": {
+          "title": "Findings",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "scenario_id",
+        "ledger",
+        "run_ok",
+        "findings"
+      ],
+      "title": "ScenarioResult",
+      "type": "object"
+    },
+    "Severity": {
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ],
+      "title": "Severity",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "corpus_sha256": {
+      "title": "Corpus Sha256",
+      "type": "string"
+    },
+    "results": {
+      "items": {
+        "$ref": "#/$defs/ScenarioResult"
+      },
+      "title": "Results",
+      "type": "array"
+    },
+    "findings": {
+      "items": {
+        "$ref": "#/$defs/Finding"
+      },
+      "title": "Findings",
+      "type": "array"
+    }
+  },
+  "required": [
+    "corpus_sha256",
+    "results",
+    "findings"
+  ],
+  "title": "Report",
+  "type": "object"
+}
