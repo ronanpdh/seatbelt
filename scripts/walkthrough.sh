@@ -70,6 +70,29 @@ for t in edit policy delete reorder corrupt truncate; do
   expect_fail "$t" "tamper/$t.jsonl"
 done
 
+step "7. Attest (signed manifest catches a forged tail the chain accepts)"
+sb keygen keys
+show "seatbelt attest $LEDGER --key keys/seatbelt.key"
+sb attest "$LEDGER" --key keys/seatbelt.key
+show "seatbelt verify $LEDGER --pubkey keys/seatbelt.pub"
+sb verify "$LEDGER" --pubkey keys/seatbelt.pub
+cp "$LEDGER" tamper/forged.jsonl
+cp "${LEDGER%.jsonl}.attest.json" tamper/forged.attest.json
+uv run --quiet --project "$REPO" python - tamper/forged.jsonl <<'EOF'
+import sys
+from pathlib import Path
+from seatbelt.ledger.events import Actor, ActorType, Kind
+from seatbelt.ledger.store import Ledger, read_events
+p = Path(sys.argv[1]); lines = p.read_text().splitlines()
+p.write_text("\n".join(lines[:-2]) + "\n")
+n = sum(1 for _ in read_events(p)) + 1
+Ledger(p, next(read_events(p)).run_id).append(Kind.RUN_END, Actor(type=ActorType.AGENT, id="x"), {"run.ok": True, "run.error": None, "run.events": n})
+EOF
+show "seatbelt verify tamper/forged.jsonl            (chain alone: passes)"
+sb verify tamper/forged.jsonl || true
+show "seatbelt verify tamper/forged.jsonl --pubkey keys/seatbelt.pub"
+if sb verify tamper/forged.jsonl --pubkey keys/seatbelt.pub | head -1; then echo "  forged tail: NOT DETECTED"; FAILED=1; fi
+
 step "Result"
 echo "  workdir: $WORK"
 if [[ $FAILED == 0 ]]; then echo "  all checks passed"; else echo "  CHECKS FAILED"; exit 1; fi

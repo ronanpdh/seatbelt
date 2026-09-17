@@ -11,3 +11,7 @@ wheels/
 
 # Demo run output
 runs/
+
+# Signing keys from `seatbelt keygen`
+*.key
+keys/

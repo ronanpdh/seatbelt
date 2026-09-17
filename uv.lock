@@ -1234,6 +1234,7 @@ name = "seatbelt"
 version = "0.0.3"
 source = { editable = "." }
 dependencies = [
+    { name = "cryptography" },
     { name = "pydantic" },
     { name = "rich" },
     { name = "typer" },
@@ -1261,6 +1262,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=1.5.0" },
+    { name = "cryptography", specifier = ">=50.0.1" },
     { name = "openai-agents", marker = "extra == 'openai-agents'", specifier = ">=0.22.2" },
     { name = "pydantic", specifier = ">=2.13.5" },
     { name = "rich", specifier = ">=15.0.0" },

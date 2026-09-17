@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from seatbelt import __version__
+from seatbelt.attest.manifest import sidecar
+from seatbelt.attest.sign import Signer, attest
 from seatbelt.ledger.events import Actor, ActorType, Event, Kind
 from seatbelt.ledger.redact import redact
 from seatbelt.ledger.store import Ledger
@@ -51,13 +53,14 @@ class Recorder:
         run_id: str | None = None,
         metadata: dict[str, Any] | None = None,
         policy: Policy | None = None,
+        signer: Signer | None = None,
     ) -> Generator[Recorder]:
         run_id = run_id or uuid4().hex
         if not _RUN_ID.fullmatch(run_id):
             raise ValueError(f"run_id {run_id!r} must match {_RUN_ID.pattern}")
         path = root / f"{run_id}.jsonl"
-        if path.exists():
-            raise FileExistsError(f"{path} already holds a run")
+        if path.exists() or (signer is not None and sidecar(path).exists()):
+            raise FileExistsError(f"{path} or its attestation already exists")
         ledger = Ledger(path, run_id)
         agent = Actor(type=ActorType.AGENT, id=agent_id, version=agent_version)
         rec = cls(ledger, agent, policy)
@@ -78,6 +81,8 @@ class Recorder:
                 agent,
                 {"run.ok": error is None, "run.error": error, "run.events": ledger.length + 1},
             )
+            if signer is not None:
+                attest(path, signer)  # a signed failure is still evidence
 
     # -- primitives ---------------------------------------------------------
 

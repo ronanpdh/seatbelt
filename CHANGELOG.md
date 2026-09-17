@@ -4,6 +4,10 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 
 ## [Unreleased]
 
+### Added
+- Attestation (`seatbelt.attest`): `Recorder.start(..., signer=Signer.from_file(key))` signs an Ed25519 manifest (final hash, event count, file digest) into `<run id>.attest.json` at run end, failed runs included. `seatbelt keygen` writes the key pair, `seatbelt attest <ledger> --key` signs after the fact, and `seatbelt verify --pubkey` reports attested, FORGED (exit 1), UNCHECKED (sidecar but no key) or unattested. A truncated or rewritten tail, which the chain check alone accepts, is now detected. See ADR 0002.
+- `cryptography` is a dependency.
+
 ## [0.0.3] - 2026-09-17
 
 ### Security

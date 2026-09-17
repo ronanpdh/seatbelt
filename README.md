@@ -6,7 +6,7 @@ Seatbelt is a model-agnostic harness for AI agents. It records what an agent did
 
 **What it records.** Every step of an agent run: user messages, model requests and responses (with the exact model version and token usage), tool calls and results, policy checks, decisions with their authority and basis, actions and outcomes.
 
-**What it produces.** One JSONL file per run. Each event is SHA-256 hash-chained to the one before it, and secrets are redacted before anything is hashed or written. Any edit, reorder or deletion inside the chain makes `seatbelt verify` fail and name the first bad event.
+**What it produces.** One JSONL file per run. Each event is SHA-256 hash-chained to the one before it, and secrets are redacted before anything is hashed or written. Any edit, reorder or deletion inside the chain makes `seatbelt verify` fail and name the first bad event. A signed manifest beside it pins the final hash, so a rewritten tail fails too.
 
 **Try it in five minutes.**
 
@@ -17,6 +17,16 @@ uv run seatbelt demo                        # writes runs/<run id>.jsonl
 uv run seatbelt verify runs/<run id>.jsonl
 uv run seatbelt reconstruct runs/<run id>.jsonl
 ```
+
+**Prove the tail too.** The chain catches edits inside the file; a signed manifest catches a rewritten ending.
+
+```sh
+uv run seatbelt keygen keys                                  # seatbelt.key (private), seatbelt.pub, both 0600
+uv run seatbelt attest runs/<run id>.jsonl --key keys/seatbelt.key
+uv run seatbelt verify runs/<run id>.jsonl --pubkey keys/seatbelt.pub   # attested, or FORGED / UNATTESTED
+```
+
+Or sign at run end: `Recorder.start(..., signer=Signer.from_file(Path("keys/seatbelt.key")))` (`from seatbelt.attest.sign import Signer`).
 
 ## Recording your own agent
 

@@ -14,7 +14,7 @@ Anthropic Messages API and OpenAI Agents SDK adapters, ledger schema version, si
 
 Policy engine at the tool boundary, Anthropic adapter for stream/async/beta calls, ledger hardening (unknown keys rejected, 0600 + fsync, thread-safe appends).
 
-## 0.0.4
+## 0.0.4 (in progress)
 
 - Attestation (`seatbelt.attest`): a signed manifest over each finished run, so truncating the end of a ledger is detectable as well as edits inside it
 
