@@ -1,13 +1,14 @@
-"""Write the JSON schemas for the scenario file and the findings report to docs/schema/."""
+"""Write the JSON schemas for scenarios, findings reports and pack manifests to docs/schema/."""
 
 import json
 from pathlib import Path
 
+from seatbelt.report.pack import PackManifest
 from seatbelt.scenarios.model import Scenario
 from seatbelt.scenarios.runner import Report
 
 OUT = Path(__file__).resolve().parent.parent / "docs" / "schema"
-SCHEMAS = {"scenario.json": Scenario, "findings.json": Report}
+SCHEMAS = {"scenario.json": Scenario, "findings.json": Report, "pack.json": PackManifest}
 
 if __name__ == "__main__":
     OUT.mkdir(parents=True, exist_ok=True)

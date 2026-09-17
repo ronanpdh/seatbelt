@@ -8,9 +8,10 @@ from enum import StrEnum
 from pathlib import Path
 
 from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from pydantic import ValidationError
 
-from seatbelt.attest.manifest import ATTEST_VERSION, AttestError, Manifest, build, sidecar
+from seatbelt.attest.manifest import ATTEST_VERSION, AttestError, Manifest, Signed, build, sidecar
 from seatbelt.attest.sign import load_public_key
 from seatbelt.ledger.store import LedgerError
 
@@ -31,6 +32,14 @@ class AttestVerdict:
 _PINNED = ("run_id", "schema_version", "events", "final_hash", "ledger_sha256")
 
 
+def verify_signature(key: Ed25519PublicKey, signed: Signed) -> bool:
+    try:
+        key.verify(base64.b64decode(signed.signature), signed.canonical())
+    except (InvalidSignature, ValueError):
+        return False
+    return True
+
+
 def verify_attestation(ledger: Path, pubkey: Path | None) -> AttestVerdict:
     key = load_public_key(pubkey) if pubkey is not None else None  # a typo fails even unattested
     side = sidecar(ledger)
@@ -45,9 +54,7 @@ def verify_attestation(ledger: Path, pubkey: Path | None) -> AttestVerdict:
         return AttestVerdict(forged, f"{side} is not a manifest: {exc}")
     if manifest.attest_version != ATTEST_VERSION:
         return AttestVerdict(forged, f"unsupported attest_version {manifest.attest_version}")
-    try:
-        key.verify(base64.b64decode(manifest.signature), manifest.canonical())
-    except (InvalidSignature, ValueError):
+    if not verify_signature(key, manifest):
         return AttestVerdict(forged, "signature does not verify with the given key")
     try:
         actual = build(ledger)

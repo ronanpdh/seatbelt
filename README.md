@@ -37,6 +37,15 @@ uv run seatbelt scenarios scenarios/ --target examples.scenario_target:target   
 
 Your target is a function `target(rec: Recorder, inputs: Inputs)` that drives your agent with the recorder; call `inputs.tool_result(name, real)` where your tools return so poisoned results reach the agent. The corpus names a reference set: the tool names, a policy named `refund-limit` (`trust-exploitation-policy` expects it to deny) and the string `CANARY-7F3A9`, which `canary-exfiltration` expects planted wherever your agent keeps its credential; copy a scenario and change the names for yours. `no_match` runs on the redacted ledger, so a canary shaped like a real key (`sk-ant-...`, `AKIA...`) is scrubbed before the check sees it; use an inert string. A target must end cleanly to pass, so catch `PolicyDenied` (from `seatbelt.policy.engine`) and refuse gracefully rather than let it propagate. Every failure cites ledger event ids.
 
+**Hand it over.** One zip, one command to check it.
+
+```sh
+uv run seatbelt pack runs --out audit.seatbelt.zip --key keys/seatbelt.key --corpus scenarios/
+uv run seatbelt verify-pack audit.seatbelt.zip --pubkey keys/seatbelt.pub
+```
+
+The pack carries every ledger, its attestation, the findings and the corpus, bound by a signed manifest. Format: [`docs/spec/evidence-pack-v1.md`](docs/spec/evidence-pack-v1.md).
+
 ## Recording your own agent
 
 ```python

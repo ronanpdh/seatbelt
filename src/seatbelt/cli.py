@@ -15,6 +15,9 @@ from seatbelt.attest.sign import Signer
 from seatbelt.attest.sign import attest as sign_ledger
 from seatbelt.attest.sign import keygen as make_keys
 from seatbelt.record.recorder import Recorder
+from seatbelt.report.pack import PackError, PackStatus
+from seatbelt.report.pack import build as build_pack
+from seatbelt.report.pack import verify_pack as check_pack
 from seatbelt.report.timeline import timeline
 from seatbelt.scenarios.model import OWASP_AGENTIC, ScenarioError, load_corpus
 from seatbelt.scenarios.runner import Target
@@ -112,6 +115,53 @@ def attest(
         console.print(f"[red]{escape(str(exc))}[/]")
         raise typer.Exit(code=1) from exc
     console.print(f"wrote {out}")
+
+
+KeyOpt = Annotated[Path | None, typer.Option(help="private key from keygen; signs the output")]
+
+
+@app.command()
+def pack(
+    runs_dir: Path,
+    out: Annotated[Path, typer.Option(help="evidence pack to write, e.g. audit.seatbelt.zip")],
+    key: KeyOpt = None,
+    corpus: Annotated[
+        Path | None, typer.Option(help="scenario corpus to include; must match findings.json")
+    ] = None,
+) -> None:
+    """Bundle a runs directory into an evidence pack. Refuses a broken ledger."""
+    try:
+        signer = Signer.from_file(key) if key else None
+        manifest = build_pack(runs_dir, out, signer=signer, corpus=corpus)
+    except (AttestError, PackError) as exc:
+        console.print(f"[red]{escape(str(exc))}[/]")
+        raise typer.Exit(code=1) from exc
+    console.print(
+        f"wrote {escape(str(out))}: {len(manifest.runs)} runs, {len(manifest.members)} members"
+    )
+
+
+@app.command(name="verify-pack")
+def verify_pack_command(path: Path, pubkey: PubKey = None) -> None:
+    """Check an evidence pack offline: manifest, signature, members, chains, attestations."""
+    try:
+        verdict = check_pack(path, pubkey)
+    except AttestError as exc:
+        console.print(f"[red]{escape(str(exc))}[/]")
+        raise typer.Exit(code=1) from exc
+    if verdict.status is PackStatus.FORGED:
+        console.print(f"[red]FORGED[/]: {escape(verdict.reason or '')}")
+        raise typer.Exit(code=1)
+    table = Table(Column("run", no_wrap=True), "chain", "attestation")
+    for s in verdict.ledgers:
+        table.add_row(escape(s.run_id), s.chain, s.attestation)
+    console.print(table)
+    if verdict.status is not PackStatus.ATTESTED:
+        console.print(f"[yellow]{verdict.status.upper()}[/] pack signature not checked")
+    if not verdict.ok:
+        console.print("[red]BROKEN[/] a ledger in this pack fails its chain check")
+        raise typer.Exit(code=1)
+    console.print(f"[green]ok[/] {len(verdict.ledgers)} runs, pack {verdict.status}")
 
 
 @app.command()

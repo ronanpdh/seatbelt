@@ -19,9 +19,20 @@ class AttestError(Exception):
     """Raised when a key or manifest cannot be used."""
 
 
-class Manifest(BaseModel):
+class Signed(BaseModel):
+    """Base for anything the Ed25519 key signs: canonical form is everything but `signature`."""
+
     model_config = ConfigDict(extra="forbid")
 
+    public_key: str = ""  # informational; trust comes from the verifier's own key file
+    signature: str = ""
+
+    def canonical(self) -> bytes:
+        data = self.model_dump(mode="json", exclude={"signature"})
+        return json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
+
+
+class Manifest(Signed):
     attest_version: int
     run_id: str
     schema_version: int
@@ -30,12 +41,6 @@ class Manifest(BaseModel):
     ledger_sha256: str
     harness: str
     signed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    public_key: str = ""  # informational; trust comes from the verifier's own key file
-    signature: str = ""
-
-    def canonical(self) -> bytes:
-        data = self.model_dump(mode="json", exclude={"signature"})
-        return json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
 
 
 def sidecar(ledger: Path) -> Path:

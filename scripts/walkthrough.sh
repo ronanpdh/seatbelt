@@ -93,6 +93,22 @@ sb verify tamper/forged.jsonl || true
 show "seatbelt verify tamper/forged.jsonl --pubkey keys/seatbelt.pub"
 if sb verify tamper/forged.jsonl --pubkey keys/seatbelt.pub | head -1; then echo "  forged tail: NOT DETECTED"; FAILED=1; fi
 
+step "8. Evidence pack (one signed zip; verify-pack re-checks every member offline)"
+show "seatbelt pack runs --out audit.seatbelt.zip --key keys/seatbelt.key"
+sb pack runs --out audit.seatbelt.zip --key keys/seatbelt.key
+show "seatbelt verify-pack audit.seatbelt.zip --pubkey keys/seatbelt.pub"
+sb verify-pack audit.seatbelt.zip --pubkey keys/seatbelt.pub
+uv run --quiet --project "$REPO" python - audit.seatbelt.zip tamper/pack.zip <<'EOF'
+import sys, zipfile
+src, dst = sys.argv[1:]
+with zipfile.ZipFile(src) as a, zipfile.ZipFile(dst, "w") as b:
+    for n in a.namelist():
+        if not n.endswith(".attest.json"):  # drop every attestation sidecar
+            b.writestr(n, a.read(n))
+EOF
+show "seatbelt verify-pack tamper/pack.zip --pubkey keys/seatbelt.pub   (sidecars removed)"
+if sb verify-pack tamper/pack.zip --pubkey keys/seatbelt.pub | head -1; then echo "  pack tamper: NOT DETECTED"; FAILED=1; fi
+
 step "Result"
 echo "  workdir: $WORK"
 if [[ $FAILED == 0 ]]; then echo "  all checks passed"; else echo "  CHECKS FAILED"; exit 1; fi

@@ -10,7 +10,7 @@ from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
-from seatbelt.attest.manifest import AttestError, Manifest, build, sidecar
+from seatbelt.attest.manifest import AttestError, Signed, build, sidecar
 
 KEY_FILE = "seatbelt.key"
 PUB_FILE = "seatbelt.pub"
@@ -35,7 +35,7 @@ class Signer:
             raise AttestError(f"{path}: not an Ed25519 key")
         return cls(key)
 
-    def sign(self, manifest: Manifest) -> Manifest:
+    def sign[M: Signed](self, manifest: M) -> M:
         public = base64.b64encode(self._key.public_key().public_bytes_raw()).decode()
         unsigned = manifest.model_copy(update={"public_key": public})
         signature = base64.b64encode(self._key.sign(unsigned.canonical())).decode()

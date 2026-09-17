@@ -1,0 +1,129 @@
+{
+  "$defs": {
+    "Member": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        },
+        "bytes": {
+          "title": "Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "bytes"
+      ],
+      "title": "Member",
+      "type": "object"
+    },
+    "RunSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "events": {
+          "title": "Events",
+          "type": "integer"
+        },
+        "complete": {
+          "title": "Complete",
+          "type": "boolean"
+        },
+        "attested": {
+          "title": "Attested",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "run_id",
+        "events",
+        "complete",
+        "attested"
+      ],
+      "title": "RunSummary",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "public_key": {
+      "default": "",
+      "title": "Public Key",
+      "type": "string"
+    },
+    "signature": {
+      "default": "",
+      "title": "Signature",
+      "type": "string"
+    },
+    "pack_version": {
+      "title": "Pack Version",
+      "type": "integer"
+    },
+    "harness": {
+      "title": "Harness",
+      "type": "string"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "members": {
+      "items": {
+        "$ref": "#/$defs/Member"
+      },
+      "title": "Members",
+      "type": "array"
+    },
+    "runs": {
+      "items": {
+        "$ref": "#/$defs/RunSummary"
+      },
+      "title": "Runs",
+      "type": "array"
+    },
+    "findings": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Findings"
+    },
+    "corpus_sha256": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Corpus Sha256"
+    }
+  },
+  "required": [
+    "pack_version",
+    "harness",
+    "members",
+    "runs"
+  ],
+  "title": "PackManifest",
+  "type": "object"
+}
