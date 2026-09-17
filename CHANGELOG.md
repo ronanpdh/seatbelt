@@ -4,6 +4,8 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 
 ## [Unreleased]
 
+## [0.0.3] - 2026-09-17
+
 ### Security
 - `Event` and `Actor` forbid unknown keys. A key injected into a ledger line previously survived `verify`, because the canonical form is a re-dump of the parsed model.
 - Redaction patterns are anchored to token shapes: `bearer` needs a 16+ character token and `sk-` may not follow a letter, so ordinary prose (`the bearer of`, `desk-...`) is no longer destroyed in the record. Fine-grained GitHub tokens (`github_pat_`) are redacted.

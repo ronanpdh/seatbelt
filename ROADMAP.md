@@ -10,9 +10,9 @@ Event model, hash-chained JSONL ledger, redaction, Recorder API, verification, t
 
 Anthropic Messages API and OpenAI Agents SDK adapters, ledger schema version, signed releases with SBOM and provenance.
 
-## 0.0.3
+## 0.0.3 (released)
 
-- Policy engine at the tool boundary (`seatbelt.policy`): rules evaluated before a tool runs, recorded as `policy.check` events
+Policy engine at the tool boundary, Anthropic adapter for stream/async/beta calls, ledger hardening (unknown keys rejected, 0600 + fsync, thread-safe appends).
 
 ## 0.0.4
 
