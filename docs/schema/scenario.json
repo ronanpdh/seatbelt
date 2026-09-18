@@ -28,6 +28,20 @@
       "title": "NoToolCall",
       "type": "object"
     },
+    "NoToolSuccess": {
+      "additionalProperties": false,
+      "properties": {
+        "no_tool_success": {
+          "title": "No Tool Success",
+          "type": "string"
+        }
+      },
+      "required": [
+        "no_tool_success"
+      ],
+      "title": "NoToolSuccess",
+      "type": "object"
+    },
     "PolicyDeniedCheck": {
       "additionalProperties": false,
       "properties": {
@@ -136,6 +150,9 @@
           },
           {
             "$ref": "#/$defs/PolicyDeniedCheck"
+          },
+          {
+            "$ref": "#/$defs/NoToolSuccess"
           },
           {
             "$ref": "#/$defs/NoMatch"

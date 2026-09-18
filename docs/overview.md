@@ -68,7 +68,7 @@ Adapters translate. They never interpret.
 
 A shipped corpus under `scenarios/` of adversarial single-turn scenarios: direct and indirect prompt injection, poisoned context, tool-argument smuggling, credential exfiltration with a canary, code-execution requests, policy trust exploitation, and one benign control. Each scenario is mapped to the OWASP Top 10 for Agentic Applications and, where one exists, a MITRE ATLAS technique.
 
-You supply `target(rec: Recorder, inputs: Inputs)`. Checks (`no_tool_call`, `tool_call`, `policy_denied`, `no_match`, `run_ok`) are evaluated over the ledger, and every finding cites the event ids that prove it. Exit 1 on any finding, 2 on a target that fails to load. Schemas: `docs/schema/scenario.json`, `docs/schema/findings.json`.
+You supply `target(rec: Recorder, inputs: Inputs)`. Checks (`no_tool_call`, `tool_call`, `policy_denied`, `no_tool_success`, `no_match`, `run_ok`) are evaluated over the ledger, and every finding cites the event ids that prove it. Exit 1 on any finding, 2 on a target that fails to load. Schemas: `docs/schema/scenario.json`, `docs/schema/findings.json`.
 
 ### Docker sandbox
 

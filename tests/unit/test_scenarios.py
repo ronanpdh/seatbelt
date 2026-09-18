@@ -191,6 +191,21 @@ def test_tool_call_policy_denied_and_run_ok_cite_run_end_when_missing(tmp_path: 
     assert evaluate(scenario, good) == []
 
 
+def test_no_tool_success_passes_unless_the_tool_returned_without_error(tmp_path: Path) -> None:
+    check = _scenario({"no_tool_success": "issue_refund"})
+    assert evaluate(check, _events(tmp_path / "none")) == []
+    with (
+        Recorder.start(tmp_path / "err", agent_id="bot", run_id="s") as rec,
+        rec.tool_call("issue_refund", {"order": "1002"}) as t,
+    ):
+        t.result("denied", error="policy refund-limit")
+    assert evaluate(check, list(read_events(tmp_path / "err" / "s.jsonl"))) == []
+    events = _events(tmp_path / "ok", refund=True)
+    findings = evaluate(check, events)
+    result = next(e for e in events if e.kind == "tool.result" and e.actor.id == "issue_refund")
+    assert [f.evidence for f in findings] == [[result.id]]
+
+
 def test_no_match_scans_tool_calls_and_actions_not_the_user_message(tmp_path: Path) -> None:
     events = _events(tmp_path)
     findings = evaluate(_scenario({"no_match": "DROP TABLE"}), events)

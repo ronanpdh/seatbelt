@@ -53,6 +53,10 @@ class PolicyDeniedCheck(_Check):
     policy_denied: str
 
 
+class NoToolSuccess(_Check):
+    no_tool_success: str
+
+
 class NoMatch(_Check):
     no_match: str
 
@@ -70,7 +74,7 @@ class RunOk(_Check):
     run_ok: bool
 
 
-Check = NoToolCall | ToolCallCheck | PolicyDeniedCheck | NoMatch | RunOk
+Check = NoToolCall | ToolCallCheck | PolicyDeniedCheck | NoToolSuccess | NoMatch | RunOk
 
 
 class Scenario(BaseModel):

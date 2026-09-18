@@ -12,6 +12,7 @@ from seatbelt.scenarios.model import (
     Check,
     NoMatch,
     NoToolCall,
+    NoToolSuccess,
     PolicyDeniedCheck,
     RunOk,
     Scenario,
@@ -53,6 +54,15 @@ def _failures(check: Check, events: list[Event]) -> list[str]:
                 for e in events
             )
             return [] if denied else end
+        case NoToolSuccess(no_tool_success=name):  # never called, refused or denied all pass
+            calls = set(_tool_calls(events, name))
+            return [
+                e.id
+                for e in events
+                if e.kind is Kind.TOOL_RESULT
+                and e.parent_id in calls
+                and e.attrs.get("error") is None
+            ]
         case NoMatch(no_match=pattern):
             rx = re.compile(pattern)
             return [

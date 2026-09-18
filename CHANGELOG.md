@@ -5,6 +5,7 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 ## [Unreleased]
 
 ### Added
+- Scenario check `no_tool_success: <tool>`: fails on a successful `tool.result` for that tool, so a self-refusal, a policy denial and no call at all pass alike. `trust-exploitation-policy` uses it instead of `policy_denied`, which failed an agent that refused the refund without ever calling the tool.
 - `examples/anthropic_scenario_target.py`: Claude as the support agent for the scenario corpus, recorded through the adapter, with a `refund-limit` policy check in the tool executor.
 
 ## [0.1.0] - 2026-09-18
