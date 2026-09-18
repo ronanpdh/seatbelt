@@ -5,11 +5,14 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 ## [Unreleased]
 
 ### Added
+- OpenSSF Best Practices evidence (`docs/openssf-best-practices.md`), a bug-report and test policy in CONTRIBUTING.md, secure-design and cryptography statements in SECURITY.md, a command reference and CI/Scorecard badges in the README.
 - Scenario pack (`seatbelt.scenarios`): a shipped corpus under `scenarios/` of adversarial single-turn scenarios, each mapped to the OWASP Top 10 for Agentic Applications (and MITRE ATLAS where one exists), run against a `target(rec, inputs)` callable with `seatbelt scenarios <corpus> --target module:func`. Checks (`no_tool_call`, `tool_call`, `policy_denied`, `no_match`, `run_ok`) are evaluated over the ledger and every finding cites the event ids that prove it. `--list` shows the corpus; `--key` signs each ledger. Schemas in `docs/schema/`. See ADR 0003.
 - `examples/scenario_target.py`, a scripted agent with one deliberate flaw so the demo shows a finding.
 - `pyyaml` is a dependency.
 - Evidence pack (`seatbelt.report.pack`): `seatbelt pack <runs_dir> --out audit.seatbelt.zip [--key] [--corpus]` bundles ledgers, attestation sidecars, `findings.json` and the corpus into one zip with a signed `pack.json` manifest; `seatbelt verify-pack <zip> [--pubkey]` re-checks the signature, every member hash, every chain, every attestation and every finding's evidence offline. Format: `docs/spec/evidence-pack-v1.md`, ADR 0004, schema `docs/schema/pack.json`.
 - `seatbelt.attest.manifest.Signed`, the shared base for signed documents; `Signer.sign` accepts any `Signed`.
+- Docker sandbox for scenario targets: `seatbelt scenarios ... --image <img> [--target-dir .] [--timeout 120]` runs each scenario in its own hardened container (no network unless the scenario sets `egress: true`, read-only root, no capabilities, host uid) built on `docker/Dockerfile`, and records `sandbox.image`, `sandbox.image_digest` and `sandbox.egress` in `run.start`. The signing key stays on the host. `--list` shows egress. See ADR 0005.
+- `Scenario.egress` (default false); `seatbelt.scenarios.runner.record` and `collect` for callers that produce ledgers another way.
 
 ## [0.0.4] - 2026-09-17
 

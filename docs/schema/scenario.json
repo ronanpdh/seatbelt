@@ -120,6 +120,11 @@
       "title": "Tool Results",
       "type": "object"
     },
+    "egress": {
+      "default": false,
+      "title": "Egress",
+      "type": "boolean"
+    },
     "checks": {
       "items": {
         "anyOf": [

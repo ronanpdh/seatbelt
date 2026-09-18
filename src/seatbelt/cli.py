@@ -14,6 +14,7 @@ from seatbelt.attest.manifest import AttestError, sidecar
 from seatbelt.attest.sign import Signer
 from seatbelt.attest.sign import attest as sign_ledger
 from seatbelt.attest.sign import keygen as make_keys
+from seatbelt.ledger.store import LedgerError
 from seatbelt.record.recorder import Recorder
 from seatbelt.report.pack import PackError, PackStatus
 from seatbelt.report.pack import build as build_pack
@@ -22,6 +23,7 @@ from seatbelt.report.timeline import timeline
 from seatbelt.scenarios.model import OWASP_AGENTIC, ScenarioError, load_corpus
 from seatbelt.scenarios.runner import Target
 from seatbelt.scenarios.runner import run as run_corpus
+from seatbelt.scenarios.sandbox import SandboxError, run_sandboxed
 from seatbelt.verify.attest import Attestation, AttestVerdict, verify_attestation
 from seatbelt.verify.chain import Verdict, verify_file
 
@@ -205,6 +207,14 @@ def scenarios(
         Path | None, typer.Option(help="private key from keygen; signs each ledger")
     ] = None,
     list_: Annotated[bool, typer.Option("--list", help="show the corpus and exit")] = False,
+    image: Annotated[
+        str | None,
+        typer.Option(help="run each scenario in this Docker image (see docker/Dockerfile)"),
+    ] = None,
+    target_dir: Annotated[
+        Path, typer.Option(help="directory mounted read-only at /target in the sandbox")
+    ] = Path("."),
+    timeout: Annotated[float, typer.Option(help="seconds per scenario in the sandbox")] = 120,
 ) -> None:
     """Run the adversarial corpus against a target. Exit 1 on any finding."""
     try:
@@ -213,20 +223,35 @@ def scenarios(
         console.print(f"[red]{escape(str(exc))}[/]")
         raise typer.Exit(code=1) from exc
     if list_:
-        table = Table(Column("scenario", no_wrap=True), "owasp", "severity", "title")
+        table = Table(Column("scenario", no_wrap=True), "owasp", "severity", "egress", "title")
         for s in pack:
             owasp = ", ".join(f"{i} {OWASP_AGENTIC[i]}" for i in s.owasp) or "control"
-            table.add_row(s.id, owasp, s.severity, escape(s.title))
+            egress = "yes" if s.egress else "no"
+            table.add_row(s.id, owasp, s.severity, egress, escape(s.title))
         console.print(table)
         return
     if target is None:
         console.print("[red]pass --target module:function, or --list to see the corpus[/]")
         raise typer.Exit(code=2)
-    fn = _import_target(target)
+    if image and key and key.resolve().is_relative_to(target_dir.resolve()):
+        console.print("[red]--key is inside --target-dir and would be mounted into the sandbox[/]")
+        raise typer.Exit(code=1)
+    fn = _import_target(target) if image is None else None
     try:
         signer = Signer.from_file(key) if key else None
-        report = run_corpus(corpus, fn, out, signer=signer)
-    except (AttestError, ScenarioError) as exc:
+        if fn is not None:
+            report = run_corpus(corpus, fn, out, signer=signer)
+        else:
+            report = run_sandboxed(
+                corpus,
+                target,
+                cast(str, image),  # fn is None only when image was given
+                out,
+                target_dir=target_dir,
+                timeout=timeout,
+                signer=signer,
+            )
+    except (AttestError, LedgerError, ScenarioError, SandboxError) as exc:
         console.print(f"[red]{escape(str(exc))}[/]")
         raise typer.Exit(code=1) from exc
     table = Table(Column("scenario", no_wrap=True), "owasp", "severity", "result", "findings")

@@ -83,6 +83,7 @@ class Scenario(BaseModel):
     severity: Severity
     user_message: str
     tool_results: dict[str, str] = Field(default_factory=dict)
+    egress: bool = False  # network for this scenario's container; the default is none
     checks: list[Check] = Field(min_length=1)
 
     @field_validator("owasp")
