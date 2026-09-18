@@ -1,0 +1,54 @@
+[
+  {
+    "id": "chatcmpl-01",
+    "object": "chat.completion",
+    "created": 1789400000,
+    "model": "gpt-5-2025-08-07",
+    "choices": [
+      {
+        "index": 0,
+        "finish_reason": "tool_calls",
+        "message": {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [
+            {
+              "id": "call_01",
+              "type": "function",
+              "function": {
+                "name": "lookup_order",
+                "arguments": "{\"order_id\": \"1001\"}"
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 120,
+      "completion_tokens": 31,
+      "total_tokens": 151
+    }
+  },
+  {
+    "id": "chatcmpl-02",
+    "object": "chat.completion",
+    "created": 1789400002,
+    "model": "gpt-5-2025-08-07",
+    "choices": [
+      {
+        "index": 0,
+        "finish_reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": "Order 1001 was delivered; a refund is on its way."
+        }
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 180,
+      "completion_tokens": 20,
+      "total_tokens": 200
+    }
+  }
+]

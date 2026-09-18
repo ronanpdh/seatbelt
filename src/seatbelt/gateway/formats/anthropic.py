@@ -6,8 +6,9 @@ Every ``Any`` here is provider JSON: untyped because the wire shape is not ours 
 from __future__ import annotations
 
 import json
-from typing import Any, cast
+from typing import Any
 
+from seatbelt.gateway.formats import as_dict, as_dicts
 from seatbelt.ledger.events import Event
 from seatbelt.record.recorder import ModelCall, Recorder
 
@@ -52,7 +53,7 @@ class AnthropicFormat:
         if response is None:
             call.respond({}, error=error)
             return []
-        usage = _dict(response.get("usage"))
+        usage = as_dict(response.get("usage"))
         model = response.get("model")
         answer = call.respond(
             response,
@@ -63,12 +64,12 @@ class AnthropicFormat:
         if response.get("stop_reason") is None:
             return []  # abandoned stream: tool inputs may be truncated
         calls: list[Event] = []
-        for block in _blocks(response.get("content")):
+        for block in as_dicts(response.get("content")):
             if block.get("type") != "tool_use" or not block.get("id") or not block.get("name"):
                 continue
             event = self._rec.tool_called(
                 str(block["name"]),
-                _dict(block.get("input")),
+                as_dict(block.get("input")),
                 call_id=str(block["id"]),
                 parent_id=answer.id,
             )
@@ -77,21 +78,11 @@ class AnthropicFormat:
         return calls
 
 
-def _dict(value: Any) -> dict[str, Any]:
-    return cast(dict[str, Any], value) if isinstance(value, dict) else {}
-
-
-def _blocks(content: Any) -> list[dict[str, Any]]:
-    if not isinstance(content, list):
-        return []
-    return [cast(dict[str, Any], b) for b in cast(list[Any], content) if isinstance(b, dict)]
-
-
 def tool_results(body: dict[str, Any]) -> list[tuple[str, Any, bool]]:
     """(tool_use_id, content, is_error) for every tool_result block in the request history."""
     out: list[tuple[str, Any, bool]] = []
-    for message in _blocks(body.get("messages")):
-        for b in _blocks(message.get("content")):
+    for message in as_dicts(body.get("messages")):
+        for b in as_dicts(message.get("content")):
             if b.get("type") == "tool_result":
                 out.append((str(b.get("tool_use_id")), b.get("content"), bool(b.get("is_error"))))
     return out
@@ -109,12 +100,12 @@ def assemble_sse(events: list[dict[str, Any]]) -> dict[str, Any]:
             continue  # malformed proxy output
         match ev.get("type"):
             case "message_start":
-                message = {"stop_reason": None, **_dict(ev.get("message")), "content": []}
+                message = {"stop_reason": None, **as_dict(ev.get("message")), "content": []}
             case "content_block_start":
-                blocks[i] = dict(_dict(ev.get("content_block")))
+                blocks[i] = dict(as_dict(ev.get("content_block")))
             case "content_block_delta":
                 block = blocks.setdefault(i, {})
-                delta = _dict(ev.get("delta"))
+                delta = as_dict(ev.get("delta"))
                 if delta.get("type") == "text_delta":
                     block["text"] = str(block.get("text", "")) + str(delta.get("text", ""))
                 elif delta.get("type") == "input_json_delta":
@@ -126,8 +117,8 @@ def assemble_sse(events: list[dict[str, Any]]) -> dict[str, Any]:
                     except ValueError:  # truncated stream
                         blocks.setdefault(i, {})["input"] = {}
             case "message_delta":
-                message.update(_dict(ev.get("delta")))
-                message["usage"] = {**_dict(message.get("usage")), **_dict(ev.get("usage"))}
+                message.update(as_dict(ev.get("delta")))
+                message["usage"] = {**as_dict(message.get("usage")), **as_dict(ev.get("usage"))}
             case _:
                 pass
     message["content"] = [blocks[i] for i in sorted(blocks)]
