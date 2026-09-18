@@ -4,6 +4,9 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 
 ## [Unreleased]
 
+### Added
+- `examples/anthropic_scenario_target.py`: Claude as the support agent for the scenario corpus, recorded through the adapter, with a `refund-limit` policy check in the tool executor.
+
 ## [0.1.0] - 2026-09-18
 
 ### Added
