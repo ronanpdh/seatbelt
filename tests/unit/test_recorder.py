@@ -88,3 +88,14 @@ def test_failed_tool_call_records_an_error_result(tmp_path: Path) -> None:
     assert result.kind == Kind.TOOL_RESULT
     assert result.parent_id == call.id
     assert result.attrs["error"] == "RuntimeError: exploded"
+
+
+def test_model_requested_returns_a_handle_that_responds_later(tmp_path: Path) -> None:
+    with Recorder.start(tmp_path, agent_id="bot", run_id="r") as rec:
+        call = rec.model_requested("m", {"messages": []}, provider="p")
+        assert call.response is None
+        answer = call.respond({"content": "hi"}, usage={"input_tokens": 1}, response_model="m-1")
+    events = list(read_events(tmp_path / "r.jsonl"))
+    req = next(e for e in events if e.kind == Kind.MODEL_REQUEST)
+    assert req.attrs["gen_ai.provider.name"] == "p"
+    assert answer.parent_id == req.id and answer.attrs["gen_ai.response.model"] == "m-1"

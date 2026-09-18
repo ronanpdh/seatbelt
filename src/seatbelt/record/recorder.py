@@ -102,10 +102,10 @@ class Recorder:
             {"gen_ai.input.messages": [{"role": "user", "content": content}]},
         )
 
-    @contextmanager
-    def model_call(
+    def model_requested(
         self, model: str, request: dict[str, Any], provider: str | None = None
-    ) -> Generator[ModelCall]:
+    ) -> ModelCall:
+        """Record the request now; the caller answers with `ModelCall.respond` later."""
         req = self._emit(
             Kind.MODEL_REQUEST,
             self.agent,
@@ -115,7 +115,13 @@ class Recorder:
                 "gen_ai.request": request,
             },
         )
-        call = ModelCall(self, req, model)
+        return ModelCall(self, req, model)
+
+    @contextmanager
+    def model_call(
+        self, model: str, request: dict[str, Any], provider: str | None = None
+    ) -> Generator[ModelCall]:
+        call = self.model_requested(model, request, provider)
         try:
             yield call
         except BaseException as exc:
