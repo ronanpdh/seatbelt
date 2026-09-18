@@ -14,12 +14,12 @@ repos:
         name: ruff check
         entry: uv run ruff check --fix
         language: system
-        types: [python]
+        types_or: [python, markdown]
       - id: ruff-format
         name: ruff format
         entry: uv run ruff format
         language: system
-        types: [python]
+        types_or: [python, markdown]
       - id: pyright
         name: pyright
         entry: uv run pyright

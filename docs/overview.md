@@ -105,7 +105,11 @@ signer = Signer.from_file(Path("keys/seatbelt.key"))
 with Recorder.start(Path("runs"), agent_id="support-bot", policy=policy, signer=signer) as rec:
     rec.user_message("u-42", "Refund order 1001")
     with rec.model_call("claude-sonnet-5", {"messages": [...]}) as call:
-        call.respond({"content": "..."}, usage={"input_tokens": 12}, response_model="claude-sonnet-5-20260601")
+        call.respond(
+            {"content": "..."},
+            usage={"input_tokens": 12},
+            response_model="claude-sonnet-5-20260601",
+        )
     try:
         with rec.tool_call("issue_refund", {"order": 1001, "amount": 20}) as tool:
             tool.result({"refund_id": "r-1"})
@@ -122,7 +126,10 @@ Anthropic SDK:
 
 ```python
 from seatbelt.adapters.anthropic import AnthropicAdapter
-messages = AnthropicAdapter(rec).messages(client)          # or client.beta, or .async_messages(async_client)
+
+messages = AnthropicAdapter(rec).messages(
+    client
+)  # or client.beta, or .async_messages(async_client)
 messages.create(model=..., messages=..., tools=...)
 ```
 
@@ -131,6 +138,7 @@ OpenAI Agents SDK:
 ```python
 import agents
 from seatbelt.adapters.openai_agents import SeatbeltProcessor
+
 agents.add_trace_processor(SeatbeltProcessor(rec))
 ```
 

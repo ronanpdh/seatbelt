@@ -17,6 +17,10 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 - Docker sandbox for scenario targets: `seatbelt scenarios ... --image <img> [--target-dir .] [--timeout 120]` runs each scenario in its own hardened container (no network unless the scenario sets `egress: true`, read-only root, no capabilities, host uid) built on `docker/Dockerfile`, and records `sandbox.image`, `sandbox.image_digest` and `sandbox.egress` in `run.start`. The signing key stays on the host. `--list` shows egress. See ADR 0005.
 - `Scenario.egress` (default false); `seatbelt.scenarios.runner.record` and `collect` for callers that produce ledgers another way.
 
+### Fixed
+- CLI messages are no longer word-wrapped at the terminal width, so a long path or reason stays on one line; the attest test failed in CI on a wrapped line.
+- Pre-commit runs ruff on Markdown code blocks as CI does.
+
 ## [0.0.4] - 2026-09-17
 
 ### Added

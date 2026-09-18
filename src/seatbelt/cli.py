@@ -28,7 +28,7 @@ from seatbelt.verify.attest import Attestation, AttestVerdict, verify_attestatio
 from seatbelt.verify.chain import Verdict, verify_file
 
 app = typer.Typer(help="Attributable, reconstructable, provable records of agent interactions.")
-console = Console()
+console = Console(soft_wrap=True)  # never split a path or reason across lines
 
 
 @app.callback()
