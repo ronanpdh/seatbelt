@@ -1,6 +1,6 @@
 [project]
 name = "seatbelt"
-version = "0.0.4"
+version = "0.1.0"
 description = "Seatbelt is a model-agnostic harness for AI agents."
 readme = "README.md"
 license = "Apache-2.0"

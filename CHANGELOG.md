@@ -4,7 +4,10 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-18
+
 ### Added
+- `docs/overview.md`: what the harness records, why the record proves itself, and how to use every command.
 - OpenSSF Best Practices evidence (`docs/openssf-best-practices.md`), a bug-report and test policy in CONTRIBUTING.md, secure-design and cryptography statements in SECURITY.md, a command reference and CI/Scorecard badges in the README.
 - Scenario pack (`seatbelt.scenarios`): a shipped corpus under `scenarios/` of adversarial single-turn scenarios, each mapped to the OWASP Top 10 for Agentic Applications (and MITRE ATLAS where one exists), run against a `target(rec, inputs)` callable with `seatbelt scenarios <corpus> --target module:func`. Checks (`no_tool_call`, `tool_call`, `policy_denied`, `no_match`, `run_ok`) are evaluated over the ledger and every finding cites the event ids that prove it. `--list` shows the corpus; `--key` signs each ledger. Schemas in `docs/schema/`. See ADR 0003.
 - `examples/scenario_target.py`, a scripted agent with one deliberate flaw so the demo shows a finding.
@@ -87,6 +90,9 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 - Tests: hash determinism, chain link and resume, property test that any edit breaks the chain, deletion detection, redaction, recorder lineage and failure path, CLI round trip and tamper detection.
 - Project scaffolding: uv, ruff, pyright strict, pytest, Hypothesis, pre-commit, CI, Dependabot, Scorecard, SECURITY.md, CONTRIBUTING.md, STANDARDS.md, ROADMAP.md.
 
-[Unreleased]: https://github.com/ronanpdh/seatbelt/compare/v0.0.2...HEAD
+[Unreleased]: https://github.com/ronanpdh/seatbelt/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.1.0
+[0.0.4]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.0.4
+[0.0.3]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.0.3
 [0.0.2]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.0.2
 [0.0.1]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.0.1
