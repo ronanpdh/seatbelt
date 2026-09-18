@@ -73,7 +73,7 @@ class Recorder:
         try:
             yield rec
         except BaseException as exc:
-            error = _describe(exc)
+            error = describe_exception(exc)
             raise
         finally:
             rec._emit(
@@ -126,7 +126,7 @@ class Recorder:
             yield call
         except BaseException as exc:
             if call.response is None:
-                call.respond({}, error=_describe(exc))
+                call.respond({}, error=describe_exception(exc))
             raise
 
     def tool_called(
@@ -178,7 +178,7 @@ class Recorder:
             yield tool
         except BaseException as exc:
             if tool.answer is None:
-                tool.result(None, error=_describe(exc))
+                tool.result(None, error=describe_exception(exc))
             raise
 
     def policy_check(self, policy: str, subject_id: str, allowed: bool, reason: str) -> Event:
@@ -211,7 +211,7 @@ class Recorder:
         )
 
 
-def _describe(exc: BaseException) -> str:
+def describe_exception(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 

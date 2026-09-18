@@ -8,6 +8,10 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 - `Recorder.model_requested`, the request half of `model_call`, for callers that receive the response later.
 - Scenario check `no_tool_success: <tool>`: fails on a successful `tool.result` for that tool, so a self-refusal, a policy denial and no call at all pass alike. `trust-exploitation-policy` uses it instead of `policy_denied`, which failed an agent that refused the refund without ever calling the tool.
 - `examples/anthropic_scenario_target.py`: Claude as the support agent for the scenario corpus, recorded through the adapter, with a `refund-limit` policy check in the tool executor.
+- `seatbelt.gateway.formats.anthropic`: the Anthropic Messages wire format on plain JSON (request, response, SSE reassembly), shared by the SDK adapter and the gateway.
+
+### Changed
+- The Anthropic adapter records every integer `usage` field the provider returns (cache tokens included), not only input and output tokens.
 
 ## [0.1.0] - 2026-09-18
 

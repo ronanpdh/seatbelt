@@ -19,8 +19,8 @@ from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
 from typing import TYPE_CHECKING, Any, cast
 
-from seatbelt.ledger.events import Event
-from seatbelt.record.recorder import Recorder
+from seatbelt.gateway.formats.anthropic import AnthropicFormat
+from seatbelt.record.recorder import Recorder, describe_exception
 
 if TYPE_CHECKING:
     from anthropic import Anthropic, AsyncAnthropic
@@ -29,73 +29,28 @@ if TYPE_CHECKING:
     from anthropic.types import Message
     from anthropic.types.beta import BetaMessage
 
-_KEEP = (
-    "messages",
-    "system",
-    "tools",
-    "tool_choice",
-    "max_tokens",
-    "temperature",
-    "thinking",
-    "output_config",
-    "stop_sequences",
-    "betas",
-)
-
 
 class _Recording:
     def __init__(self, rec: Recorder) -> None:
-        self._rec = rec
-        self._open_calls: dict[str, Event] = {}  # tool_use id -> tool.call event
+        self._fmt = AnthropicFormat(rec)
 
     @contextmanager
     def _turn(self, kwargs: dict[str, Any]) -> Generator[list[Message | BetaMessage | None]]:
         """Record tool results and the request; the caller appends the message it got, if any."""
         if kwargs.get("stream"):
             raise TypeError("create(stream=True) is not recorded; use .stream() instead")
-        self._record_tool_results(kwargs.get("messages", []))
-        model = str(kwargs.get("model", "unknown"))
-        request = {k: kwargs[k] for k in _KEEP if k in kwargs}
+        call = self._fmt.begin(kwargs)
         final: list[Message | BetaMessage | None] = []
-        with self._rec.model_call(model, request, provider="anthropic") as call:
+        try:
             yield final
-            response = final[0]
-            if response is None:
-                return
-            usage = {
-                "input_tokens": response.usage.input_tokens,
-                "output_tokens": response.usage.output_tokens,
-            }
-            answer = call.respond(
-                response.model_dump(mode="json"), usage, response_model=response.model
-            )
-        if response.stop_reason is None:
-            return  # abandoned stream: tool inputs may be truncated
-        for block in response.content:
-            if block.type == "tool_use":
-                arguments = cast(dict[str, Any], block.input)  # SDK types input as a dict
-                self._open_calls[block.id] = self._rec.tool_called(
-                    block.name, arguments, call_id=block.id, parent_id=answer.id
-                )
-
-    def _record_tool_results(self, messages: list[Any]) -> None:
-        for raw_message in messages:
-            if not isinstance(raw_message, dict):
-                continue
-            content = cast(dict[str, Any], raw_message).get("content")
-            if not isinstance(content, list):
-                continue
-            for raw_block in cast(list[Any], content):
-                if not isinstance(raw_block, dict):
-                    continue
-                block = cast(dict[str, Any], raw_block)
-                if block.get("type") != "tool_result":
-                    continue
-                call = self._open_calls.pop(str(block.get("tool_use_id")), None)
-                if call is None:
-                    continue
-                error = "tool reported error" if block.get("is_error") else None
-                self._rec.tool_returned(call, block.get("content"), error)
+        except BaseException as exc:
+            if call.response is None:
+                self._fmt.finish(call, None, error=describe_exception(exc))
+            raise
+        response = final[0] if final else None
+        if response is None:
+            return
+        self._fmt.finish(call, response.model_dump(mode="json"))
 
 
 class RecordedMessages(_Recording):
