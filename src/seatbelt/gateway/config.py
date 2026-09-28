@@ -58,9 +58,9 @@ def key_hash(key: str) -> str:
     return hashlib.sha256(key.encode()).hexdigest()
 
 
-def _read(path: Path) -> dict[str, Any]:  # YAML is untyped
+def _read(path: Path, text: str | None = None) -> dict[str, Any]:  # YAML is untyped
     try:
-        data: Any = yaml.safe_load(path.read_text(encoding="utf-8"))
+        data: Any = yaml.safe_load(path.read_text(encoding="utf-8") if text is None else text)
     except (yaml.YAMLError, OSError, UnicodeDecodeError) as exc:
         raise ValueError(f"{path}: {exc}") from exc
     if not isinstance(data, dict):
@@ -68,9 +68,11 @@ def _read(path: Path) -> dict[str, Any]:  # YAML is untyped
     return cast(dict[str, Any], data)
 
 
-def load_config(path: Path) -> GatewayConfig:
+def load_config(path: Path, text: str | None = None) -> GatewayConfig:
+    """`text`, when given, is the file's content already read, so a caller that hashed it
+    loads exactly what it hashed."""
     try:
-        cfg = GatewayConfig.model_validate(_read(path))
+        cfg = GatewayConfig.model_validate(_read(path, text))
     except ValidationError as exc:
         raise ValueError(f"{path}: {exc}") from exc
     base = path.resolve().parent  # paths in the file are relative to the file

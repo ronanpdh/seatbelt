@@ -309,7 +309,7 @@ def gateway_serve(config: ConfigOpt = Path("gateway.yaml")) -> None:
         console.print(f"[red]{escape(str(exc))}[/]; {escape(hint)}")
         raise typer.Exit(code=1) from exc
     try:
-        serve(cfg)
+        serve(cfg, config)
     except (AttestError, ValueError) as exc:  # ValueError: a bad `listen`
         console.print(f"[red]{escape(str(exc))}[/]")
         raise typer.Exit(code=1) from exc

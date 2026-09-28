@@ -64,6 +64,14 @@ class Sessions:
         self._changed = threading.Condition(self._lock)
         root.mkdir(parents=True, exist_ok=True)
 
+    @property
+    def idle(self) -> float:
+        return self._idle
+
+    @idle.setter
+    def idle(self, seconds: float) -> None:  # a config reload; the next sweep uses it
+        self._idle = seconds
+
     def get(self, principal: str, run: str | None, meta: dict[str, Any]) -> Session:
         with self._lock:
             session = self._open.get((principal, run))
@@ -110,6 +118,17 @@ class Sessions:
         if ready:
             self._close(session)
         return True
+
+    def end_principal(self, principal: str) -> int:
+        """End every session of `principal`, each now or at its last release: its key was
+        revoked or reissued, so its open ledgers must not take requests made with another key.
+        Returns how many were ended."""
+        with self._lock:
+            sessions = [self._open.pop(k) for k in [k for k in self._open if k[0] == principal]]
+            ready = [s for s in sessions if self._retire(s)]
+        for s in ready:
+            self._close(s)
+        return len(sessions)
 
     def sweep(self) -> int:
         now = self._clock()

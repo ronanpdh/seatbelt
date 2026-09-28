@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any, cast
 
 import anyio
@@ -97,6 +98,24 @@ def _policies(cfg: GatewayConfig) -> tuple[Policy | None, Policy | None]:
         Policy(*rules) if rules else None,
         Policy(denylist(*p.tools_denied)) if p.tools_denied else None,
     )
+
+
+@dataclass(frozen=True)
+class Live:
+    """The config a request runs under, with the policies built from it. A reload replaces it
+    whole and each request reads it once, so no request mixes two configs."""
+
+    cfg: GatewayConfig
+    request_policy: Policy | None
+    tool_policy: Policy | None
+
+    @classmethod
+    def of(cls, cfg: GatewayConfig) -> Live:
+        return cls(cfg, *_policies(cfg))
+
+
+def _live(request: Request) -> Live:
+    return cast(Live, request.app.state.live)
 
 
 def _upstream_headers(request: Request, auth_header: str, real_key: str) -> dict[str, str]:
@@ -266,9 +285,9 @@ def _stream(
 def create_app(
     cfg: GatewayConfig, sessions: Sessions, transport: httpx2.AsyncBaseTransport | None = None
 ) -> Starlette:
-    request_policy, tool_policy = _policies(cfg)
-
     async def relay(request: Request) -> Response:
+        live = _live(request)
+        cfg, request_policy, tool_policy = live.cfg, live.request_policy, live.tool_policy
         principal = _principal(cfg, request)
         if principal is None:
             return _unauthorized()
@@ -366,6 +385,7 @@ def create_app(
     async def forward(request: Request) -> Response:
         """Probes a client makes besides inference: authenticated and forwarded, not recorded.
         A token count or a model list is nothing an auditor needs."""
+        cfg = _live(request).cfg
         principal = _principal(cfg, request)
         if principal is None:
             return _unauthorized()
@@ -405,7 +425,7 @@ def create_app(
         return Response(status_code=200)
 
     async def end_run(request: Request) -> Response:
-        principal = _principal(cfg, request)
+        principal = _principal(_live(request).cfg, request)
         if principal is None:
             return _unauthorized()
         name = request.path_params["name"]
@@ -423,5 +443,6 @@ def create_app(
             Route("/seatbelt/runs/{name}/end", end_run, methods=["POST"]),
         ]
     )
+    app.state.live = Live.of(cfg)  # replaced by a config reload
     app.state.transport = transport  # read per request so tests can swap upstreams
     return app

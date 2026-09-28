@@ -120,6 +120,26 @@ def test_end_while_busy_closes_at_the_last_release(tmp_path: Path) -> None:
     assert sessions.close_all() == 0
 
 
+def test_end_principal_ends_all_its_runs_and_waits_for_busy_ones(tmp_path: Path) -> None:
+    sessions = Sessions(tmp_path, Signer.generate(), idle=60)
+    idle = sessions.get("alice@corp", None, {})
+    sessions.release(idle)
+    busy = sessions.get("alice@corp", "job", {})
+    bob = sessions.get("bob@corp", None, {})
+    sessions.release(bob)
+    assert sessions.end_principal("alice@corp") == 2
+    assert verify_file(idle.rec.ledger.path).complete  # idle: closed now
+    assert not verify_file(busy.rec.ledger.path).complete  # in flight: not yet
+    fresh = sessions.get("alice@corp", "job", {})
+    assert fresh is not busy  # a new request starts afresh
+    sessions.release(fresh)
+    sessions.release(busy)
+    assert verify_file(busy.rec.ledger.path).complete and sidecar(busy.rec.ledger.path).exists()
+    assert sessions.get("bob@corp", None, {}) is bob  # others untouched
+    sessions.release(bob)
+    assert sessions.close_all(timeout=1) == 0
+
+
 def test_close_all_waits_for_in_flight_requests(tmp_path: Path) -> None:
     sessions = Sessions(tmp_path, None, idle=60)
     s = sessions.get("alice@corp", None, {})

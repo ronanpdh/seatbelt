@@ -4,6 +4,13 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 
 ## [Unreleased]
 
+### Added
+- The gateway reloads its config without a restart: when the file's content changes (checked every 30 s) or on `SIGHUP`. `principals`, `policy`, `upstreams` and `session_idle` apply from the next request; `listen`, `ledgers` and `signing_key` still need a restart, and a reload that changes them says so and keeps the running values. A file that fails to load is logged once and the running config stays. A deleted or reissued key is refused from the reload on and its open sessions are ended and signed, so a reissued key starts a new ledger. `Sessions.end_principal`; `Sessions.idle` is settable.
+
+### Changed
+- `seatbelt.gateway.serve.serve` takes the config's path as well as the loaded config.
+- The deployment docs mount the config's directory, not the file: `keygen` replaces the file, which a single-file bind mount does not follow.
+
 ## [0.2.0] - 2026-09-28
 
 ### Added

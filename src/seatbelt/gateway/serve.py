@@ -6,8 +6,11 @@ import base64
 import binascii
 import logging
 import os
+import signal
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from pathlib import Path
+from types import FrameType
 
 import uvicorn
 
@@ -15,10 +18,12 @@ from seatbelt.attest.manifest import AttestError
 from seatbelt.attest.sign import Signer
 from seatbelt.gateway.app import create_app
 from seatbelt.gateway.config import GatewayConfig
+from seatbelt.gateway.reload import Reloader
 from seatbelt.gateway.sessions import Sessions, close_open_chains
 
 SWEEP_EVERY = 30.0  # seconds; a session closes at most this long after its idle window
 DRAIN = 30  # seconds uvicorn, then close_all, wait for in-flight requests on shutdown
+RELOAD_EVERY = 30.0  # seconds between checks of the config file; SIGHUP checks at once
 
 _log = logging.getLogger(__name__)
 
@@ -84,7 +89,20 @@ def _shape(raw: str) -> str:
     )
 
 
-def serve(cfg: GatewayConfig) -> None:
+type _Handler = Callable[[int, FrameType | None], object] | int | None
+
+
+def _on_sighup(action: Callable[[], None]) -> tuple[bool, _Handler]:
+    """Run `action` on SIGHUP. Without a handler SIGHUP kills the process, or, as PID 1 in a
+    container, is ignored. Returns (installed, previous handler)."""
+    if not hasattr(signal, "SIGHUP") or threading.current_thread() is not threading.main_thread():
+        return False, None  # Windows has no SIGHUP; only the main thread may set handlers
+    previous = signal.signal(signal.SIGHUP, lambda _signum, _frame: action())
+    return True, signal.SIG_DFL if previous is None else previous  # None: set outside Python
+
+
+def serve(cfg: GatewayConfig, path: Path) -> None:
+    """`cfg` is `path` loaded; the file is watched and reloaded when it changes."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(name)s: %(message)s")
     signer = load_signer(cfg, os.environ)
     host, port = _host_port(cfg.listen)
@@ -92,7 +110,10 @@ def serve(cfg: GatewayConfig) -> None:
     if closed:
         _log.warning("closed %d chains left open by a previous run", len(closed))
     sessions = Sessions(cfg.ledgers, signer, idle=cfg.session_idle)
+    app = create_app(cfg, sessions)
+    reloader = Reloader(path, app, sessions)
     stop = threading.Event()
+    hup = threading.Event()
 
     def sweeper() -> None:
         while not stop.wait(SWEEP_EVERY):
@@ -101,17 +122,33 @@ def serve(cfg: GatewayConfig) -> None:
             except Exception:  # a failed close must not stop every later close
                 _log.exception("session sweep failed")
 
+    def watcher() -> None:
+        while True:
+            signalled = hup.wait(RELOAD_EVERY)
+            hup.clear()
+            if stop.is_set():
+                return
+            try:
+                reloader.check(force=signalled)
+            except Exception:  # a failed reload must not stop every later one
+                _log.exception("config reload failed")
+
     threading.Thread(target=sweeper, name="seatbelt-sweeper", daemon=True).start()
+    threading.Thread(target=watcher, name="seatbelt-reload", daemon=True).start()
+    installed, previous = _on_sighup(hup.set)
     try:
         uvicorn.run(
-            create_app(cfg, sessions),
+            app,
             host=host,
             port=port,
             log_level="info",
             timeout_graceful_shutdown=DRAIN,
         )
     finally:
+        if installed:  # before hup.set below, so the handler cannot run inside it
+            signal.signal(signal.SIGHUP, previous)
         stop.set()
+        hup.set()  # wake the watcher so it sees stop
         left = sessions.close_all(timeout=DRAIN)
         if left:
             _log.warning("%d sessions still busy at shutdown; closed on next start", left)
