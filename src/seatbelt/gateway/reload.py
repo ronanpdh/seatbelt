@@ -17,7 +17,7 @@ from seatbelt.gateway.app import Live
 from seatbelt.gateway.config import GatewayConfig, load_config
 from seatbelt.gateway.sessions import Sessions
 
-RESTART_ONLY = ("listen", "ledgers", "signing_key")
+RESTART_ONLY = ("listen", "ledgers", "signing_key", "sink")
 
 _log = logging.getLogger(__name__)
 

@@ -20,6 +20,7 @@ from seatbelt.gateway.app import create_app
 from seatbelt.gateway.config import GatewayConfig, read_config
 from seatbelt.gateway.reload import Reloader
 from seatbelt.gateway.sessions import Sessions, close_open_chains
+from seatbelt.gateway.sink import S3Store, Sink
 
 SWEEP_EVERY = 30.0  # seconds; a session closes at most this long after its idle window
 DRAIN = 30  # seconds uvicorn, then close_all, wait for in-flight requests on shutdown
@@ -124,6 +125,17 @@ def _graceful_stop() -> Generator[None]:
             signal.signal(sig, signal.SIG_DFL if handler is None else handler)
 
 
+def make_sink(cfg: GatewayConfig, env: Mapping[str, str]) -> Sink | None:
+    if cfg.sink is None:
+        return None
+    s = cfg.sink
+    missing = [n for n in (s.access_key_env, s.secret_key_env) if not env.get(n)]
+    if missing:
+        raise ValueError(f"sink: set {', '.join(missing)} in the environment")
+    store = S3Store(s.url, s.bucket, s.region, env[s.access_key_env], env[s.secret_key_env])
+    return Sink(store, cfg.ledgers, prefix=s.prefix)
+
+
 def serve(path: Path) -> None:
     """Run the gateway on the config at `path`, and reload the file when it changes."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(name)s: %(message)s")
@@ -138,7 +150,18 @@ def serve(path: Path) -> None:
         closed = close_open_chains(cfg.ledgers, signer)
         if closed:
             _log.warning("closed %d chains left open by a previous run", len(closed))
-        sessions = Sessions(cfg.ledgers, signer, idle=cfg.session_idle)
+        sink = make_sink(cfg, os.environ)
+        if sink is not None:
+            pending = sink.catch_up()  # includes the chains just closed
+            if pending:
+                _log.info("shipping %d ledgers not shipped yet", pending)
+            sink.start()
+        sessions = Sessions(
+            cfg.ledgers,
+            signer,
+            idle=cfg.session_idle,
+            on_close=sink.ship if sink is not None else None,
+        )
         app = create_app(cfg, sessions)
         reloader = Reloader(path, app, sessions, loaded)
 
@@ -185,3 +208,7 @@ def serve(path: Path) -> None:
                 left = sessions.close_all(timeout=DRAIN)
                 if left:
                     _log.warning("%d sessions still busy at shutdown; closed on next start", left)
+                if sink is not None:
+                    unsent = sink.stop(timeout=DRAIN)
+                    if unsent:
+                        _log.warning("%d ledgers not shipped yet; shipped on next start", unsent)

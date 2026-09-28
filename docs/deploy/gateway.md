@@ -113,3 +113,27 @@ Every verdict is a `policy.check` event in the ledger. `seatbelt report` counts 
 ## Where ledgers live, and backups
 
 Each session is `<ledgers>/<run id>.jsonl` with its signature beside it as `<run id>.attest.json`. Back up by copying the directory; keep each sidecar with its ledger. A closed ledger never changes again, so incremental copies are safe. `seatbelt verify`, `reconstruct`, `pack` and `verify-pack` work on these files unchanged, with nothing but the public key.
+
+## Shipping ledgers to object storage
+
+With a `sink` in the config, the gateway uploads each ledger and its signature to S3-compatible object storage as soon as the session is closed and signed, so the gateway host no longer holds the only copy. Uploads run in the background: a slow or unreachable store never delays a request. A failed upload is retried with backoff (5 s, 30 s, 2 min, then every 5 min); what has not shipped by shutdown, or while the store was down, is shipped at the next start. `<ledgers>/.shipped/<run id>` records each shipped run, with the object keys and the SHA-256 of what was sent. Open ledgers are never shipped, only closed ones.
+
+```yaml
+sink:
+  url: https://fsn1.your-objectstorage.com   # the location's endpoint
+  bucket: seatbelt-ledgers
+  region: fsn1                                # for Hetzner, the location code
+  prefix: runs/                               # optional, prepended to each object key
+  # access_key_env / secret_key_env name the variables holding the keys;
+  # defaults SEATBELT_SINK_ACCESS_KEY and SEATBELT_SINK_SECRET_KEY
+```
+
+The keys come from the environment, never the file; the gateway refuses to start with a `sink` and no keys. The sink is read at start only: a change to it waits for a restart.
+
+On Hetzner Object Storage ([docs](https://docs.hetzner.com/storage/object-storage/)):
+
+1. Create the bucket in the location you want (`fsn1`, `nbg1` or `hel1`) **with Object Lock enabled**, and give it a default retention (COMPLIANCE mode, in days or years, for as long as you must keep the evidence). Object Lock can only be enabled when the bucket is created, and a bucket with Object Lock always keeps every version: a shipped ledger's version cannot be deleted before its retention ends, by the gateway's key or anyone else's, and an upload under the same key adds a version beside it rather than replacing it. COMPLIANCE mode cannot be ended early.
+2. Generate S3 credentials (Console → your project → Security → S3 Credentials) and set them as `SEATBELT_SINK_ACCESS_KEY` and `SEATBELT_SINK_SECRET_KEY` in the gateway's environment. A key can read and write every bucket of its project unless a bucket policy narrows it; the gateway only ever uploads objects to this one bucket, so narrow its key to that.
+3. Point `url` at the location's endpoint (`https://<location>.your-objectstorage.com`) and `region` at the location code.
+
+Requests are signed with AWS Signature Version 4 over the whole payload and address the bucket in the host name (`https://<bucket>.<location>.your-objectstorage.com/<key>`), as Hetzner documents for plain HTTP clients; no checksum headers are sent. Any S3-compatible service that accepts that works the same way. To check what arrived, download the objects and run `seatbelt verify <run id>.jsonl --pubkey seatbelt.pub` on them: the signature travels with each ledger.
