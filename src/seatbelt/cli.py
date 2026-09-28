@@ -303,7 +303,10 @@ def gateway_serve(config: ConfigOpt = Path("gateway.yaml")) -> None:
         console.print(f"[red]{escape(str(exc))}[/]")
         raise typer.Exit(code=1) from exc
     except ImportError as exc:
-        console.print(f"[red]{escape(str(exc))}[/]; install with: uv sync --extra gateway")
+        hint = (
+            "install the gateway extra: pip install 'seatbelt[gateway]' or uv sync --extra gateway"
+        )
+        console.print(f"[red]{escape(str(exc))}[/]; {escape(hint)}")
         raise typer.Exit(code=1) from exc
     try:
         serve(cfg)
