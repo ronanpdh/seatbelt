@@ -549,6 +549,15 @@ def test_denied_tool_in_a_stream_is_recorded(gwp: Gateway) -> None:
     assert last.kind == Kind.POLICY_CHECK and last.attrs["policy.allowed"] is False
 
 
+def test_query_string_reaches_the_upstream(gw: Gateway) -> None:
+    gw.client.post(
+        "/v1/messages?beta=true",
+        json={"model": "m", "messages": []},
+        headers={"x-api-key": gw.key},
+    )
+    assert gw.seen[0].url.path == "/v1/messages" and gw.seen[0].url.query == b"beta=true"
+
+
 # -- probes --------------------------------------------------------------------
 
 
@@ -583,3 +592,15 @@ def test_count_tokens_and_models_are_forwarded_not_recorded(gw: Gateway) -> None
     assert gw.seen[2].headers["authorization"] == "Bearer sk-REAL00000000000000000000000"
     assert not list(gw.ledgers.glob("*.jsonl"))
     assert gw.client.get("/v1/models").status_code == 401
+
+
+def test_bearer_model_discovery_from_an_anthropic_client_goes_to_anthropic(gw: Gateway) -> None:
+    """Claude Code under `seatbelt run`, and Claude Desktop by default, authenticate with
+    Bearer; anthropic-version is what marks them as Anthropic clients."""
+    gw.upstream(lambda _: httpx2.Response(200, json={"data": []}))
+    r = gw.client.get(
+        "/v1/models?limit=1000",
+        headers={"authorization": f"Bearer {gw.key}", "anthropic-version": "2023-06-01"},
+    )
+    assert r.status_code == 200 and gw.seen[0].url.host == "api.anthropic.com"
+    assert gw.seen[0].headers["x-api-key"].startswith("sk-ant-REAL")

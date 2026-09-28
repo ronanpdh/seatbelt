@@ -107,7 +107,7 @@ Using the OpenAI Agents SDK? Register `agents.add_trace_processor(SeatbeltProces
 | `seatbelt verify-pack <zip> [--pubkey]` | re-checks a pack offline | forged, or a broken ledger inside |
 | `seatbelt gateway keygen --user <id> [--config]` | issues a gateway key; stores only its hash | the user already has a key |
 | `seatbelt gateway serve [--config]` | runs the recording gateway | bad config or signing key |
-| `seatbelt run <cli> [--config] [--exe] [-- args]` | launches `claude` through the gateway | bad config or unknown CLI; otherwise the CLI's own exit code |
+| `seatbelt run <cli> [--config] [--exe] [-- args]` | launches `claude` through the gateway | bad config or unknown CLI (127: executable not found); otherwise the CLI's own exit code |
 | `seatbelt report <runs> [--pubkey] [--json]` | usage by person, model and tool; refused, failed, open, unsigned runs | a ledger is broken, or forged with a key given |
 
 Every command has `--help`. Formats: ledger and attestation in [ADR 0001](docs/adr/0001-hash-chained-jsonl-ledger.md) and [ADR 0002](docs/adr/0002-signed-run-manifest.md), scenario and findings schemas in [`docs/schema/`](docs/schema/), evidence pack in [`docs/spec/evidence-pack-v1.md`](docs/spec/evidence-pack-v1.md).
