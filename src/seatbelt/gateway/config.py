@@ -52,6 +52,42 @@ class SinkConfig(_Strict):
     secret_key_env: str = "SEATBELT_SINK_SECRET_KEY"  # noqa: S105 - an env var name
 
 
+_ASYMMETRIC = {
+    "RS256",
+    "RS384",
+    "RS512",
+    "PS256",
+    "PS384",
+    "PS512",
+    "ES256",
+    "ES384",
+    "ES512",
+    "EdDSA",
+}
+
+
+class OidcConfig(_Strict):
+    """Accept tokens from an OpenID Connect provider, as Claude Desktop sends them with
+    `inferenceGatewayOidc`. The ID token's audience is the app's client ID."""
+
+    issuer: str  # e.g. https://login.microsoftonline.com/<tenant>/v2.0
+    audience: str | list[str]
+    principal_claim: str = "sub"  # the immutable user id: Entra `oid`, Okta and most `sub`
+    name_claim: str | None = "email"  # recorded for readers; never used to authorize
+    jwks_url: str | None = None  # default: from the issuer's discovery document
+    algorithms: list[str] = Field(default_factory=lambda: ["RS256"])
+    leeway: int = Field(default=60, ge=0, le=300)  # seconds of clock skew allowed
+    allow: list[str] | None = None  # principal ids allowed; unset: anyone the provider signs in
+
+    @field_validator("algorithms")
+    @classmethod
+    def _asymmetric(cls, value: list[str]) -> list[str]:
+        wrong = sorted(set(value) - _ASYMMETRIC)
+        if wrong or not value:
+            raise ValueError(f"algorithms must be asymmetric signatures, not {wrong or 'none'}")
+        return value
+
+
 class Principal(_Strict):
     id: str
     key_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -67,6 +103,7 @@ class GatewayConfig(_Strict):
     policy: PolicyConfig = Field(default_factory=PolicyConfig)
     principals: list[Principal] = Field(default_factory=list[Principal])
     sink: SinkConfig | None = None
+    oidc: OidcConfig | None = None
 
     _principals = field_validator("principals", mode="before")(_none_is_empty)
     _policy = field_validator("policy", mode="before")(_none_is_no_keys)

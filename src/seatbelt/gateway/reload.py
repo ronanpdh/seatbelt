@@ -64,7 +64,7 @@ class Reloader:
         # swap first, so a withdrawn key is refused before its sessions are ended. A request
         # it authenticated just before the swap still finishes; a session that request opens
         # belongs to the withdrawn key alone (sessions are per key), so it closes on idle
-        self._app.state.live = Live.of(kept)
+        self._app.state.live = Live.of(kept, previous=self._app.state.live)
         self._sessions.idle = new.session_idle
         before = {(p.id, p.key_sha256) for p in old.principals}
         after = {(p.id, p.key_sha256) for p in new.principals}
