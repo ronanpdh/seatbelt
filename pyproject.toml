@@ -13,14 +13,14 @@ dependencies = [
     # the recording gateway, which `seatbelt run` also starts in-process to record locally
     "anyio>=4.15",
     "cryptography>=50.0.1",
-    "httpx2>=2.13",
+    "httpx2>=2.13.1",
     "pydantic>=2.13.5",
     "pyjwt>=2.15",
     "pyyaml>=6.0.3",
     "rich>=15.0.0",
-    "starlette>=1.6",
+    "starlette>=1.7.0",
     "typer>=0.27.2",
-    "uvicorn>=0.53",
+    "uvicorn>=0.54.0",
 ]
 
 [project.scripts]
@@ -28,37 +28,37 @@ seatbelt = "seatbelt.cli:app"
 
 [project.optional-dependencies]
 anthropic = [
-    "anthropic>=1.5.0",
+    "anthropic>=1.8.0",
 ]
 openai-agents = [
-    "openai-agents>=0.22.2",
+    "openai-agents>=0.22.3",
 ]
 # kept so `seatbelt[gateway]` still installs; its packages are now core dependencies
 gateway = [
     "anyio>=4.15",
-    "httpx2>=2.13",
+    "httpx2>=2.13.1",
     "pyjwt>=2.15",
-    "starlette>=1.6",
-    "uvicorn>=0.53",
+    "starlette>=1.7.0",
+    "uvicorn>=0.54.0",
 ]
 
 [build-system]
-requires = ["uv_build>=0.12.13,<0.13.0"]
+requires = ["uv_build>=0.12.19,<0.13.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
-    "anthropic>=1.5.0",  # adapter tests and pyright need the optional SDK
+    "anthropic>=1.8.0",  # adapter tests and pyright need the optional SDK
     "anyio>=4.15",  # gateway extra
-    "httpx2>=2.13",
-    "hypothesis>=6.168.0",
-    "openai-agents>=0.22.2",
+    "httpx2>=2.13.1",
+    "hypothesis>=6.168.1",
+    "openai-agents>=0.22.3",
     "pre-commit>=4.6.2",
     "pyright>=1.1.414",
     "pytest>=9.1.1",
-    "ruff>=0.16.7",
-    "starlette>=1.6",
-    "uvicorn>=0.53",
+    "ruff>=0.16.9",
+    "starlette>=1.7.0",
+    "uvicorn>=0.54.0",
     "types-pyyaml>=6.0.12.20260906",
     "botocore>=1.43",  # oracle for the sink's SigV4 signing in tests; never shipped
     "botocore-stubs>=1.43.67",  # types for the test oracle
