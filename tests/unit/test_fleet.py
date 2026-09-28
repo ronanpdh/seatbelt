@@ -108,3 +108,15 @@ def test_cli_report_with_no_directory_reads_this_machines_runs(
         rec.user_message("u", "hi")
     r = runner.invoke(app, ["report"])
     assert r.exit_code == 0 and "1 runs" in r.output and "unattested" not in r.output
+
+
+def test_cli_report_with_a_bad_client_config_says_so_cleanly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from seatbelt.gateway import launcher
+
+    (tmp_path / "config.toml").write_text('ledger = "typo"\n')
+    monkeypatch.setattr(launcher, "DEFAULT_CONFIG", tmp_path / "config.toml")
+    r = CliRunner().invoke(app, ["report"])
+    assert r.exit_code == 1 and "unknown keys ledger" in r.output
+    assert r.exception is None or isinstance(r.exception, SystemExit)

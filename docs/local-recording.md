@@ -104,7 +104,10 @@ A 0.2.0 `~/.config/seatbelt/gateway.toml` with `url` and `key` is still read whe
 
 ## Limits
 
-- **A run that is killed leaves its ledger open, unsigned.** Several runs can record at once into the same folder, so a starting run does not close another run's open ledger. `seatbelt report` lists a killed run as incomplete and unattested. `seatbelt verify` still checks its chain, and reports it incomplete.
+- **A run that is killed leaves its ledger open until the next run.**
+  - While it runs, each run holds an OS lock on a file in `runs/.running/`, and the OS releases the lock when the process dies.
+  - Each run, in the background, closes and signs the open ledgers of runs whose lock is free, recording that the run was killed. It leaves the ledgers of runs still going alone.
+  - Until then, `seatbelt report` lists the killed run as incomplete and unattested, and `seatbelt verify` checks its chain and reports it incomplete.
 - **The recorder serves only the APIs the gateway records:**
   - Anthropic Messages;
   - OpenAI Chat Completions and Responses;
