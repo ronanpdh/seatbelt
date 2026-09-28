@@ -1,13 +1,16 @@
+import contextlib
 import json
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import anyio
 import httpx2
 import pytest
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
+from tests.helpers import sse
 
 from seatbelt.attest.manifest import sidecar
 from seatbelt.attest.sign import Signer
@@ -214,7 +217,9 @@ def test_session_end_closes_and_signs(gw: Gateway) -> None:
     )
     r = gw.client.post("/seatbelt/runs/job-1/end", headers={"x-api-key": gw.key})
     assert r.status_code == 204
-    assert gw.client.post("/seatbelt/runs/job-1/end", headers={"x-api-key": gw.key}).status_code == 404
+    assert (
+        gw.client.post("/seatbelt/runs/job-1/end", headers={"x-api-key": gw.key}).status_code == 404
+    )
     (ledger,) = gw.ledgers.glob("*.jsonl")
     assert verify_file(ledger).complete and sidecar(ledger).exists()
 
@@ -247,3 +252,156 @@ def test_parallel_requests_share_one_session_and_one_chain(gw: Gateway) -> None:
     assert sum(e.kind == Kind.MODEL_REQUEST for e in events) == 16
     assert sum(e.kind == Kind.MODEL_RESPONSE for e in events) == 16
     assert events[0].attrs["run.name"] is None
+
+
+# -- streaming ---------------------------------------------------------------
+
+SSE_HEADERS = {"content-type": "text/event-stream", "request-id": "req_s"}
+
+
+def _first() -> dict[str, Any]:
+    return json.loads(ANTHROPIC.read_text())[0]
+
+
+def _response(events: list[Event]) -> Event:
+    (resp,) = [e for e in events if e.kind == Kind.MODEL_RESPONSE]
+    return resp
+
+
+def test_anthropic_stream_is_relayed_byte_for_byte_and_recorded_once(gw: Gateway) -> None:
+    gw.upstream(lambda _: httpx2.Response(200, headers=SSE_HEADERS, content=sse(_first())))
+    with gw.client.stream(
+        "POST",
+        "/v1/messages",
+        json={"model": "m", "messages": [], "stream": True},
+        headers={"x-api-key": gw.key},
+    ) as r:
+        assert r.headers["content-type"].startswith("text/event-stream")
+        assert r.headers["request-id"] == "req_s"
+        raw = b"".join(r.iter_bytes())
+    assert raw == sse(_first())
+    events = gw.events()
+    resp = _response(events)
+    assert resp.attrs["gen_ai.response"]["stop_reason"] == "tool_use"
+    assert resp.attrs["gen_ai.usage.output_tokens"] == 31 and resp.attrs["error"] is None
+    assert events[-1].kind == Kind.TOOL_CALL
+
+
+def test_openai_chat_stream_is_reassembled(gw: Gateway) -> None:
+    chunks = [
+        {"id": "c1", "model": "gpt-5", "choices": [{"index": 0, "delta": {"role": "assistant"}}]},
+        {"id": "c1", "choices": [{"index": 0, "delta": {"content": "Hel"}}]},
+        {
+            "id": "c1",
+            "choices": [{"index": 0, "delta": {"content": "lo"}, "finish_reason": "stop"}],
+        },
+    ]
+    body = "".join(f"data: {json.dumps(c)}\r\n\r\n" for c in chunks) + "data: [DONE]\r\n\r\n"
+    gw.upstream(lambda _: httpx2.Response(200, headers=SSE_HEADERS, content=body.encode()))
+    r = gw.client.post(
+        "/v1/chat/completions",
+        json={"model": "gpt-5", "messages": [], "stream": True},
+        headers={"authorization": f"Bearer {gw.key}"},
+    )
+    assert r.status_code == 200 and r.content == body.encode()
+    message = _response(gw.events()).attrs["gen_ai.response"]["choices"][0]["message"]
+    assert message["content"] == "Hello"
+
+
+def test_upstream_that_breaks_mid_stream_is_recorded_as_partial(gw: Gateway) -> None:
+    blocks = sse(_first()).split(b"\n\n")
+
+    async def broken() -> AsyncIterator[bytes]:
+        for block in blocks[:3]:
+            yield block + b"\n\n"
+        raise httpx2.ReadError("connection reset")
+
+    gw.upstream(lambda _: httpx2.Response(200, headers=SSE_HEADERS, content=broken()))
+    with pytest.raises(httpx2.ReadError):
+        gw.client.post(
+            "/v1/messages",
+            json={"model": "m", "messages": [], "stream": True},
+            headers={"x-api-key": gw.key},
+        )
+    resp = _response(gw.events())
+    assert resp.attrs["gen_ai.response"]["stop_reason"] is None
+    assert resp.attrs["error"].startswith("upstream stream broke: ReadError")
+    assert Kind.TOOL_CALL not in [e.kind for e in gw.events()]  # inputs may be truncated
+
+
+def test_stream_request_that_upstream_refuses_is_relayed_and_recorded(gw: Gateway) -> None:
+    gw.upstream(lambda _: httpx2.Response(429, json={"error": "slow down"}))
+    r = gw.client.post(
+        "/v1/messages",
+        json={"model": "m", "messages": [], "stream": True},
+        headers={"x-api-key": gw.key},
+    )
+    assert r.status_code == 429 and r.json() == {"error": "slow down"}
+    assert _response(gw.events()).attrs["error"].startswith("429")
+
+
+def test_run_end_header_on_a_stream_closes_after_the_stream(gw: Gateway) -> None:
+    gw.upstream(lambda _: httpx2.Response(200, headers=SSE_HEADERS, content=sse(_first())))
+    headers = {"x-api-key": gw.key, "X-Seatbelt-Run": "s", "X-Seatbelt-Run-End": "true"}
+    gw.client.post(
+        "/v1/messages", json={"model": "m", "messages": [], "stream": True}, headers=headers
+    )
+    (ledger,) = gw.ledgers.glob("*.jsonl")
+    kinds = [e.kind for e in read_events(ledger)]
+    assert kinds[-2:] == [Kind.TOOL_CALL, Kind.RUN_END] and verify_file(ledger).complete
+
+
+@pytest.mark.parametrize("spec_version", ["2.3", "2.4"])
+def test_client_that_disconnects_mid_stream_is_recorded_and_released(
+    gw: Gateway, spec_version: str
+) -> None:
+    """Raw ASGI: TestClient buffers the whole response, so it never disconnects early.
+    2.3 reports the disconnect through receive(); 2.4 through send() raising OSError."""
+    blocks = sse(_first()).split(b"\n\n")
+
+    async def slow() -> AsyncIterator[bytes]:
+        for block in blocks[:3]:
+            yield block + b"\n\n"
+        await anyio.sleep(30)  # the client leaves long before this
+        yield b""
+
+    gw.upstream(lambda _: httpx2.Response(200, headers=SSE_HEADERS, content=slow()))
+    request = json.dumps({"model": "m", "messages": [], "stream": True}).encode()
+
+    async def drive() -> None:
+        pending: list[dict[str, Any]] = [{"type": "http.request", "body": request}]
+        first_chunk = anyio.Event()
+
+        async def receive() -> dict[str, Any]:
+            if pending:
+                return pending.pop()
+            await first_chunk.wait()
+            return {"type": "http.disconnect"}
+
+        async def send(message: MutableMapping[str, Any]) -> None:
+            if message["type"] == "http.response.body" and message.get("body"):
+                if first_chunk.is_set() and spec_version == "2.4":
+                    raise OSError("client went away")
+                first_chunk.set()
+
+        scope: dict[str, Any] = {
+            "type": "http",
+            "asgi": {"version": "3.0", "spec_version": spec_version},
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": "/v1/messages",
+            "raw_path": b"/v1/messages",
+            "root_path": "",
+            "query_string": b"",
+            "headers": [(b"x-api-key", gw.key.encode()), (b"content-type", b"application/json")],
+            "client": ("127.0.0.1", 5000),
+            "server": ("testserver", 80),
+        }
+        with anyio.fail_after(10), contextlib.suppress(Exception):
+            await gw.app(scope, receive, send)
+
+    anyio.run(drive)
+    resp = _response(gw.events())
+    assert resp.attrs["gen_ai.response"]["stop_reason"] is None
+    assert resp.attrs["error"] == "stream ended early"  # teardown checks the release

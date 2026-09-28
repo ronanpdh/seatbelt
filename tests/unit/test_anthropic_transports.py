@@ -18,6 +18,7 @@ from seatbelt.verify.chain import verify_file
 
 anthropic = pytest.importorskip("anthropic")
 import httpx2  # noqa: E402
+from tests.helpers import sse  # noqa: E402
 
 from seatbelt.adapters.anthropic import AnthropicAdapter  # noqa: E402
 
@@ -34,33 +35,6 @@ SHAPE = [
 ]
 
 
-def _sse(message: dict[str, Any]) -> bytes:
-    def event(name: str, data: dict[str, Any]) -> str:
-        return f"event: {name}\ndata: {json.dumps({'type': name, **data})}\n\n"
-
-    start: dict[str, Any] = {**message, "content": [], "stop_reason": None}
-    out = [event("message_start", {"message": start})]
-    for i, block in enumerate(message["content"]):
-        if block["type"] == "text":
-            out.append(
-                event("content_block_start", {"index": i, "content_block": {**block, "text": ""}})
-            )
-            delta = {"type": "text_delta", "text": block["text"]}
-        else:
-            out.append(
-                event("content_block_start", {"index": i, "content_block": {**block, "input": {}}})
-            )
-            delta = {"type": "input_json_delta", "partial_json": json.dumps(block["input"])}
-        out.append(event("content_block_delta", {"index": i, "delta": delta}))
-        out.append(event("content_block_stop", {"index": i}))
-    usage = {"output_tokens": message["usage"]["output_tokens"]}
-    out.append(
-        event("message_delta", {"delta": {"stop_reason": message["stop_reason"]}, "usage": usage})
-    )
-    out.append(event("message_stop", {}))
-    return "".join(out).encode()
-
-
 def _transport() -> httpx2.MockTransport:
     replies: Iterator[dict[str, Any]] = iter(json.loads(FIXTURE.read_text()))
 
@@ -68,7 +42,7 @@ def _transport() -> httpx2.MockTransport:
         reply = next(replies)
         if json.loads(request.content).get("stream"):
             return httpx2.Response(
-                200, headers={"content-type": "text/event-stream"}, content=_sse(reply)
+                200, headers={"content-type": "text/event-stream"}, content=sse(reply)
             )
         return httpx2.Response(200, json=reply)
 
@@ -161,7 +135,7 @@ def test_create_with_stream_true_points_to_stream(tmp_path: Path) -> None:
 @pytest.fixture
 def slow_server() -> Iterator[str]:
     """Streams the tool_use reply one SSE event every 0.5s over a real socket."""
-    events = [e for e in _sse(json.loads(FIXTURE.read_text())[0]).split(b"\n\n") if e]
+    events = [e for e in sse(json.loads(FIXTURE.read_text())[0]).split(b"\n\n") if e]
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: Any) -> None:
