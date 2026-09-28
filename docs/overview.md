@@ -203,7 +203,7 @@ Extend the image with your dependencies (`FROM seatbelt-target`). Keep keys, `.e
 ```sh
 uv sync --extra gateway
 uv run seatbelt keygen keys
-# write gateway.yaml: signing_key: keys/seatbelt.key, ledgers: runs, upstreams (see README)
+# write gateway.yaml: signing_key: keys/seatbelt.key, ledgers: runs, upstreams (see docs/deploy/gateway.md)
 uv run seatbelt gateway keygen --user alice@corp --config gateway.yaml
 uv run seatbelt gateway serve --config gateway.yaml
 seatbelt run claude                          # on alice's machine, with ~/.config/seatbelt/gateway.toml

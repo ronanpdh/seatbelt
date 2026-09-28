@@ -5,95 +5,50 @@
 [![ci](https://github.com/ronanpdh/seatbelt/actions/workflows/ci.yml/badge.svg)](https://github.com/ronanpdh/seatbelt/actions/workflows/ci.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/ronanpdh/seatbelt/badge)](https://scorecard.dev/viewer/?uri=github.com/ronanpdh/seatbelt)
 
-Seatbelt is a model-agnostic harness for AI agents. It records what an agent did as a tamper-evident ledger you can verify and replay as a timeline.
+Seatbelt records what your AI agents do: every prompt, model response and tool call. The record is tamper-evident and signed, so you can prove later exactly what happened.
 
-**What it records.** Every step of an agent run: user messages, model requests and responses (with the exact model version and token usage), tool calls and results, policy checks, decisions with their authority and basis, actions and outcomes.
-
-**What it produces.** One JSONL file per run. Each event is SHA-256 hash-chained to the one before it, and secrets are redacted before anything is hashed or written. Any edit, reorder or deletion inside the chain makes `seatbelt verify` fail and name the first bad event. A signed manifest beside it pins the final hash, so a rewritten tail fails too.
-
-**Record your coding agent.** One command, nothing to set up: the run is recorded on your machine and signed.
+## Quick start
 
 ```sh
-uv tool install git+https://github.com/ronanpdh/seatbelt
-seatbelt run claude                  # Claude Code, recorded; also: seatbelt run codex, gemini
-seatbelt report                      # what your runs did, checked against this machine's key
+uv tool install git+https://github.com/ronanpdh/seatbelt   # needs uv: https://docs.astral.sh/uv/
+seatbelt run claude                                         # or: seatbelt run codex, seatbelt run gemini
 ```
 
-`seatbelt run` starts a recorder on localhost for the run, points the CLI at it and passes the CLI's own credentials through, so it keeps signing in as it always does: a Claude subscription or API key, ChatGPT or an API key for Codex, a Google account or API key for Gemini CLI. How it works, what is and is not recorded, and the settings: [docs/local-recording.md](docs/local-recording.md). Each run's ledger is signed and lands in `runs/` in your data folder (Linux `~/.local/share/seatbelt`, macOS `~/Library/Application Support/seatbelt`, Windows `%LOCALAPPDATA%\seatbelt`), with the signing key, made on first use, in `keys/` beside it. To record through your org's gateway instead, put its URL and your key in `~/.config/seatbelt/config.toml`:
+Use the CLI as you normally would; it keeps its own sign-in, whether that's a subscription or an API key. When you exit, seatbelt prints where it saved the signed record of the run. Then:
+
+```sh
+seatbelt report                      # what your runs did: models, tools, tokens, anything refused or altered
+seatbelt reconstruct <ledger>        # replay one run as a timeline
+```
+
+There is nothing to set up. How it works, where runs are saved, and what is and isn't recorded: [docs/local-recording.md](docs/local-recording.md).
+
+No agent to hand? `seatbelt demo` records an example run, then `seatbelt verify runs/<run id>.jsonl` checks it.
+
+## What you get
+
+- **One file per run** (JSONL): user messages, model requests and responses (with the exact model version and token usage), tool calls and results, and policy checks.
+- **Tamper evidence.** Each event is SHA-256 hash-chained to the one before it. Any edit, reorder or deletion makes `seatbelt verify` fail and name the first bad event.
+- **A signature.** A signed manifest pins the final hash, so a rewritten ending fails too.
+- **Redaction.** Secrets are removed before anything is hashed or written.
+
+## Record for a team
+
+To record everyone's agents in one place, run a gateway ([docs/deploy/gateway.md](docs/deploy/gateway.md)). Each person then adds two lines to `~/.config/seatbelt/config.toml`, and `seatbelt run` records through the gateway instead:
 
 ```toml
 gateway = "https://gw.corp.example"
 key = "sbk_..."
 ```
 
-Other settings there, all optional: `ledgers` (where local runs go), `[upstreams]` (a provider's URL, e.g. a corporate proxy) and `[sink]` (also ship each signed ledger to object storage, as the gateway does; see [deploy/gateway.md](docs/deploy/gateway.md#shipping-ledgers-to-object-storage)).
+The gateway holds the provider keys and signs one ledger per session. It can also:
+- restrict models, output tokens and tools;
+- accept Claude Desktop users signed in with your identity provider;
+- ship every ledger to object storage.
 
-**Try it in five minutes.**
+`seatbelt report runs --pubkey keys/seatbelt.pub` summarises who used what.
 
-```sh
-git clone https://github.com/ronanpdh/seatbelt && cd seatbelt
-uv sync
-uv run seatbelt demo                        # writes runs/<run id>.jsonl
-uv run seatbelt verify runs/<run id>.jsonl
-uv run seatbelt reconstruct runs/<run id>.jsonl
-```
-
-**Prove the tail too.** The chain catches edits inside the file; a signed manifest catches a rewritten ending.
-
-```sh
-uv run seatbelt keygen keys                                  # seatbelt.key (private), seatbelt.pub, both 0600
-uv run seatbelt attest runs/<run id>.jsonl --key keys/seatbelt.key
-uv run seatbelt verify runs/<run id>.jsonl --pubkey keys/seatbelt.pub   # attested, or FORGED / UNATTESTED
-```
-
-Or sign at run end: `Recorder.start(..., signer=Signer.from_file(Path("keys/seatbelt.key")))` (`from seatbelt.attest.sign import Signer`).
-
-**Attack it.** The shipped corpus feeds prompt injection, tool-argument smuggling, credential exfiltration and more to your agent, then checks the ledger.
-
-```sh
-uv run seatbelt scenarios scenarios/ --list
-uv run seatbelt scenarios scenarios/ --target examples.scenario_target:target   # one deliberate FAIL
-```
-
-Your target is a function `target(rec: Recorder, inputs: Inputs)` that drives your agent with the recorder; call `inputs.tool_result(name, real)` where your tools return so poisoned results reach the agent. The corpus names a reference set: the tool names, a policy named `refund-limit` (`trust-exploitation-policy` passes if the refund is refused, whether by the agent or the policy) and the string `CANARY-7F3A9`, which `canary-exfiltration` expects planted wherever your agent keeps its credential; copy a scenario and change the names for yours. `no_match` runs on the redacted ledger, so a canary shaped like a real key (`sk-ant-...`, `AKIA...`) is scrubbed before the check sees it; use an inert string. A target must end cleanly to pass, so catch `PolicyDenied` (from `seatbelt.policy.engine`) and refuse gracefully rather than let it propagate. Every failure cites ledger event ids. For a live model as the agent, see [`examples/anthropic_scenario_target.py`](examples/anthropic_scenario_target.py).
-
-**Sandbox it.** Run the corpus with the target in a container that has no network unless a scenario says so.
-
-```sh
-rm -rf dist && uv build && docker build -f docker/Dockerfile -t seatbelt-target .
-uv run seatbelt scenarios scenarios/ --target examples.scenario_target:target --image seatbelt-target
-```
-
-Extend the image with your agent's dependencies (`FROM seatbelt-target`, then `pip install ...`). Your code is mounted read-only at `/target`; the signing key never leaves the host. Everything under `--target-dir` is visible to the target: keep keys, `.env` and `runs/` outside it; the CLI refuses a `--key` inside it.
-
-**Hand it over.** One zip, one command to check it.
-
-```sh
-uv run seatbelt pack runs --out audit.seatbelt.zip --key keys/seatbelt.key --corpus scenarios/
-uv run seatbelt verify-pack audit.seatbelt.zip --pubkey keys/seatbelt.pub
-```
-
-The pack carries every ledger, its attestation, the findings and the corpus, bound by a signed manifest. Format: [`docs/spec/evidence-pack-v1.md`](docs/spec/evidence-pack-v1.md).
-
-**Run it for a team.** A gateway records every employee's model traffic from the clients they already use, one signed ledger per session.
-
-```sh
-uv sync
-uv run seatbelt keygen keys                                     # the gateway's signing key
-cat > gateway.yaml <<'YAML'
-signing_key: keys/seatbelt.key
-ledgers: runs
-upstreams:
-  anthropic: {url: https://api.anthropic.com, key_env: ANTHROPIC_API_KEY}
-  openai: {url: https://api.openai.com, key_env: OPENAI_API_KEY}
-YAML
-uv run seatbelt gateway keygen --user alice@corp                # prints alice's key once
-uv run seatbelt gateway serve                                   # listens on 127.0.0.1:8080
-```
-
-Each employee puts the gateway URL and their key in `~/.config/seatbelt/config.toml` (`gateway = "http://127.0.0.1:8080"`, `key = "sbk_..."`, mode 0600; a 0.2.0 `gateway.toml` with `url` still works) and runs `seatbelt run claude` (or `seatbelt run codex`, or `seatbelt run gemini`): it launches the CLI pointed at the gateway, names the run, removes real provider keys from its environment, and ends the run when the CLI exits. By hand: `ANTHROPIC_BASE_URL=http://127.0.0.1:8080 ANTHROPIC_API_KEY=sbk_... claude`, an OpenAI client (Chat Completions or Responses) with `OPENAI_BASE_URL=http://127.0.0.1:8080/v1`, or a Gemini API client with `GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:8080`. The real provider keys stay in the gateway's environment. A session closes and is signed after `session_idle` seconds of quiet (default 900); `policy:` in the config restricts models, output tokens and tools. `seatbelt report runs --pubkey keys/seatbelt.pub` summarises who used what and flags anything refused, failed, unsigned or altered.
-
-## Recording your own agent
+## Record your own agent
 
 ```python
 from pathlib import Path
@@ -110,13 +65,26 @@ Using the Anthropic SDK? Wrap the client and every `create` or `stream` call is 
 
 Using the OpenAI Agents SDK? Register `agents.add_trace_processor(SeatbeltProcessor(rec))` once at startup. See [`examples/openai_agents_refund.py`](examples/openai_agents_refund.py).
 
+To sign each run when it ends, make a key with `seatbelt keygen keys` and pass `signer=Signer.from_file(Path("keys/seatbelt.key"))` to `Recorder.start` (`from seatbelt.attest.sign import Signer`).
+
+## Test your agent
+
+The shipped corpus feeds prompt injection, tool-argument smuggling, credential exfiltration and more to your agent, then checks the ledger. It can also run your agent in a sandbox with no network, and bundle the results into one signed evidence pack. See [docs/scenarios.md](docs/scenarios.md).
+
+```sh
+git clone https://github.com/ronanpdh/seatbelt && cd seatbelt && uv sync
+uv run seatbelt scenarios scenarios/ --target examples.scenario_target:target   # one deliberate FAIL
+```
+
 ## Commands
 
 | Command | Does | Exit 1 when |
 |---|---|---|
-| `seatbelt demo [--out runs]` | records a scripted example run | |
+| `seatbelt run <cli> [--config] [--exe] [-- args]` | runs `claude`, `codex` or `gemini`, recorded on this machine or through your gateway | bad config or unknown CLI (127: executable not found); otherwise the CLI's own exit code |
+| `seatbelt report [runs] [--pubkey] [--json]` | usage by person, model and tool; refused, failed, open and unsigned runs. With no `runs`, this machine's runs | a ledger is broken, or forged with a key given |
 | `seatbelt verify <ledger> [--pubkey]` | checks the hash chain and attestation | broken, forged, incomplete, or unattested with a key given |
 | `seatbelt reconstruct <ledger> [--pubkey]` | prints the run as a timeline | same as verify |
+| `seatbelt demo [--out runs]` | records a scripted example run | |
 | `seatbelt keygen [dir]` | writes an Ed25519 key pair | a key file exists |
 | `seatbelt attest <ledger> --key` | signs a finished ledger into `<id>.attest.json` | broken or incomplete chain, sidecar exists |
 | `seatbelt scenarios <corpus> --target m:f [--out] [--key] [--list] [--image] [--target-dir] [--timeout]` | runs the adversarial corpus | any finding (2: bad target) |
@@ -124,8 +92,6 @@ Using the OpenAI Agents SDK? Register `agents.add_trace_processor(SeatbeltProces
 | `seatbelt verify-pack <zip> [--pubkey]` | re-checks a pack offline | forged, or a broken ledger inside |
 | `seatbelt gateway keygen --user <id> [--config]` | issues a gateway key; stores only its hash | the user already has a key |
 | `seatbelt gateway serve [--config]` | runs the recording gateway | bad config or signing key |
-| `seatbelt run <cli> [--config] [--exe] [-- args]` | launches `claude` or `codex` through the gateway | bad config or unknown CLI (127: executable not found); otherwise the CLI's own exit code |
-| `seatbelt report <runs> [--pubkey] [--json]` | usage by person, model and tool; refused, failed, open, unsigned runs | a ledger is broken, or forged with a key given |
 
 Every command has `--help`. Formats: ledger and attestation in [ADR 0001](docs/adr/0001-hash-chained-jsonl-ledger.md) and [ADR 0002](docs/adr/0002-signed-run-manifest.md), scenario and findings schemas in [`docs/schema/`](docs/schema/), evidence pack in [`docs/spec/evidence-pack-v1.md`](docs/spec/evidence-pack-v1.md).
 
