@@ -17,9 +17,42 @@ The gateway knows who a request came from by the key it carries. How that key re
 | Approach | Claude Desktop key | Attribution in the ledger |
 |---|---|---|
 | One key in a fleet-wide profile | `inferenceGatewayApiKey` [1] | Everyone shares one principal. Use only for a pilot, or issue the key to a team id such as `finance@corp`. |
-| A per-user key read by a credential helper | `inferenceCredentialHelper` [1][3] | Each user is their own principal. Recommended. |
+| A per-user key read by a credential helper | `inferenceCredentialHelper` [1][3] | Each user is their own principal. |
+| Sign-in with your identity provider (OIDC) | `inferenceCredentialKind` + `inferenceGatewayOidc` [1][3] | Each user is their own principal, by the provider's user id; no keys to issue or revoke. Recommended where you have Entra ID, Okta or another OIDC provider. From 0.3.0. |
 
-The gateway does not accept OIDC tokens (`inferenceGatewayOidc`) yet; that is planned for 0.3.0.
+### Sign-in with your identity provider (OIDC)
+
+Claude Desktop signs the user in with your provider in the system browser (authorization code with PKCE, a public client, no secret) and sends the provider's token, unchanged, as `Authorization: Bearer` on every inference request: the ID token by default, or the access token with `bearerTokenType: "access_token"` [1][3]. The app refreshes it before a turn when it has expired, and once more if the gateway answers 401 [3]. The gateway checks each token offline against the provider's published keys: its signature, `iss`, `aud` and `exp` [1][4]. Checking `aud` matters: without it any token your tenant issues, for any app, would be accepted [1].
+
+1. Register Claude Desktop with the provider as a public client.
+   - Entra ID: an app registration with the redirect URI `http://127.0.0.1/callback` under "Mobile and desktop applications" (any port is allowed) [1].
+   - Okta: a Native app, with the exact loopback port you set as `redirectPort` [1].
+2. Point the gateway at the provider, in `gateway.yaml`:
+
+   ```yaml
+   oidc:
+     issuer: https://login.microsoftonline.com/<tenant id>/v2.0   # Okta: https://<org>.okta.com
+     audience: <the app's client id>        # the ID token's aud
+     principal_claim: oid                   # Entra's immutable user id; Okta and most others: sub
+     name_claim: email                      # recorded for readers, never used to authorize
+     # allow: [<oid>, ...]                  # optional: only these users
+   ```
+
+   The keys are found from the issuer's discovery document (`<issuer>/.well-known/openid-configuration`), kept for 5 minutes, and fetched again early when a token names a key the gateway does not hold, which is how a provider's key rotation shows. `jwks_url` overrides discovery. Only asymmetric signature algorithms can be configured (`algorithms`, default `[RS256]`), so an unsigned or HMAC-signed token is never accepted; `leeway` allows up to 60 seconds of clock skew by default.
+3. Configure the app (MDM, or the in-app configuration) [1][3]:
+
+   | Key | Value |
+   |---|---|
+   | `inferenceProvider` | `gateway` |
+   | `inferenceGatewayBaseUrl` | the gateway URL |
+   | `inferenceCredentialKind` | `interactive` |
+   | `inferenceGatewayOidc` | one JSON object, e.g. `{"issuer":"https://login.microsoftonline.com/<tenant id>/v2.0","clientId":"<client id>"}`. In a plist or the registry it is a JSON string; dotted keys such as `inferenceGatewayOidc.clientId` are not read [1][3]. |
+
+   From Desktop 2.7032.0 the same settings are also spelled `inferenceCredentialKind: "external-idp"` with `inferenceIdpOidc`; the older spelling keeps working [1][3].
+
+Users are identified by `principal_claim`, not by e-mail: the provider's own guidance is to key on the immutable id (Entra `oid`, Okta `sub`), because `email` and `preferred_username` can change or be absent [1][4]. A signed-in user's sessions are keyed by issuer and user id, so a token refresh continues the same ledger; `run.start` records `principal.auth: oidc`, `principal.issuer` and, if the token has it, `principal.name`. Revocation is the provider's: disable the user there, or take them off `allow` (a config reload applies it to their next request). A token already issued stays valid until it expires.
+
+Keep `offline_access` in the scopes (it is in the default) so the app can refresh the ID token silently; with explicit `scopes` in `id_token` mode it is not added for you [1]. Google Workspace does not return an ID token on refresh, so Anthropic's docs recommend `access_token` mode there [1]; whether Google's access tokens can be checked offline as above is not established, so Google is not a tested provider for this gateway yet.
 
 ### Per-user keys with a credential helper
 
@@ -90,4 +123,5 @@ Desktop does not name its runs, so each user's Desktop and Cowork traffic goes i
 
 1. Anthropic, "Deploy Claude Desktop on 3P with an LLM gateway": https://claude.com/docs/third-party/claude-desktop/gateway
 2. Anthropic, "Deploy with MDM": https://claude.com/docs/third-party/claude-desktop/mdm
-3. Anthropic, Claude Desktop configuration reference (`inferenceProvider`, `inferenceCredentialHelper`, value types): https://claude.com/docs/third-party/claude-desktop/configuration
+3. Anthropic, Claude Desktop configuration reference (`inferenceProvider`, `inferenceCredentialHelper`, `inferenceGatewayOidc`, value types): https://claude.com/docs/third-party/claude-desktop/configuration
+4. Anthropic, bootstrap server guidance (checking `iss`, `aud`, `exp` against the provider's keys; keying on immutable ids): https://claude.com/docs/third-party/claude-desktop/bootstrap; Microsoft, ID token claims reference: https://learn.microsoft.com/en-us/entra/identity-platform/id-token-claims-reference

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
@@ -23,6 +24,7 @@ from seatbelt.gateway.formats import Format, anthropic, openai_chat, openai_resp
 from seatbelt.gateway.formats.anthropic import AnthropicFormat
 from seatbelt.gateway.formats.openai_chat import OpenAIChatFormat
 from seatbelt.gateway.formats.openai_responses import OpenAIResponsesFormat
+from seatbelt.gateway.oidc import OidcError, OidcVerifier, looks_like_jwt
 from seatbelt.gateway.sessions import Session, Sessions
 from seatbelt.ledger.events import Event
 from seatbelt.policy.engine import Policy, denylist, max_output_tokens, models
@@ -73,17 +75,54 @@ _FORMATS: dict[str, tuple[str, str, type[Format], Assemble]] = {
 type Finish = Callable[[ModelCall, dict[str, Any] | None, str | None], None]
 
 
-def _principal(cfg: GatewayConfig, request: Request) -> Principal | None:
-    """Claude Code can send both headers, one of them another credential (an `apiKeyHelper`
-    key in `x-api-key`, say), so each is tried."""
+@dataclass(frozen=True)
+class Identity:
+    """Who a request is from. `session_key` separates sessions: an issued key's hash, or for
+    OIDC a hash of issuer and subject, which stays the same as the provider's tokens rotate."""
+
+    id: str
+    session_key: str
+    attrs: dict[str, Any]  # recorded on run.start
+
+    @classmethod
+    def of_key(cls, principal: Principal) -> Identity:
+        attrs = {"principal.key_id": principal.key_sha256[:12]}  # which issued key
+        return cls(principal.id, principal.key_sha256, attrs)
+
+
+def _oidc_identity(verifier: OidcVerifier, token: str) -> Identity | Response:
+    try:
+        claims = verifier.verify(token)
+    except OidcError as exc:
+        return _error(401, "authentication_error", f"sign-in token refused: {exc}")
+    cfg = verifier.cfg
+    subject = claims.get(cfg.principal_claim)
+    if not isinstance(subject, str) or not subject:
+        return _error(401, "authentication_error", f"sign-in token has no {cfg.principal_claim}")
+    if cfg.allow is not None and subject not in cfg.allow:
+        return _error(403, "permission_error", f"{subject} is not allowed to use this gateway")
+    name = claims.get(cfg.name_claim) if cfg.name_claim else None
+    attrs: dict[str, Any] = {
+        "principal.auth": "oidc",
+        "principal.issuer": claims.get("iss"),
+        **({"principal.name": name} if isinstance(name, str) else {}),
+    }
+    key = hashlib.sha256(f"oidc\0{claims.get('iss')}\0{subject}".encode()).hexdigest()
+    return Identity(subject, key, attrs)
+
+
+async def _identify(live: Live, request: Request) -> Identity | Response:
+    """An issued key in either header (Claude Code can send both, one of them another
+    credential, e.g. an `apiKeyHelper` key in `x-api-key`), else a provider's sign-in token as
+    the Bearer (Claude Desktop with `inferenceGatewayOidc`). An error response otherwise."""
     bearer = request.headers.get("authorization", "")
-    for raw in (
-        request.headers.get("x-api-key", ""),
-        bearer[7:] if bearer[:7].lower() == "bearer " else "",
-    ):
-        if raw.strip() and (principal := cfg.lookup(raw.strip())) is not None:
-            return principal
-    return None
+    token = bearer[7:].strip() if bearer[:7].lower() == "bearer " else ""
+    for raw in (request.headers.get("x-api-key", "").strip(), token):
+        if raw and (principal := live.cfg.lookup(raw)) is not None:
+            return Identity.of_key(principal)
+    if live.oidc is not None and looks_like_jwt(token):
+        return await run_in_threadpool(_oidc_identity, live.oidc, token)  # may fetch keys
+    return _unauthorized()
 
 
 def _error(status: int, kind: str, message: str) -> Response:
@@ -118,10 +157,18 @@ class Live:
     cfg: GatewayConfig
     request_policy: Policy | None
     tool_policy: Policy | None
+    oidc: OidcVerifier | None = None
 
     @classmethod
-    def of(cls, cfg: GatewayConfig) -> Live:
-        return cls(cfg, *_policies(cfg))
+    def of(cls, cfg: GatewayConfig, previous: Live | None = None) -> Live:
+        """`previous`'s OIDC verifier, and so its fetched keys, is kept if unchanged."""
+        if cfg.oidc is None:
+            oidc = None
+        elif previous is not None and previous.oidc is not None and previous.oidc.cfg == cfg.oidc:
+            oidc = previous.oidc
+        else:
+            oidc = OidcVerifier(cfg.oidc)
+        return cls(cfg, *_policies(cfg), oidc=oidc)
 
 
 def _live(request: Request) -> Live:
@@ -309,9 +356,9 @@ def create_app(
     async def relay(request: Request) -> Response:
         live = _live(request)
         cfg, request_policy, tool_policy = live.cfg, live.request_policy, live.tool_policy
-        principal = _principal(cfg, request)
-        if principal is None:
-            return _unauthorized()
+        principal = await _identify(live, request)
+        if isinstance(principal, Response):
+            return principal
         upstream_name, auth_header, format_cls, assemble = _FORMATS[request.url.path]
         upstream = cfg.upstreams.get(upstream_name)
         if upstream is None:
@@ -325,9 +372,9 @@ def create_app(
             return _error(400, "invalid_request_error", "background responses are not recorded")
         run = request.headers.get(RUN_HEADER) or None
         run_end = request.headers.get(RUN_END_HEADER, "").lower() == "true"
-        meta = {**_meta(request), "principal.key_id": principal.key_sha256[:12]}  # which issued key
+        meta = {**_meta(request), **principal.attrs}
         session = await run_in_threadpool(
-            sessions.get, principal.id, run, meta, principal.key_sha256
+            sessions.get, principal.id, run, meta, principal.session_key
         )
         call: ModelCall | None = None
         handed_off = False  # a stream settles the session itself when it closes
@@ -356,7 +403,7 @@ def create_app(
             if call is not None and call.response is None and not refused:
                 await run_in_threadpool(finish, call, None, "request did not complete")
             if run_end:
-                await run_in_threadpool(sessions.end, principal.id, run, principal.key_sha256)
+                await run_in_threadpool(sessions.end, principal.id, run, principal.session_key)
             await run_in_threadpool(sessions.release, session)
 
         try:
@@ -411,10 +458,11 @@ def create_app(
     async def forward(request: Request) -> Response:
         """Probes a client makes besides inference: authenticated and forwarded, not recorded.
         A token count or a model list is nothing an auditor needs."""
-        cfg = _live(request).cfg
-        principal = _principal(cfg, request)
-        if principal is None:
-            return _unauthorized()
+        live = _live(request)
+        cfg = live.cfg
+        principal = await _identify(live, request)
+        if isinstance(principal, Response):
+            return principal
         # Anthropic clients send anthropic-version on every request, x-api-key or Bearer alike
         # (Claude Code under `seatbelt run`, Claude Desktop by default); OpenAI clients never do
         anthropic_style = (
@@ -451,11 +499,11 @@ def create_app(
         return Response(status_code=200)
 
     async def end_run(request: Request) -> Response:
-        principal = _principal(_live(request).cfg, request)
-        if principal is None:
-            return _unauthorized()
+        principal = await _identify(_live(request), request)
+        if isinstance(principal, Response):
+            return principal
         name = request.path_params["name"]
-        found = await run_in_threadpool(sessions.end, principal.id, name, principal.key_sha256)
+        found = await run_in_threadpool(sessions.end, principal.id, name, principal.session_key)
         return Response(status_code=204 if found else 404)
 
     app = Starlette(

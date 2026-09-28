@@ -981,11 +981,11 @@ wheels = [
 
 [[package]]
 name = "pyjwt"
-version = "2.14.0"
+version = "2.15.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/af/c3/8a3b59c25070cc61dc517fbdfa5dc0904670c96f605cc69759dc09166b99/pyjwt-2.14.0.tar.gz", hash = "sha256:77283c83fb56ecf566a886c757a714bc83668e38156de2cce8263302f42e0b86", size = 113177, upload-time = "2026-09-11T13:11:54.638Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/43/ea/5194e52748b0da83d71e082d75496eaec6e58f419f5e184786ded517e6a9/pyjwt-2.15.1.tar.gz", hash = "sha256:4f259e80cdfb6b3fc18a7de51fd1ef9ec79652f25019bae68975ca2468a34df8", size = 121252, upload-time = "2026-09-28T18:40:42.598Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9c/97/672cb32ce0dfea44b740cb7b4f97038463b9cf7c0ead1aacf595572851d6/pyjwt-2.14.0-py3-none-any.whl", hash = "sha256:ad0cef71c756a56e74863c2919cf0985f72decbcfcb550ee2f422e7c62b5eedc", size = 32896, upload-time = "2026-09-11T13:11:53.409Z" },
+    { url = "https://files.pythonhosted.org/packages/50/ca/44de4e75f8aadc457f0634be3b542815078ded46dca30efb960edeecad6e/pyjwt-2.15.1-py3-none-any.whl", hash = "sha256:42d59d631f7768a1028a64c7ff581a9bf7519804daf91fc5b6c56e30eec5e193", size = 33860, upload-time = "2026-09-28T18:40:41.429Z" },
 ]
 
 [package.optional-dependencies]
@@ -1302,6 +1302,7 @@ anthropic = [
 gateway = [
     { name = "anyio" },
     { name = "httpx2" },
+    { name = "pyjwt" },
     { name = "starlette" },
     { name = "uvicorn" },
 ]
@@ -1319,6 +1320,7 @@ dev = [
     { name = "hypothesis" },
     { name = "openai-agents" },
     { name = "pre-commit" },
+    { name = "pyjwt" },
     { name = "pyright" },
     { name = "pytest" },
     { name = "ruff" },
@@ -1338,6 +1340,7 @@ requires-dist = [
     { name = "httpx2", marker = "extra == 'gateway'", specifier = ">=2.13" },
     { name = "openai-agents", marker = "extra == 'openai-agents'", specifier = ">=0.22.2" },
     { name = "pydantic", specifier = ">=2.13.5" },
+    { name = "pyjwt", marker = "extra == 'gateway'", specifier = ">=2.15" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "rich", specifier = ">=15.0.0" },
     { name = "starlette", marker = "extra == 'gateway'", specifier = ">=1.6" },
@@ -1356,6 +1359,7 @@ dev = [
     { name = "hypothesis", specifier = ">=6.168.0" },
     { name = "openai-agents", specifier = ">=0.22.2" },
     { name = "pre-commit", specifier = ">=4.6.2" },
+    { name = "pyjwt", specifier = ">=2.15" },
     { name = "pyright", specifier = ">=1.1.414" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "ruff", specifier = ">=0.16.7" },
