@@ -86,6 +86,41 @@ def test_close_open_chains_on_startup(tmp_path: Path) -> None:
     assert close_open_chains(tmp_path, signer) == []
 
 
+def test_close_open_chains_never_signs_a_closed_ledger(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A closed gateway ledger without a signature may be one the gateway was killed while
+    signing, or one rewritten and its signature deleted: the two look the same, so it is
+    reported and left for a person, never signed."""
+    from seatbelt.record.recorder import Recorder
+
+    sessions = Sessions(tmp_path, None, idle=60)  # no signer: closes without signing
+    s = sessions.get("alice@corp", None, {})
+    sessions.release(s)
+    sessions.close_all()
+    ours = s.rec.ledger.path
+    with Recorder.start(tmp_path, agent_id="someone-else", run_id="foreign"):
+        pass  # closed, unsigned, and not the gateway's
+    with caplog.at_level(logging.WARNING, logger="seatbelt.gateway.sessions"):
+        assert close_open_chains(tmp_path, Signer.generate()) == []
+    assert not sidecar(ours).exists() and not sidecar(tmp_path / "foreign.jsonl").exists()
+    (warning,) = [r.getMessage() for r in caplog.records]
+    assert str(ours) in warning and "seatbelt attest" in warning
+
+
+def test_sessions_are_per_issued_key(tmp_path: Path) -> None:
+    sessions = Sessions(tmp_path, None, idle=60)
+    old = sessions.get("alice@corp", "job", {}, key="k1")
+    new = sessions.get("alice@corp", "job", {}, key="k2")
+    assert old is not new
+    assert sessions.end("alice@corp", "job", key="k1") is True  # busy: closes at release
+    assert not verify_file(old.rec.ledger.path).complete
+    assert sessions.get("alice@corp", "job", {}, key="k2") is new
+    for s in (old, new, new):
+        sessions.release(s)
+    assert sessions.close_all(timeout=1) == 0
+
+
 def _last_kind(path: Path) -> Kind:
     return list(read_events(path))[-1].kind
 
@@ -118,6 +153,26 @@ def test_end_while_busy_closes_at_the_last_release(tmp_path: Path) -> None:
     assert verify_file(s.rec.ledger.path).complete
     sessions.release(fresh)
     assert sessions.close_all() == 0
+
+
+def test_end_principal_ends_all_its_runs_and_waits_for_busy_ones(tmp_path: Path) -> None:
+    sessions = Sessions(tmp_path, Signer.generate(), idle=60)
+    idle = sessions.get("alice@corp", None, {})
+    sessions.release(idle)
+    busy = sessions.get("alice@corp", "job", {})
+    bob = sessions.get("bob@corp", None, {})
+    sessions.release(bob)
+    assert sessions.end_principal("alice@corp") == 2
+    assert verify_file(idle.rec.ledger.path).complete  # idle: closed now
+    assert not verify_file(busy.rec.ledger.path).complete  # in flight: not yet
+    fresh = sessions.get("alice@corp", "job", {})
+    assert fresh is not busy  # a new request starts afresh
+    sessions.release(fresh)
+    sessions.release(busy)
+    assert verify_file(busy.rec.ledger.path).complete and sidecar(busy.rec.ledger.path).exists()
+    assert sessions.get("bob@corp", None, {}) is bob  # others untouched
+    sessions.release(bob)
+    assert sessions.close_all(timeout=1) == 0
 
 
 def test_close_all_waits_for_in_flight_requests(tmp_path: Path) -> None:

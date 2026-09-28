@@ -80,7 +80,7 @@ You supply `target(rec: Recorder, inputs: Inputs)`. Checks (`no_tool_call`, `too
 
 ### Recording gateway
 
-`seatbelt gateway serve` is a service the organisation runs so that clients employees already use are recorded with no code change. It speaks the Anthropic Messages API and OpenAI Chat Completions, authenticates each employee by an issued key (stored as a hash), swaps in the real provider key, forwards the request body unchanged, relays the response as it arrives, streamed or not, and records the exchange into one signed ledger per employee session. A session closes and is signed after an idle window, or when a named run ends; after a crash, the next start closes and signs every open chain whose hash chain still verifies. An org policy can restrict models, cap output tokens and refuse the results of denied tools. Deployment: `docs/deploy/gateway.md`; Claude Desktop and Cowork: `docs/deploy/claude-desktop-gateway.md`.
+`seatbelt gateway serve` is a service the organisation runs so that clients employees already use are recorded with no code change. It speaks the Anthropic Messages API, OpenAI Chat Completions and the OpenAI Responses API, authenticates each employee by an issued key (stored as a hash), swaps in the real provider key, forwards the request body unchanged, relays the response as it arrives, streamed or not, and records the exchange into one signed ledger per employee session. A session closes and is signed after an idle window, or when a named run ends; after a crash, the next start closes and signs every open chain whose hash chain still verifies. An org policy can restrict models, cap output tokens and refuse the results of denied tools. Deployment: `docs/deploy/gateway.md`; Claude Desktop and Cowork: `docs/deploy/claude-desktop-gateway.md`.
 
 Which clients it records:
 
@@ -90,13 +90,14 @@ Which clients it records:
 | Claude Desktop, Cowork | MDM or in-app gateway configuration | 0.2.0 |
 | Claude SDKs, Claude Agent SDK | base URL | 0.2.0 |
 | OpenAI Chat Completions clients (OpenAI SDKs, LangChain) | `OPENAI_BASE_URL` | 0.2.0 |
-| Codex, OpenAI Agents SDK (Responses API) | base URL | 0.3.0 |
+| Codex | `seatbelt run codex` | 0.3.0 |
+| OpenAI Agents SDK, OpenAI SDKs (Responses API) | `OPENAI_BASE_URL` | 0.3.0 |
 | Gemini CLI, Google SDKs | base URL | 0.3.0 |
 | claude.ai web, unmanaged desktops | Compliance API importer | 0.3.0 |
 
 ### Launcher
 
-`seatbelt run claude` starts Claude Code pointed at the gateway with the employee's key from `~/.config/seatbelt/gateway.toml`, names the run, strips real provider keys from its environment, and ends the run when it exits. Standard library only.
+`seatbelt run claude` (or `seatbelt run codex`) starts the CLI pointed at the gateway with the employee's key from `~/.config/seatbelt/gateway.toml`, names the run, strips real provider keys from its environment, and ends the run when it exits. Standard library only.
 
 ### Fleet report
 
@@ -233,7 +234,7 @@ The recipient needs the zip, the public key and the harness. Nothing else.
 | `seatbelt verify-pack <zip> [--pubkey]` | re-checks a pack offline | forged, or a broken ledger inside |
 | `seatbelt gateway keygen --user <id> [--config]` | issues a gateway key; stores only its hash | the user already has a key |
 | `seatbelt gateway serve [--config]` | runs the recording gateway | bad config or signing key |
-| `seatbelt run <cli> [--config] [--exe] [-- args]` | launches `claude` through the gateway | bad config or unknown CLI (127: executable not found); otherwise the CLI's exit code |
+| `seatbelt run <cli> [--config] [--exe] [-- args]` | launches `claude` or `codex` through the gateway | bad config or unknown CLI (127: executable not found); otherwise the CLI's exit code |
 | `seatbelt report <runs> [--pubkey] [--json]` | usage by employee, model and tool | a ledger is broken, forged with a key given, or the key is unreadable |
 
 ## What it does not do

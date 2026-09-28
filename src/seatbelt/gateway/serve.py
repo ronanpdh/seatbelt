@@ -6,19 +6,24 @@ import base64
 import binascii
 import logging
 import os
+import signal
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Generator, Mapping
+from contextlib import contextmanager
+from pathlib import Path
 
 import uvicorn
 
 from seatbelt.attest.manifest import AttestError
 from seatbelt.attest.sign import Signer
 from seatbelt.gateway.app import create_app
-from seatbelt.gateway.config import GatewayConfig
+from seatbelt.gateway.config import GatewayConfig, read_config
+from seatbelt.gateway.reload import Reloader
 from seatbelt.gateway.sessions import Sessions, close_open_chains
 
 SWEEP_EVERY = 30.0  # seconds; a session closes at most this long after its idle window
 DRAIN = 30  # seconds uvicorn, then close_all, wait for in-flight requests on shutdown
+RELOAD_EVERY = 30.0  # seconds between checks of the config file; SIGHUP checks at once
 
 _log = logging.getLogger(__name__)
 
@@ -84,34 +89,99 @@ def _shape(raw: str) -> str:
     )
 
 
-def serve(cfg: GatewayConfig) -> None:
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(name)s: %(message)s")
-    signer = load_signer(cfg, os.environ)
-    host, port = _host_port(cfg.listen)
-    closed = close_open_chains(cfg.ledgers, signer)
-    if closed:
-        _log.warning("closed %d chains left open by a previous run", len(closed))
-    sessions = Sessions(cfg.ledgers, signer, idle=cfg.session_idle)
-    stop = threading.Event()
-
-    def sweeper() -> None:
-        while not stop.wait(SWEEP_EVERY):
-            try:
-                sessions.sweep()
-            except Exception:  # a failed close must not stop every later close
-                _log.exception("session sweep failed")
-
-    threading.Thread(target=sweeper, name="seatbelt-sweeper", daemon=True).start()
+@contextmanager
+def _on_sighup(action: Callable[[], None]) -> Generator[bool]:
+    """Run `action` on SIGHUP until the block ends, then put the previous handler back.
+    Without a handler SIGHUP kills the process, or, as PID 1 in a container, is ignored.
+    Yields whether it was installed: Windows has no SIGHUP, and only the main thread may set
+    handlers."""
+    if not hasattr(signal, "SIGHUP") or threading.current_thread() is not threading.main_thread():
+        yield False
+        return
+    previous = signal.signal(signal.SIGHUP, lambda _signum, _frame: action())
     try:
-        uvicorn.run(
-            create_app(cfg, sessions),
-            host=host,
-            port=port,
-            log_level="info",
-            timeout_graceful_shutdown=DRAIN,
-        )
+        yield True
     finally:
-        stop.set()
-        left = sessions.close_all(timeout=DRAIN)
-        if left:
-            _log.warning("%d sessions still busy at shutdown; closed on next start", left)
+        signal.signal(signal.SIGHUP, signal.SIG_DFL if previous is None else previous)
+
+
+@contextmanager
+def _graceful_stop() -> Generator[None]:
+    """uvicorn stops on SIGINT, SIGTERM or (Windows) SIGBREAK, puts back the handlers it
+    found, and raises the signal again. Under a default handler that ends the process before
+    its sessions are closed and signed, so uvicorn finds handlers that do nothing, and they
+    stay until every session is signed: a second signal then would leave a closed ledger
+    unsigned, which no restart may sign (see `close_open_chains`). SIGKILL still stops it."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    stops = [getattr(signal, n) for n in ("SIGINT", "SIGTERM", "SIGBREAK") if hasattr(signal, n)]
+    previous = {sig: signal.signal(sig, lambda _signum, _frame: None) for sig in stops}
+    try:
+        yield
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, signal.SIG_DFL if handler is None else handler)
+
+
+def serve(path: Path) -> None:
+    """Run the gateway on the config at `path`, and reload the file when it changes."""
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(name)s: %(message)s")
+    stop = threading.Event()
+    hup = threading.Event()
+    # from the start: a SIGHUP during the startup scan leaves `hup` set, and the watcher's
+    # first wait then reloads
+    with _on_sighup(hup.set) as sighup:
+        cfg, loaded = read_config(path)  # the watcher compares the file against these bytes
+        signer = load_signer(cfg, os.environ)
+        host, port = _host_port(cfg.listen)
+        closed = close_open_chains(cfg.ledgers, signer)
+        if closed:
+            _log.warning("closed %d chains left open by a previous run", len(closed))
+        sessions = Sessions(cfg.ledgers, signer, idle=cfg.session_idle)
+        app = create_app(cfg, sessions)
+        reloader = Reloader(path, app, sessions, loaded)
+
+        def sweeper() -> None:
+            while not stop.wait(SWEEP_EVERY):
+                try:
+                    sessions.sweep()
+                except Exception:  # a failed close must not stop every later close
+                    _log.exception("session sweep failed")
+
+        def watcher() -> None:
+            while True:
+                signalled = hup.wait(RELOAD_EVERY)
+                hup.clear()
+                if stop.is_set():
+                    return
+                try:
+                    reloader.check(force=signalled)
+                except Exception:  # a failed reload must not stop every later one
+                    _log.exception("config reload failed")
+
+        threads = [
+            threading.Thread(target=sweeper, name="seatbelt-sweeper", daemon=True),
+            threading.Thread(target=watcher, name="seatbelt-reload", daemon=True),
+        ]
+        for thread in threads:
+            thread.start()
+        with _graceful_stop():
+            try:
+                uvicorn.run(
+                    app,
+                    host=host,
+                    port=port,
+                    log_level="info",
+                    timeout_graceful_shutdown=DRAIN,
+                )
+            finally:
+                if sighup:  # a late SIGHUP must not run its handler inside hup.set below
+                    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+                stop.set()
+                hup.set()  # wake the watcher so it sees stop
+                for thread in threads:  # a sweep or reload may be signing a ledger it closed
+                    thread.join(timeout=DRAIN)
+                left = sessions.close_all(timeout=DRAIN)
+                if left:
+                    _log.warning("%d sessions still busy at shutdown; closed on next start", left)

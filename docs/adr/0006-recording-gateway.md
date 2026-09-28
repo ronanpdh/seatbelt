@@ -26,4 +26,4 @@ Rejected: a proxy on each employee's machine (the record sits on their disk; ide
 - The gateway sees every prompt in clear before redaction; its host is as sensitive as the provider keys it holds.
 - A shared key in a fleet-wide client profile attributes everyone to one principal; per-user attribution needs per-user keys.
 - Traffic in the OpenAI Responses format (current Codex, the OpenAI Agents SDK's Responses model) or Gemini's is not recorded until those formats land (0.3.0).
-- Config is read once at start: revoking a key means deleting its entry and restarting.
+- Config was read once at start in 0.2.0, so revoking a key meant restarting. From 0.3.0 the gateway reloads the file when it changes or on `SIGHUP`, and ends a withdrawn key's open sessions ([deploy/gateway.md](../deploy/gateway.md#changing-the-config-while-it-runs)).

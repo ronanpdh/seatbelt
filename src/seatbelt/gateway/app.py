@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any, cast
 
 import anyio
@@ -18,9 +19,10 @@ from starlette.types import Receive, Scope, Send
 
 from seatbelt import __version__
 from seatbelt.gateway.config import GatewayConfig, Principal
-from seatbelt.gateway.formats import Format, anthropic, openai_chat
+from seatbelt.gateway.formats import Format, anthropic, openai_chat, openai_responses
 from seatbelt.gateway.formats.anthropic import AnthropicFormat
 from seatbelt.gateway.formats.openai_chat import OpenAIChatFormat
+from seatbelt.gateway.formats.openai_responses import OpenAIResponsesFormat
 from seatbelt.gateway.sessions import Session, Sessions
 from seatbelt.ledger.events import Event
 from seatbelt.policy.engine import Policy, denylist, max_output_tokens, models
@@ -50,13 +52,22 @@ _STRIP_REQUEST = _HOP | {
 }
 # the body is relayed decoded, so the upstream's encoding and length no longer describe it
 _STRIP_RESPONSE = _HOP | {"content-encoding", "content-length"}
-_FORMATS: dict[str, tuple[str, str, type[Format]]] = {  # path -> (upstream, auth header, format)
-    "/v1/messages": ("anthropic", "x-api-key", AnthropicFormat),
-    "/v1/chat/completions": ("openai", "authorization", OpenAIChatFormat),
-}
-_ASSEMBLE: dict[str, Callable[[list[dict[str, Any]]], dict[str, Any]]] = {
-    "anthropic": anthropic.assemble_sse,
-    "openai": openai_chat.assemble_sse,
+type Assemble = Callable[[list[dict[str, Any]]], dict[str, Any]]
+# path -> (upstream, auth header, format, stream assembler)
+_FORMATS: dict[str, tuple[str, str, type[Format], Assemble]] = {
+    "/v1/messages": ("anthropic", "x-api-key", AnthropicFormat, anthropic.assemble_sse),
+    "/v1/chat/completions": (
+        "openai",
+        "authorization",
+        OpenAIChatFormat,
+        openai_chat.assemble_sse,
+    ),
+    "/v1/responses": (
+        "openai",
+        "authorization",
+        OpenAIResponsesFormat,
+        openai_responses.assemble_sse,
+    ),
 }
 
 type Finish = Callable[[ModelCall, dict[str, Any] | None, str | None], None]
@@ -99,6 +110,24 @@ def _policies(cfg: GatewayConfig) -> tuple[Policy | None, Policy | None]:
     )
 
 
+@dataclass(frozen=True)
+class Live:
+    """The config a request runs under, with the policies built from it. A reload replaces it
+    whole and each request reads it once, so no request mixes two configs."""
+
+    cfg: GatewayConfig
+    request_policy: Policy | None
+    tool_policy: Policy | None
+
+    @classmethod
+    def of(cls, cfg: GatewayConfig) -> Live:
+        return cls(cfg, *_policies(cfg))
+
+
+def _live(request: Request) -> Live:
+    return cast(Live, request.app.state.live)
+
+
 def _upstream_headers(request: Request, auth_header: str, real_key: str) -> dict[str, str]:
     headers = {k: v for k, v in request.headers.items() if k.lower() not in _STRIP_REQUEST}
     headers[auth_header] = f"Bearer {real_key}" if auth_header == "authorization" else real_key
@@ -134,10 +163,12 @@ def _locked[T](session: Session, fn: Callable[[], T]) -> T:
         return fn()
 
 
-def _format(session: Session, name: str, cls: type[Format]) -> Format:
-    fmt = session.formats.get(name)
+def _format(session: Session, cls: type[Format]) -> Format:
+    """One per format and session: Chat Completions and Responses share an upstream but not
+    their open tool calls."""
+    fmt = session.formats.get(cls.__name__)
     if fmt is None:
-        fmt = session.formats[name] = cls(session.rec)
+        fmt = session.formats[cls.__name__] = cls(session.rec)
     return fmt
 
 
@@ -162,21 +193,28 @@ def _refusal(
     tool_policy: Policy | None,
 ) -> str | None:
     """Record the checks on a request; return the first denial, or None. A tool result is
-    refused if this session denied its call, or if the history names a denied tool (a new
-    session after the idle window still carries the old conversation)."""
+    refused while the policy denies the tool this session recorded for its call, or the tool
+    the history names (a new session after the idle window still carries the old
+    conversation). A result held back earlier is let through, and that recorded, once a
+    config reload stops denying its tool."""
     if tool_policy is not None:
         for call_id, name in fmt.tool_result_calls(body):
-            denied = session.denied_calls.get(call_id)
-            if (
-                denied is None
-                and name is not None
-                and any(r for _, r in tool_policy.evaluate(name, {}))
-            ):
-                denied = name
+            remembered = session.denied_calls.get(call_id)
+            denied = next(
+                (
+                    tool
+                    for tool in dict.fromkeys(t for t in (remembered, name) if t)
+                    if any(r for _, r in tool_policy.evaluate(tool, {}))
+                ),
+                None,
+            )
             if denied is not None:
                 reason = f"tool result for denied call {call_id} ({denied})"
                 session.rec.policy_check("denylist", request_id, False, reason)
                 return reason
+            if remembered is not None:  # denied when called; the policy has changed since
+                reason = f"tool result for call {call_id} ({remembered}): no longer denied"
+                session.rec.policy_check("denylist", request_id, True, reason)
     if request_policy is None:
         return None
     first: str | None = None
@@ -231,7 +269,7 @@ def _stream(
     resp: httpx2.Response,
     client: httpx2.AsyncClient,
     call: ModelCall,
-    provider: str,
+    assemble: Assemble,
     finish: Finish,
     settle: Callable[[], Awaitable[None]],
 ) -> Response:
@@ -256,9 +294,11 @@ def _stream(
             await resp.aclose()
             await client.aclose()
         finally:
-            assembled = _ASSEMBLE[provider](sse_events(bytes(received)))
-            await run_in_threadpool(finish, call, assembled, outcome[0])
-            await settle()
+            try:  # never raises by contract; if one does, the session must still be released
+                assembled = assemble(sse_events(bytes(received)))
+                await run_in_threadpool(finish, call, assembled, outcome[0])
+            finally:
+                await settle()
 
     return _RelayStream(chunks, resp.status_code, _relay_headers(resp), on_close)
 
@@ -266,13 +306,13 @@ def _stream(
 def create_app(
     cfg: GatewayConfig, sessions: Sessions, transport: httpx2.AsyncBaseTransport | None = None
 ) -> Starlette:
-    request_policy, tool_policy = _policies(cfg)
-
     async def relay(request: Request) -> Response:
+        live = _live(request)
+        cfg, request_policy, tool_policy = live.cfg, live.request_policy, live.tool_policy
         principal = _principal(cfg, request)
         if principal is None:
             return _unauthorized()
-        upstream_name, auth_header, format_cls = _FORMATS[request.url.path]
+        upstream_name, auth_header, format_cls, assemble = _FORMATS[request.url.path]
         upstream = cfg.upstreams.get(upstream_name)
         if upstream is None:
             return _error(404, "not_found_error", f"no {upstream_name} upstream")
@@ -280,16 +320,21 @@ def create_app(
         body = _json_object(raw)
         if body is None:
             return _error(400, "invalid_request_error", "body must be a JSON object")
+        if format_cls is OpenAIResponsesFormat and body.get("background") is True:
+            # its output is fetched later with GET /v1/responses/{id}, which is not recorded
+            return _error(400, "invalid_request_error", "background responses are not recorded")
         run = request.headers.get(RUN_HEADER) or None
         run_end = request.headers.get(RUN_END_HEADER, "").lower() == "true"
         meta = {**_meta(request), "principal.key_id": principal.key_sha256[:12]}  # which issued key
-        session = await run_in_threadpool(sessions.get, principal.id, run, meta)
+        session = await run_in_threadpool(
+            sessions.get, principal.id, run, meta, principal.key_sha256
+        )
         call: ModelCall | None = None
         handed_off = False  # a stream settles the session itself when it closes
         refused = False  # policy answered the request; no model ever saw it
 
         def fmt() -> Format:  # under the session lock, so parallel requests share one
-            return _format(session, upstream_name, format_cls)
+            return _format(session, format_cls)
 
         def finish(call: ModelCall, payload: dict[str, Any] | None, error: str | None) -> None:
             def run() -> None:
@@ -311,7 +356,7 @@ def create_app(
             if call is not None and call.response is None and not refused:
                 await run_in_threadpool(finish, call, None, "request did not complete")
             if run_end:
-                await run_in_threadpool(sessions.end, principal.id, run)
+                await run_in_threadpool(sessions.end, principal.id, run, principal.key_sha256)
             await run_in_threadpool(sessions.release, session)
 
         try:
@@ -344,7 +389,7 @@ def create_app(
                 return _error(502, "api_error", error)
             if streaming:
                 handed_off = True
-                return _stream(resp, client, call, upstream_name, finish, settle)
+                return _stream(resp, client, call, assemble, finish, settle)
             await client.aclose()
             payload = _json_object(resp.content)
             if resp.status_code >= 400:
@@ -366,6 +411,7 @@ def create_app(
     async def forward(request: Request) -> Response:
         """Probes a client makes besides inference: authenticated and forwarded, not recorded.
         A token count or a model list is nothing an auditor needs."""
+        cfg = _live(request).cfg
         principal = _principal(cfg, request)
         if principal is None:
             return _unauthorized()
@@ -405,17 +451,18 @@ def create_app(
         return Response(status_code=200)
 
     async def end_run(request: Request) -> Response:
-        principal = _principal(cfg, request)
+        principal = _principal(_live(request).cfg, request)
         if principal is None:
             return _unauthorized()
         name = request.path_params["name"]
-        found = await run_in_threadpool(sessions.end, principal.id, name)
+        found = await run_in_threadpool(sessions.end, principal.id, name, principal.key_sha256)
         return Response(status_code=204 if found else 404)
 
     app = Starlette(
         routes=[
             Route("/v1/messages", relay, methods=["POST"]),
             Route("/v1/chat/completions", relay, methods=["POST"]),
+            Route("/v1/responses", relay, methods=["POST"]),
             Route("/v1/messages/count_tokens", forward, methods=["POST"]),
             Route("/v1/models", forward, methods=["GET"]),
             Route("/v1/models/{id:path}", forward, methods=["GET"]),
@@ -423,5 +470,6 @@ def create_app(
             Route("/seatbelt/runs/{name}/end", end_run, methods=["POST"]),
         ]
     )
+    app.state.live = Live.of(cfg)  # replaced by a config reload
     app.state.transport = transport  # read per request so tests can swap upstreams
     return app

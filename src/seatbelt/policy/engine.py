@@ -67,11 +67,12 @@ def models(*allowed: str) -> Rule:
 
 
 def max_output_tokens(limit: int) -> Rule:
-    """For a model request: caps `max_tokens` (Anthropic, OpenAI) and `max_completion_tokens`
-    (OpenAI). A request that sets neither passes; the provider's default applies."""
+    """For a model request: caps `max_tokens` (Anthropic, OpenAI), `max_completion_tokens`
+    (OpenAI Chat Completions) and `max_output_tokens` (OpenAI Responses). A request that sets
+    none passes; the provider's default applies."""
 
     def check(_: str, args: dict[str, Any]) -> str | None:
-        for key in ("max_tokens", "max_completion_tokens"):
+        for key in ("max_tokens", "max_completion_tokens", "max_output_tokens"):
             n = args.get(key)
             if isinstance(n, int) and n > limit:
                 return f"{key} {n} exceeds {limit}"

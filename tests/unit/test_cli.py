@@ -178,7 +178,7 @@ def test_gateway_serve_recovers_then_serves_then_closes(
             client.post("/v1/messages", json={"model": "m"}, headers={"x-api-key": key})
 
     monkeypatch.setattr(serve_mod.uvicorn, "run", fake_run)
-    serve_mod.serve(cfg)
+    serve_mod.serve(cfg_path)
     assert bound == [("::1", 9999)]
     ledgers = sorted(cfg.ledgers.glob("*.jsonl"))
     assert len(ledgers) == 2  # the recovered crash and the session served

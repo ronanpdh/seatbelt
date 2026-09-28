@@ -15,7 +15,7 @@ from seatbelt.attest.manifest import AttestError, sidecar
 from seatbelt.attest.sign import Signer
 from seatbelt.attest.sign import attest as sign_ledger
 from seatbelt.attest.sign import keygen as make_keys
-from seatbelt.gateway.config import add_principal, load_config
+from seatbelt.gateway.config import add_principal
 from seatbelt.gateway.launcher import DEFAULT_CONFIG as DEFAULT_CLIENT_CONFIG
 from seatbelt.gateway.launcher import run_cli
 from seatbelt.ledger.store import LedgerError
@@ -295,13 +295,10 @@ def gateway_keygen(
 
 @gateway.command(name="serve")
 def gateway_serve(config: ConfigOpt = Path("gateway.yaml")) -> None:
-    """Run the gateway. Closes chains a crash left open, then records until stopped."""
+    """Run the gateway. Closes chains a crash left open, then records until stopped, and
+    reloads the config when it changes or on SIGHUP."""
     try:
-        cfg = load_config(config)
         from seatbelt.gateway.serve import serve  # server deps load only here
-    except ValueError as exc:
-        console.print(f"[red]{escape(str(exc))}[/]")
-        raise typer.Exit(code=1) from exc
     except ImportError as exc:
         hint = (
             "install the gateway extra: pip install 'seatbelt[gateway]' or uv sync --extra gateway"
@@ -309,8 +306,8 @@ def gateway_serve(config: ConfigOpt = Path("gateway.yaml")) -> None:
         console.print(f"[red]{escape(str(exc))}[/]; {escape(hint)}")
         raise typer.Exit(code=1) from exc
     try:
-        serve(cfg)
-    except (AttestError, ValueError) as exc:  # ValueError: a bad `listen`
+        serve(config)
+    except (AttestError, ValueError) as exc:  # ValueError: the config, or a bad `listen`
         console.print(f"[red]{escape(str(exc))}[/]")
         raise typer.Exit(code=1) from exc
 
@@ -318,7 +315,7 @@ def gateway_serve(config: ConfigOpt = Path("gateway.yaml")) -> None:
 @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
 def run(
     ctx: typer.Context,
-    cli: Annotated[str, typer.Argument(help="client to launch: claude")],
+    cli: Annotated[str, typer.Argument(help="client to launch: claude or codex")],
     config: Annotated[
         Path, typer.Option(help="gateway url and your key (TOML)")
     ] = DEFAULT_CLIENT_CONFIG,

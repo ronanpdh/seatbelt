@@ -4,6 +4,23 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 
 ## [Unreleased]
 
+### Added
+- The gateway reloads its config without a restart: when the file's content changes (checked every 30 s, including a change made while it starts) or on `SIGHUP`. `principals`, `policy` and `upstreams` apply from the next request, `session_idle` from the next idle sweep; `listen`, `ledgers` and `signing_key` still need a restart, and a reload that changes them says so and keeps the running values. A file that fails to load is logged once and the running config stays. A deleted or reissued key is refused from the reload on and its open sessions are ended and signed. `Sessions.end_principal`; `Sessions.idle` is settable. `seatbelt.gateway.config.read_config` returns the config with the bytes it came from.
+
+- The gateway serves the OpenAI Responses API (`POST /v1/responses`, streamed or not; `seatbelt.gateway.formats.openai_responses`), as current Codex and the OpenAI Agents SDK call it. Tool calls the client runs (`function_call`, `custom_tool_call`, `local_shell_call`, `shell_call`, `apply_patch_call`, `computer_call`, and a `tool_search_call` the client executes) are recorded and linked to their results by `call_id` (the spec's `local_shell_call_output` by `id`); tools the provider runs (web search and the like) stay in the recorded response. An MCP tool Codex calls (namespace `mcp__<server>`) is named `mcp__<server>__<tool>`, as Codex's hooks and Claude Code name it; any other namespace keeps the bare name. A stream is recorded from its terminal event as sent, or, if it stopped short, rebuilt from what arrived (partial text, arguments and input included) and recorded as not completed; only calls that arrived whole are recorded as calls. `models`, `max_output_tokens` and `tools_denied` apply as for the other formats; an employee's denied calls are remembered across sessions until a restart, for clients that chain `previous_response_id`. A request with `background: true` is refused with 400, since its output would be fetched outside the recorded exchange. Sources for every wire fact: `docs/plans/2026-09-28-responses-format.md`.
+- `seatbelt run codex`: launches Codex with a `seatbelt` model provider given as `-c` overrides (the gateway URL plus `/v1`, Responses over HTTP, the key from `SEATBELT_GATEWAY_KEY`, the run name as an `X-Seatbelt-Run` header), and strips `OPENAI_API_KEY` and `CODEX_API_KEY` from its environment.
+- The `max_output_tokens` policy rule also caps the Responses API's `max_output_tokens`.
+### Changed
+- `seatbelt.gateway.serve.serve` takes the config's path and loads it itself, so the reload watcher compares the file with the exact bytes the gateway started on.
+- Gateway sessions are per issued key as well as per principal (`Sessions.get` and `Sessions.end` take the key's hash): a request made with a key just before it was reissued cannot open a ledger that the new key then writes into.
+- A tool result is refused while `tools_denied` names the tool the session recorded for its call or the tool the history names, so relaxing the policy by reload takes effect in open sessions too; a result let through that way is recorded as an allowed check.
+- A gateway session keeps one format recorder per API rather than per upstream, so Chat Completions and Responses traffic to the same provider keep their open tool calls apart.
+- A config with `principals:`, `tools_denied:` or `policy:` left empty (what deleting the last entry leaves) loads as empty.
+- The `docker run` steps in the deployment docs mount the config's directory, not the file: `keygen` replaces the file, which a single-file bind mount does not follow.
+
+### Fixed
+- `seatbelt gateway serve` stopped by SIGTERM outside a container (systemd, `kill`, `docker run --init`), or by Ctrl-Break on Windows, exited before closing and signing its open sessions, which the next start then recorded as `gateway restarted`: uvicorn raises the signal again after its own graceful stop, and the default handler ended the process. As PID 1 in a container the re-raised SIGTERM was ignored, so the image was not affected. Shutdown also waits for a sweep in progress, and ignores a second stop signal until every session is signed. A start logs, and never signs, a gateway ledger that is closed but unsigned: that looks the same as a ledger rewritten and its signature deleted.
+
 ## [0.2.0] - 2026-09-28
 
 ### Added

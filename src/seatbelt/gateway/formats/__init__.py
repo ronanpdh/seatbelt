@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 if TYPE_CHECKING:
@@ -37,3 +38,15 @@ def as_dicts(content: Any) -> list[dict[str, Any]]:
     if not isinstance(content, list):
         return []
     return [cast(dict[str, Any], b) for b in cast(list[Any], content) if isinstance(b, dict)]
+
+
+def parse_arguments(raw: Any) -> dict[str, Any]:
+    """Tool arguments the provider sends as a JSON string; kept raw when they do not parse to
+    an object. A non-string is taken as a dict or dropped."""
+    if not isinstance(raw, str):
+        return as_dict(raw)
+    try:
+        parsed: Any = json.loads(raw or "{}")
+    except ValueError:
+        return {"_raw": raw}
+    return as_dict(parsed) if isinstance(parsed, dict) else {"_raw": raw}

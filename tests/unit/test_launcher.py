@@ -1,12 +1,22 @@
+import ast
 import os
 import sys
+import tomllib
 from pathlib import Path
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner
 
 from seatbelt.cli import app
-from seatbelt.gateway.launcher import PRESETS, environment, load_client_config, run_cli
+from seatbelt.gateway.launcher import (
+    CODEX_KEY_ENV,
+    PRESETS,
+    arguments,
+    environment,
+    load_client_config,
+    run_cli,
+)
 
 
 def _config(tmp_path: Path, mode: int = 0o600) -> Path:
@@ -41,15 +51,56 @@ def test_claude_preset_keeps_the_users_own_custom_headers() -> None:
     assert env["ANTHROPIC_CUSTOM_HEADERS"] == "X-Team: a\nX-Seatbelt-Run: r"
 
 
-def test_codex_is_refused_until_the_gateway_serves_responses() -> None:
-    with pytest.raises(ValueError, match="Responses API"):
-        environment("codex", "https://gw.corp", "sbk_abc", "run-1", base={})
+def test_codex_preset_gets_the_key_from_the_environment_only() -> None:
+    base = {"PATH": "/bin", "OPENAI_API_KEY": "sk-real", "CODEX_API_KEY": "sk-codex"}
+    env = environment("codex", "https://gw.corp", "sbk_abc", "run-1", base=base)
+    assert env[CODEX_KEY_ENV] == "sbk_abc"
+    assert "OPENAI_API_KEY" not in env and "CODEX_API_KEY" not in env
+    assert env["PATH"] == "/bin"
+
+
+def _provider(args: list[str]) -> dict[str, Any]:  # the TOML value Codex parses
+    assert args[:3] == ["-c", 'model_provider="seatbelt"', "-c"]
+    key, _, value = args[3].partition("=")
+    assert key == "model_providers.seatbelt"
+    return tomllib.loads(f"x = {value}")["x"]
+
+
+def test_codex_preset_defines_a_responses_provider_on_the_command_line() -> None:
+    assert _provider(arguments("codex", "https://gw.corp", "codex-1a2b")) == {
+        "name": "seatbelt",
+        "base_url": "https://gw.corp/v1",
+        "env_key": CODEX_KEY_ENV,
+        "wire_api": "responses",
+        "requires_openai_auth": False,
+        "supports_websockets": False,
+        "http_headers": {"X-Seatbelt-Run": "codex-1a2b"},
+    }
+    odd = 'https://gw.corp/a "quoted" \\ path/ü'  # still one valid TOML string
+    assert _provider(arguments("codex", odd, "r"))["base_url"] == odd + "/v1"
+    assert arguments("claude", "https://gw.corp", "r") == []
+
+
+def test_run_cli_puts_the_codex_provider_before_the_users_arguments(
+    tmp_path: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
+    fake = tmp_path / "codex"
+    fake.write_text(f"#!{sys.executable}\nimport sys; print(repr(sys.argv[1:]))\n")
+    fake.chmod(0o755)
+
+    def keep_open(url: str, key: str, run: str) -> None:
+        pass
+
+    run_cli("codex", ["exec", "hi"], config=_config(tmp_path), exe=str(fake), end=keep_open)
+    argv = ast.literal_eval(capfd.readouterr().out.strip())
+    assert argv[-2:] == ["exec", "hi"] and len(argv) == 6
+    assert _provider(argv[:4])["http_headers"]["X-Seatbelt-Run"].startswith("codex-")
 
 
 def test_unknown_cli_is_refused() -> None:
     with pytest.raises(ValueError):
         environment("vim", "u", "k", "r", base={})
-    assert set(PRESETS) >= {"claude"}
+    assert set(PRESETS) >= {"claude", "codex"}
 
 
 PROBE = (

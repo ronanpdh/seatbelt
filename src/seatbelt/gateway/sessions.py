@@ -7,6 +7,7 @@ import re
 import secrets
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass, field
@@ -24,11 +25,35 @@ from seatbelt.record.recorder import Recorder
 from seatbelt.verify.chain import verify_events
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9_-]+")
+_GATEWAY = "gateway"  # the agent id on every ledger the gateway writes
 _log = logging.getLogger(__name__)
 
 
 def _slug(text: str) -> str:
     return _UNSAFE.sub("_", text).strip("_")[:40] or "x"
+
+
+class DeniedCalls:
+    """Tool calls the policy denied, by call id: a principal's, across its sessions. A
+    Responses client that chains `previous_response_id` sends a tool's output without the call
+    it answers, possibly after the session that saw the call has closed on idle. The newest
+    `limit` are kept; a restart forgets them (the history's tool name still applies)."""
+
+    def __init__(self, limit: int = 10_000) -> None:
+        self._calls: OrderedDict[str, str] = OrderedDict()
+        self._limit = limit
+        self._lock = threading.Lock()
+
+    def __setitem__(self, call_id: str, tool: str) -> None:
+        with self._lock:
+            self._calls[call_id] = tool
+            self._calls.move_to_end(call_id)
+            while len(self._calls) > self._limit:
+                self._calls.popitem(last=False)
+
+    def get(self, call_id: str) -> str | None:
+        with self._lock:
+            return self._calls.get(call_id)
 
 
 @dataclass(eq=False)  # identity, not field equality: sessions are tracked by object
@@ -38,14 +63,21 @@ class Session:
     lock: threading.Lock = field(default_factory=threading.Lock)
     last: float = 0.0
     formats: dict[str, Format] = field(default_factory=dict[str, Format])  # open tool calls
-    denied_calls: dict[str, str] = field(default_factory=dict[str, str])  # call id -> tool
+    denied_calls: DeniedCalls = field(default_factory=DeniedCalls)  # the principal's
     busy: int = 0  # requests between Sessions.get and Sessions.release
     closing: bool = False
 
 
+type _Key = tuple[str, str, str | None]  # (principal, issued key's hash, run name)
+
+
 class Sessions:
     """Every `get` must be paired with one `release` once the response is recorded. A session
-    is never closed while a request holds it, so no event can land after its `run.end`."""
+    is never closed while a request holds it, so no event can land after its `run.end`.
+
+    A session belongs to one issued key as well as one principal: a reissued key never writes
+    into a ledger the old key opened, so each ledger's `principal.key_id` is the key that
+    wrote all of it."""
 
     def __init__(
         self,
@@ -58,18 +90,27 @@ class Sessions:
         self._signer = signer
         self._idle = idle
         self._clock = clock
-        self._open: dict[tuple[str, str | None], Session] = {}
+        self._open: dict[_Key, Session] = {}
+        self._denied: dict[str, DeniedCalls] = {}  # principal -> its denied calls
         self._draining: list[Session] = []  # ended while busy; the last release closes them
         self._lock = threading.Lock()
         self._changed = threading.Condition(self._lock)
         root.mkdir(parents=True, exist_ok=True)
 
-    def get(self, principal: str, run: str | None, meta: dict[str, Any]) -> Session:
+    @property
+    def idle(self) -> float:
+        return self._idle
+
+    @idle.setter
+    def idle(self, seconds: float) -> None:  # a config reload; the next sweep uses it
+        self._idle = seconds
+
+    def get(self, principal: str, run: str | None, meta: dict[str, Any], key: str = "") -> Session:
         with self._lock:
-            session = self._open.get((principal, run))
+            session = self._open.get((principal, key, run))
             if session is None:
                 session = self._start(principal, run, meta)
-                self._open[(principal, run)] = session
+                self._open[(principal, key, run)] = session
             session.busy += 1
             session.last = self._clock()
             return session
@@ -89,7 +130,7 @@ class Sessions:
         rec = stack.enter_context(
             Recorder.start(
                 self._root,
-                agent_id="gateway",
+                agent_id=_GATEWAY,
                 agent_version=__version__,
                 run_id=run_id,
                 # identity last: client-derived metadata must not overwrite who this is
@@ -97,19 +138,30 @@ class Sessions:
                 signer=self._signer,
             )
         )
-        return Session(rec=rec, stack=stack, last=self._clock())
+        denied = self._denied.setdefault(principal, DeniedCalls())  # under self._lock
+        return Session(rec=rec, stack=stack, last=self._clock(), denied_calls=denied)
 
-    def end(self, principal: str, run: str | None) -> bool:
+    def end(self, principal: str, run: str | None, key: str = "") -> bool:
         """Close now, or at the last release if a request is in flight. The next `get` for the
-        same key starts a new ledger either way."""
+        same session starts a new ledger either way."""
         with self._lock:
-            session = self._open.pop((principal, run), None)
+            session = self._open.pop((principal, key, run), None)
             ready = session is not None and self._retire(session)
         if session is None:
             return False
         if ready:
             self._close(session)
         return True
+
+    def end_principal(self, principal: str) -> int:
+        """End every session of `principal`, under any key, each now or at its last release:
+        its key was revoked or reissued. Returns how many were ended."""
+        with self._lock:
+            sessions = [self._open.pop(k) for k in [k for k in self._open if k[0] == principal]]
+            ready = [s for s in sessions if self._retire(s)]
+        for s in ready:
+            self._close(s)
+        return len(sessions)
 
     def sweep(self) -> int:
         now = self._clock()
@@ -158,7 +210,9 @@ def close_open_chains(root: Path, signer: Signer | None) -> list[Path]:
     """After a crash: append a failed run.end to every open chain and sign it. A ledger that
     cannot be read or whose chain is broken is left untouched and logged: closing it would
     put a signature over evidence of tampering, and refusing to start would let one bad file
-    stop all recording."""
+    stop all recording. A closed ledger is never signed here, even one of the gateway's with
+    no signature: a process killed between run.end and signing looks the same as a ledger
+    rewritten and its signature deleted, so it is logged for a person to check."""
     closed: list[Path] = []
     for path in sorted(root.glob("*.jsonl")):
         try:
@@ -166,7 +220,17 @@ def close_open_chains(root: Path, signer: Signer | None) -> list[Path]:
         except (OSError, UnicodeDecodeError, LedgerError) as exc:
             _log.warning("skipping unreadable ledger %s: %s", path, exc)
             continue
-        if not events or events[-1].kind is Kind.RUN_END:
+        if not events:
+            continue
+        if events[-1].kind is Kind.RUN_END:
+            gateway = signer is not None and "principal.id" in events[0].attrs
+            if gateway and not sidecar(path).exists():
+                _log.warning(
+                    "%s is closed but not signed: the gateway was killed while signing it, "
+                    "or its signature was deleted. Check it, then sign it with "
+                    "`seatbelt attest` if it is genuine",
+                    path,
+                )
             continue
         verdict = verify_events(events)
         if not verdict.ok:
@@ -177,10 +241,9 @@ def close_open_chains(root: Path, signer: Signer | None) -> list[Path]:
                 verdict.reason,
             )
             continue
-        ledger = Ledger(path, events[0].run_id)
-        ledger.append(
+        Ledger(path, events[0].run_id).append(
             Kind.RUN_END,
-            Actor(type=ActorType.AGENT, id="gateway", version=__version__),
+            Actor(type=ActorType.AGENT, id=_GATEWAY, version=__version__),
             {"run.ok": False, "run.error": "gateway restarted", "run.events": len(events) + 1},
         )
         if signer is not None and not sidecar(path).exists():

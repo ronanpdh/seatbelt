@@ -5,10 +5,9 @@ Every ``Any`` here is provider JSON: untyped because the wire shape is not ours 
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
-from seatbelt.gateway.formats import as_dict, as_dicts
+from seatbelt.gateway.formats import as_dict, as_dicts, parse_arguments
 from seatbelt.ledger.events import Event
 from seatbelt.record.recorder import ModelCall, Recorder
 
@@ -86,7 +85,7 @@ class OpenAIChatFormat:
                 continue
             event = self._rec.tool_called(
                 str(fn["name"]),
-                _arguments(fn.get("arguments")),
+                parse_arguments(fn.get("arguments")),
                 call_id=str(tc["id"]),
                 parent_id=answer.id,
             )
@@ -106,18 +105,6 @@ def _usage(raw: dict[str, Any]) -> dict[str, int]:
                 if isinstance(n, int):
                     out[f"{_USAGE[key[:-8]]}.{leaf}"] = n
     return out
-
-
-def _arguments(raw: Any) -> dict[str, Any]:
-    """The provider sends a JSON string; keep it raw when it does not parse to an object.
-    A non-string is taken as a dict or dropped."""
-    if not isinstance(raw, str):
-        return as_dict(raw)
-    try:
-        parsed: Any = json.loads(raw or "{}")
-    except ValueError:
-        return {"_raw": raw}
-    return as_dict(parsed) if isinstance(parsed, dict) else {"_raw": raw}
 
 
 def assemble_sse(chunks: list[dict[str, Any]]) -> dict[str, Any]:
