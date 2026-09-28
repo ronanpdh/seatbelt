@@ -117,6 +117,10 @@ def _json_object(raw: bytes) -> dict[str, Any] | None:
     return cast(dict[str, Any], value) if isinstance(value, dict) else None
 
 
+def _with_query(request: Request) -> str:
+    return request.url.path + (f"?{request.url.query}" if request.url.query else "")
+
+
 def _meta(request: Request) -> dict[str, Any]:
     return {
         "client.ip": request.client.host if request.client else None,
@@ -320,7 +324,7 @@ def create_app(
             )
             outgoing = client.build_request(
                 "POST",
-                request.url.path,
+                _with_query(request),  # Claude Code posts /v1/messages?beta=true
                 content=raw,
                 headers=_upstream_headers(
                     request, auth_header, os.environ.get(upstream.key_env, "")
@@ -365,8 +369,12 @@ def create_app(
         principal = _principal(cfg, request)
         if principal is None:
             return _unauthorized()
-        anthropic_style = request.url.path.startswith("/v1/messages") or (
-            "x-api-key" in request.headers
+        # Anthropic clients send anthropic-version on every request, x-api-key or Bearer alike
+        # (Claude Code under `seatbelt run`, Claude Desktop by default); OpenAI clients never do
+        anthropic_style = (
+            request.url.path.startswith("/v1/messages")
+            or "anthropic-version" in request.headers
+            or "x-api-key" in request.headers
         )
         name, auth_header = (
             ("anthropic", "x-api-key") if anthropic_style else ("openai", "authorization")
@@ -374,7 +382,7 @@ def create_app(
         upstream = cfg.upstreams.get(name)
         if upstream is None:
             return _error(404, "not_found_error", f"no {name} upstream")
-        path = request.url.path + (f"?{request.url.query}" if request.url.query else "")
+        path = _with_query(request)
         async with httpx2.AsyncClient(
             base_url=upstream.url, transport=request.app.state.transport, timeout=60
         ) as client:

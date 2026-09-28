@@ -6,7 +6,7 @@ Everything below about Claude Desktop's configuration comes from Anthropic's doc
 
 ## What the gateway provides
 
-Claude Desktop requires a gateway to serve `POST /v1/messages` with streaming and tool use; `GET /v1/models` is optional and, when present, lets the app discover the available models [1]. The seatbelt gateway serves both and forwards `GET /v1/models` to Anthropic.
+Claude Desktop requires a gateway to serve `POST /v1/messages` with streaming and tool use; `GET /v1/models` is optional and, when present, lets the app discover the available models [1]. The seatbelt gateway serves both. It forwards `GET /v1/models` to Anthropic when the request carries `anthropic-version` or `x-api-key`, as Anthropic clients' requests do.
 
 The gateway forwards request bodies byte for byte, so the `cache_control` breakpoints Cowork and Code sessions send reach Anthropic unchanged and prompt caching keeps working [1]. `anthropic-beta` and `anthropic-version` headers are forwarded too. To check, `seatbelt reconstruct` a Desktop session: after the first request, `cache_read_input_tokens` in the recorded usage should be above zero on most requests [1].
 
@@ -42,7 +42,7 @@ Claude Desktop runs the helper, reads the key from its standard output, and cach
 
 ## Configure the app
 
-The documented way to build the profile is in the app: **Help → Troubleshooting → Enable Developer Mode**, then **Developer → Configure Third-Party Inference…**. In **Connection**, set **Inference provider** to **Gateway**, fill in the gateway URL and credentials, then **Export** a `.mobileconfig` (macOS) or `.reg` (Windows) file for your MDM [1][2]. The keys the export sets for the seatbelt gateway are:
+The documented way to build the profile is in the app: **Help → Troubleshooting → Enable Developer Mode**, then **Developer → Configure Third-Party Inference…**. In **Connection**, set **Inference provider** to **Gateway**, fill in the gateway URL and credentials, then **Export** a `.mobileconfig` (macOS) or `.reg` (Windows) file for your MDM [1][2]. The keys that matter for the seatbelt gateway are:
 
 | Key | Value |
 |---|---|
@@ -56,7 +56,7 @@ Every value is written as a string, even numbers and booleans [3].
 
 ### macOS
 
-The profile's payload lands in `/Library/Managed Preferences/com.anthropic.claudefordesktop.plist` [2]. Its keys, for per-user keys:
+A profile delivered by MDM lands in `/Library/Managed Preferences/com.anthropic.claudefordesktop.plist` (machine) or `/Library/Managed Preferences/<user>/com.anthropic.claudefordesktop.plist` (per user, which wins where both set a key) [2]. Its keys, for per-user keys:
 
 ```xml
 <key>inferenceProvider</key>

@@ -80,7 +80,7 @@ You supply `target(rec: Recorder, inputs: Inputs)`. Checks (`no_tool_call`, `too
 
 ### Recording gateway
 
-`seatbelt gateway serve` is a service the organisation runs so that clients employees already use are recorded with no code change. It speaks the Anthropic Messages API and OpenAI Chat Completions, authenticates each employee by an issued key (stored as a hash), swaps in the real provider key, relays the response byte for byte, streamed or not, and records the exchange into one signed ledger per employee session. A session closes and is signed after an idle window, or when a named run ends; a crash leaves no unsigned open chain behind. An org policy can restrict models, cap output tokens and refuse the results of denied tools. Deployment: `docs/deploy/gateway.md`; Claude Desktop and Cowork: `docs/deploy/claude-desktop-gateway.md`.
+`seatbelt gateway serve` is a service the organisation runs so that clients employees already use are recorded with no code change. It speaks the Anthropic Messages API and OpenAI Chat Completions, authenticates each employee by an issued key (stored as a hash), swaps in the real provider key, forwards the request body unchanged, relays the response as it arrives, streamed or not, and records the exchange into one signed ledger per employee session. A session closes and is signed after an idle window, or when a named run ends; after a crash, the next start closes and signs every open chain whose hash chain still verifies. An org policy can restrict models, cap output tokens and refuse the results of denied tools. Deployment: `docs/deploy/gateway.md`; Claude Desktop and Cowork: `docs/deploy/claude-desktop-gateway.md`.
 
 Which clients it records:
 
@@ -89,7 +89,7 @@ Which clients it records:
 | Claude Code | `seatbelt run claude`, or `ANTHROPIC_BASE_URL` | 0.2.0 |
 | Claude Desktop, Cowork | MDM or in-app gateway configuration | 0.2.0 |
 | Claude SDKs, Claude Agent SDK | base URL | 0.2.0 |
-| OpenAI Chat Completions clients (OpenAI SDKs, LangChain, Cursor) | `OPENAI_BASE_URL` | 0.2.0 |
+| OpenAI Chat Completions clients (OpenAI SDKs, LangChain) | `OPENAI_BASE_URL` | 0.2.0 |
 | Codex, OpenAI Agents SDK (Responses API) | base URL | 0.3.0 |
 | Gemini CLI, Google SDKs | base URL | 0.3.0 |
 | claude.ai web, unmanaged desktops | Compliance API importer | 0.3.0 |
@@ -201,6 +201,7 @@ Extend the image with your dependencies (`FROM seatbelt-target`). Keep keys, `.e
 ```sh
 uv sync --extra gateway
 uv run seatbelt keygen keys
+# write gateway.yaml: signing_key: keys/seatbelt.key, ledgers: runs, upstreams (see README)
 uv run seatbelt gateway keygen --user alice@corp --config gateway.yaml
 uv run seatbelt gateway serve --config gateway.yaml
 seatbelt run claude                          # on alice's machine, with ~/.config/seatbelt/gateway.toml
@@ -232,8 +233,8 @@ The recipient needs the zip, the public key and the harness. Nothing else.
 | `seatbelt verify-pack <zip> [--pubkey]` | re-checks a pack offline | forged, or a broken ledger inside |
 | `seatbelt gateway keygen --user <id> [--config]` | issues a gateway key; stores only its hash | the user already has a key |
 | `seatbelt gateway serve [--config]` | runs the recording gateway | bad config or signing key |
-| `seatbelt run <cli> [--config] [--exe] [-- args]` | launches `claude` through the gateway | bad config or unknown CLI; otherwise the CLI's exit code |
-| `seatbelt report <runs> [--pubkey] [--json]` | usage by employee, model and tool | a ledger is broken, or forged with a key given |
+| `seatbelt run <cli> [--config] [--exe] [-- args]` | launches `claude` through the gateway | bad config or unknown CLI (127: executable not found); otherwise the CLI's exit code |
+| `seatbelt report <runs> [--pubkey] [--json]` | usage by employee, model and tool | a ledger is broken, forged with a key given, or the key is unreadable |
 
 ## What it does not do
 
