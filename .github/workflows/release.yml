@@ -24,6 +24,7 @@ jobs:
       - name: CycloneDX SBOM
         run: uv export --locked --format cyclonedx1.5 --no-dev --all-extras -o dist/sbom.cdx.json
       - name: Build provenance attestation
+        id: provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4
         with:
           subject-path: |
@@ -34,6 +35,12 @@ jobs:
         with:
           subject-path: dist/*.whl
           sbom-path: dist/sbom.cdx.json  # literal path; globs only work in subject-path
+      - name: Provenance bundle as a release asset
+        # the attestation store is where `gh attestation verify` looks; a release asset is
+        # where OpenSSF Scorecard and people browsing the release look
+        env:
+          BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+        run: cp "$BUNDLE" "dist/seatbelt-${GITHUB_REF_NAME#v}.intoto.jsonl"
       - name: GitHub release with changelog notes
         env:
           GH_TOKEN: ${{ github.token }}

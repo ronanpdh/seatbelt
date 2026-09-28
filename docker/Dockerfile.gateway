@@ -7,16 +7,21 @@
 #         pass the provider keys as env. The signing key is a file the config names (readable
 #         by uid 1000) or SEATBELT_SIGNING_KEY in the env. The config must set
 #         `listen: 0.0.0.0:8080` to be reachable from outside the container.
-FROM python:3.12-slim AS build
+# the digest pins the image; Dependabot keeps it current
+FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS build
 WORKDIR /src
 COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
 RUN pip wheel --no-cache-dir --no-deps --wheel-dir /dist .
 
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+# dependencies pinned by hash from uv.lock (regenerate with the command at the top of the file;
+# CI fails if it drifts), then seatbelt itself without resolving anything further
+COPY docker/requirements-gateway.txt /tmp/requirements.txt
 COPY --from=build /dist/*.whl /tmp/
-RUN for w in /tmp/*.whl; do pip install --no-cache-dir "${w}[gateway]"; done && rm -f /tmp/*.whl \
+RUN pip install --no-cache-dir --require-hashes -r /tmp/requirements.txt \
+    && pip install --no-cache-dir --no-deps /tmp/*.whl && rm -f /tmp/*.whl /tmp/requirements.txt \
     && mkdir -p /var/lib/seatbelt && chown 1000:1000 /var/lib/seatbelt
 USER 1000
 VOLUME /var/lib/seatbelt
