@@ -101,6 +101,17 @@ def test_unknown_key_is_401_and_nothing_is_written(gw: Gateway) -> None:
     assert r.status_code == 401 and not list(gw.ledgers.glob("*.jsonl")) and gw.seen == []
 
 
+def test_either_credential_header_authenticates(gw: Gateway) -> None:
+    """Claude Code may send x-api-key (e.g. from apiKeyHelper) and Authorization together."""
+    r = gw.client.post(
+        "/v1/messages",
+        json={"model": "m", "messages": []},
+        headers={"x-api-key": "sk-ant-console-key", "authorization": f"Bearer {gw.key}"},
+    )
+    assert r.status_code == 200
+    assert "sk-ant-console-key" not in str(gw.seen[0].headers)  # never forwarded
+
+
 def test_anthropic_round_trip_is_relayed_and_recorded(gw: Gateway) -> None:
     body = {
         "model": "claude-sonnet-5",

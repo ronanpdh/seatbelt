@@ -315,7 +315,7 @@ def gateway_serve(config: ConfigOpt = Path("gateway.yaml")) -> None:
 @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
 def run(
     ctx: typer.Context,
-    cli: Annotated[str, typer.Argument(help="client to launch: claude or codex")],
+    cli: Annotated[str, typer.Argument(help="client to launch: claude")],
     config: Annotated[
         Path, typer.Option(help="gateway url and your key (TOML)")
     ] = DEFAULT_CLIENT_CONFIG,
