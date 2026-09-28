@@ -248,3 +248,15 @@ def test_a_malformed_stream_still_releases_its_session(gw: Gw) -> None:
     assert gw.post(_body(stream=True)).content == raw
     (response,) = [e for e in gw.events() if e.kind is Kind.MODEL_RESPONSE]
     assert response.attrs["error"] is not None  # the fixture checks the session was released
+
+
+def test_a_deferred_tool_keeps_its_name_for_tools_denied(gwp: Gw) -> None:
+    """The API gives a deferred top-level tool a namespace equal to its name."""
+    first, _ = _replies()
+    call = {**first["output"][1], "namespace": "lookup_order"}
+    gwp.upstream(httpx2.Response(200, json={**first, "output": [call]}))
+    assert gwp.post(_body()).status_code == 200
+    output = {"type": "function_call_output", "call_id": "call_01", "output": "delivered"}
+    assert gwp.post(_body(call, output)).status_code == 403
+    chained = {"model": "gpt-5", "previous_response_id": "resp_01", "input": [output]}
+    assert gwp.post(chained).status_code == 403

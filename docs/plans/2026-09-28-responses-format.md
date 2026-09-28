@@ -22,7 +22,7 @@ Tool calls come back as output items and their results go back as input items, m
 | `computer_call` | `computer` | `action` and/or `actions`, whichever it has | `computer_call_output` |
 | `tool_search_call` with `execution: "client"` | `tool_search` | `arguments` | `tool_search_output` (its result is `tools`) [S1][S4] |
 
-A `function_call` or `custom_tool_call` may carry a `namespace` [S1]; Codex puts each MCP server's tools under `mcp__<server>` and names them `mcp__<server>__<tool>` in its hooks [S4]. The gateway names such a tool the same way, so an MCP tool cannot pass for a built-in of the same bare name; Codex's default namespace, `functions`, adds nothing [S4].
+A `function_call` or `custom_tool_call` may carry a `namespace` [S1]; Codex puts each MCP server's tools under `mcp__<server>` and names them `mcp__<server>__<tool>` in its hooks (`McpHandler::hook_tool_name`) [S4]. The gateway names MCP tools the same way, so one cannot pass for a built-in of the same bare name. Any other namespace keeps the bare name, as Codex's hooks do for its own namespaced tools (`spawn_agent` in `multi_agent_v1`) [S4], and as a deferred top-level tool needs: the API gives it a namespace equal to its name (the Agents SDK's `is_reserved_synthetic_tool_namespace`) [S5].
 
 Hosted tools the provider runs itself (`web_search_call`, `file_search_call`, `code_interpreter_call`, `image_generation_call`, `mcp_call`, and a `tool_search_call` it executes) have no client result [S1]; they stay in the recorded response and are not tool calls.
 

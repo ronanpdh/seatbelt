@@ -145,11 +145,14 @@ def _mcp(call_id: str, namespace: str, name: str) -> dict[str, Any]:  # response
 
 
 def test_a_namespaced_tool_is_named_with_its_namespace(tmp_path: Path) -> None:
-    """Codex sends MCP tools under a namespace; the bare name could be a built-in's."""
+    """Codex sends MCP tools under an `mcp__` namespace, where the bare name could be a
+    built-in's; other namespaces keep the bare name."""
     output = [
         _mcp("m1", "mcp__github", "create_issue"),
         _mcp("m2", "mcp__fs__", "exec_command"),
         _mcp("m3", "functions", "exec_command"),  # Codex's default namespace
+        _mcp("m4", "multi_agent_v1", "spawn_agent"),  # a Codex built-in: bare, as its hooks
+        _mcp("m5", "lookup_order", "lookup_order"),  # a deferred top-level tool
     ]
     with Recorder.start(tmp_path, agent_id="gw", run_id="s") as rec:
         fmt = OpenAIResponsesFormat(rec)
@@ -158,6 +161,8 @@ def test_a_namespaced_tool_is_named_with_its_namespace(tmp_path: Path) -> None:
         "mcp__github__create_issue",
         "mcp__fs__exec_command",
         "exec_command",
+        "spawn_agent",
+        "lookup_order",
     ]
     answer = {"type": "function_call_output", "call_id": "m1", "output": "ok"}
     assert OpenAIResponsesFormat.tool_result_calls(_body(output[0], answer)) == [

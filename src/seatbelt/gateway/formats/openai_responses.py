@@ -58,23 +58,25 @@ _RESULTS = frozenset(
         "tool_search_output",
     }
 )
-_DEFAULT_NAMESPACE = "functions"  # Codex's namespace for top-level tools
+_MCP = "mcp__"  # the namespace prefix Codex gives each MCP server's tools
 _TERMINAL = frozenset({"response.completed", "response.incomplete", "response.failed"})
 _SNAPSHOT = frozenset({"response.created", "response.in_progress", "response.queued"})
 _FINISHED = frozenset({"completed", "incomplete"})  # statuses that are not errors
 
 
 def _name(item: dict[str, Any]) -> str | None:
-    """A namespaced tool (Codex's MCP tools: namespace `mcp__<server>`) is named as Codex's
-    hooks and Claude Code name it, `mcp__<server>__<tool>`, so it cannot pass for a built-in
-    tool of the same bare name, in the ledger or in `tools_denied`."""
+    """An MCP tool (namespace `mcp__<server>`) is named as Codex's hooks and Claude Code name
+    it, `mcp__<server>__<tool>`, so it cannot pass for a built-in tool of the same bare name,
+    in the ledger or in `tools_denied`. Any other namespace keeps the bare name, as Codex's
+    hooks do: Codex's own namespaced tools (`spawn_agent` in `multi_agent_v1`), and the
+    namespace equal to the name the API gives a deferred top-level tool."""
     fixed, _ = _CALLS[str(item.get("type"))]
     name = fixed or item.get("name")
     if not name:
         return None
     namespace = item.get("namespace")
-    if isinstance(namespace, str) and namespace.strip("_") and namespace != _DEFAULT_NAMESPACE:
-        return f"{namespace.rstrip('_')}__{name}"
+    if isinstance(namespace, str) and namespace.startswith(_MCP):
+        return f"{namespace.rstrip('_')}__{str(name).lstrip('_')}"
     return str(name)
 
 
