@@ -1,4 +1,5 @@
 import base64
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -53,3 +54,34 @@ def test_both_or_neither_or_garbage_is_refused(tmp_path: Path) -> None:
         load_signer(without, {KEY_ENV: "not a key!"})
     with pytest.raises(AttestError, match="not a PEM private key"):
         load_signer(without, {KEY_ENV: base64.b64encode(b"hello").decode()})
+
+
+MANGLES: list[Callable[[str], str]] = [
+    lambda v: f'"{v}"',  # quoted by the env var editor
+    lambda v: f"'{v}'",
+    lambda v: v[:40] + "\n" + v[40:80] + " " + v[80:],  # a paste that wrapped or split it
+    lambda v: f"  {v}\n",
+]
+
+
+@pytest.mark.parametrize("mangle", MANGLES)
+def test_key_from_the_environment_survives_what_editors_add(
+    tmp_path: Path, mangle: Callable[[str], str]
+) -> None:
+    key, _ = keygen(tmp_path / "keys")
+    value = mangle(base64.b64encode(key.read_bytes()).decode())
+    cfg = load_config(_config(tmp_path, None))
+    assert _same_key(load_signer(cfg, {KEY_ENV: value}), Signer.from_file(key))
+
+
+def test_a_bad_env_key_is_described_without_revealing_it(tmp_path: Path) -> None:
+    key, _ = keygen(tmp_path / "keys")
+    good = base64.b64encode(key.read_bytes()).decode()
+    cfg = load_config(_config(tmp_path, None))
+    with pytest.raises(AttestError) as err:
+        load_signer(cfg, {KEY_ENV: good[:-3] + "\\" + good[-3:]})  # a stray backslash
+    message = str(err.value)
+    assert "'\\\\'" in message and "starts like base64 of a PEM key" in message
+    assert good[20:40] not in message  # no key material
+    with pytest.raises(AttestError, match="cut short"):
+        load_signer(cfg, {KEY_ENV: good[:-2]})
