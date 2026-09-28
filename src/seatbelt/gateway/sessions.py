@@ -27,7 +27,7 @@ def _slug(text: str) -> str:
     return _UNSAFE.sub("_", text).strip("_")[:40] or "x"
 
 
-@dataclass
+@dataclass(eq=False)  # identity, not field equality: sessions are tracked by object
 class Session:
     rec: Recorder
     stack: ExitStack
@@ -35,9 +35,14 @@ class Session:
     last: float = 0.0
     formats: dict[str, Any] = field(default_factory=dict[str, Any])  # per-format state, see app.py
     denied_calls: set[str] = field(default_factory=set[str])  # tool call ids policy refused
+    busy: int = 0  # requests between Sessions.get and Sessions.release
+    closing: bool = False
 
 
 class Sessions:
+    """Every `get` must be paired with one `release` once the response is recorded. A session
+    is never closed while a request holds it, so no event can land after its `run.end`."""
+
     def __init__(
         self,
         root: Path,
@@ -50,7 +55,9 @@ class Sessions:
         self._idle = idle
         self._clock = clock
         self._open: dict[tuple[str, str | None], Session] = {}
+        self._draining: list[Session] = []  # ended while busy; the last release closes them
         self._lock = threading.Lock()
+        self._changed = threading.Condition(self._lock)
         root.mkdir(parents=True, exist_ok=True)
 
     def get(self, principal: str, run: str | None, meta: dict[str, Any]) -> Session:
@@ -59,8 +66,17 @@ class Sessions:
             if session is None:
                 session = self._start(principal, run, meta)
                 self._open[(principal, run)] = session
+            session.busy += 1
             session.last = self._clock()
             return session
+
+    def release(self, session: Session) -> None:
+        with self._lock:
+            session.busy -= 1
+            session.last = self._clock()
+            ready = session.closing and session.busy == 0
+        if ready:
+            self._close(session)
 
     def _start(self, principal: str, run: str | None, meta: dict[str, Any]) -> Session:
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
@@ -80,33 +96,58 @@ class Sessions:
         return Session(rec=rec, stack=stack, last=self._clock())
 
     def end(self, principal: str, run: str | None) -> bool:
+        """Close now, or at the last release if a request is in flight. The next `get` for the
+        same key starts a new ledger either way."""
         with self._lock:
             session = self._open.pop((principal, run), None)
+            ready = session is not None and self._retire(session)
         if session is None:
             return False
-        self._close(session)
+        if ready:
+            self._close(session)
         return True
 
     def sweep(self) -> int:
         now = self._clock()
         with self._lock:
-            stale = [k for k, s in self._open.items() if now - s.last > self._idle]
+            stale = [k for k, s in self._open.items() if not s.busy and now - s.last > self._idle]
             sessions = [self._open.pop(k) for k in stale]
+            for s in sessions:
+                s.closing = True
         for s in sessions:
             self._close(s)
         return len(sessions)
 
-    def close_all(self) -> None:
+    def close_all(self, timeout: float = 30.0) -> int:
+        """Close idle sessions, wait up to `timeout` seconds for busy ones to be released.
+        Returns how many were left open; `close_open_chains` finishes them on next start."""
         with self._lock:
             sessions = list(self._open.values())
             self._open.clear()
-        for s in sessions:
+            ready = [s for s in sessions if self._retire(s)]
+        for s in ready:
             self._close(s)
+        with self._changed:
+            self._changed.wait_for(lambda: not self._draining, timeout)
+            return len(self._draining)
 
-    @staticmethod
-    def _close(session: Session) -> None:
-        with session.lock:  # never close mid-request
-            session.stack.close()
+    def _retire(self, session: Session) -> bool:
+        """Mark for closing; True if idle and the caller should close it. Hold `_lock`."""
+        session.closing = True
+        if session.busy:
+            self._draining.append(session)
+            return False
+        return True
+
+    def _close(self, session: Session) -> None:
+        try:
+            with session.lock:  # never close mid-request
+                session.stack.close()
+        finally:
+            with self._changed:
+                if session in self._draining:
+                    self._draining.remove(session)
+                self._changed.notify_all()
 
 
 def close_open_chains(root: Path, signer: Signer | None) -> list[Path]:
