@@ -49,20 +49,28 @@ _B64 = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789
 
 
 def _signer_from_env(raw: str) -> Signer:
-    """Forgives what env var editors add: surrounding quotes, and spaces or line breaks
-    inside a base64 value. Errors describe the value's shape, never its content."""
+    """Forgives what editors and terminals add: surrounding quotes, and any character that is
+    not base64. Errors describe the value's shape, never its content."""
     value = raw
     if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
         value = value[1:-1].strip()
     if value.startswith("-----BEGIN"):
         # some env var UIs flatten a multi-line value into backslash-n sequences
         return Signer.from_pem(value.replace("\\n", "\n").encode(), KEY_ENV)
-    compact = "".join(value.split())
+    # a character outside base64 is never part of the key: whitespace from a wrapped paste, or
+    # the "%" zsh prints after output with no final newline. Dropping it cannot turn a wrong
+    # value into a valid key; the PEM parse below still has to succeed.
+    stray = sorted({c for c in value if c not in _B64})
+    if stray:
+        _log.warning(
+            "%s: ignoring characters that are not base64: %s", KEY_ENV, ", ".join(map(repr, stray))
+        )
+    compact = "".join(c for c in value if c in _B64)
     try:
         pem = base64.b64decode(compact, validate=True)
     except (binascii.Error, ValueError) as exc:
         raise AttestError(f"{KEY_ENV}: neither a PEM key nor base64 of one; {_shape(raw)}") from exc
-    return Signer.from_pem(pem, f"{KEY_ENV} (decoded from base64)")
+    return Signer.from_pem(pem, f"{KEY_ENV} (decoded from base64; {_shape(raw)})")
 
 
 def _shape(raw: str) -> str:
