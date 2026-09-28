@@ -4,6 +4,8 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-28
+
 ### Added
 - `Recorder.model_requested`, the request half of `model_call`, for callers that receive the response later.
 - Scenario check `no_tool_success: <tool>`: fails on a successful `tool.result` for that tool, so a self-refusal, a policy denial and no call at all pass alike. `trust-exploitation-policy` uses it instead of `policy_denied`, which failed an agent that refused the refund without ever calling the tool.
@@ -116,7 +118,8 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 - Tests: hash determinism, chain link and resume, property test that any edit breaks the chain, deletion detection, redaction, recorder lineage and failure path, CLI round trip and tamper detection.
 - Project scaffolding: uv, ruff, pyright strict, pytest, Hypothesis, pre-commit, CI, Dependabot, Scorecard, SECURITY.md, CONTRIBUTING.md, STANDARDS.md, ROADMAP.md.
 
-[Unreleased]: https://github.com/ronanpdh/seatbelt/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/ronanpdh/seatbelt/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.2.0
 [0.1.0]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.1.0
 [0.0.4]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.0.4
 [0.0.3]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.0.3

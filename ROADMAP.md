@@ -18,7 +18,7 @@ Policy engine at the tool boundary, Anthropic adapter for stream/async/beta call
 
 Signed Ed25519 attestation of each run (`seatbelt.attest`, `keygen`, `attest`, `verify --pubkey`), so a truncated or rewritten ledger tail is detectable.
 
-## 0.1.0
+## 0.1.0 (released)
 
 - Done: adversarial scenario pack (`seatbelt.scenarios`) with a shipped YAML corpus, each scenario mapped to the OWASP Agentic Top 10 and, where one exists, a MITRE ATLAS technique
 - Done: sandboxed target runs in Docker (`seatbelt scenarios --image`), no network unless a scenario declares egress
@@ -26,7 +26,7 @@ Signed Ed25519 attestation of each run (`seatbelt.attest`, `keygen`, `attest`, `
 - Done: signed releases (Sigstore), CycloneDX SBOM and SLSA provenance (since 0.0.2)
 - Done (repository side): OpenSSF Best Practices badge, evidence in `docs/openssf-best-practices.md`; registration on bestpractices.dev is a maintainer step
 
-## 0.2.0
+## 0.2.0 (released)
 
 - Done: recording gateway (`seatbelt gateway serve`) for the Anthropic Messages API and OpenAI Chat Completions, streamed or not, with the Claude Code and Claude Desktop probe endpoints
 - Done: per-employee issued keys (`seatbelt gateway keygen`), stored as hashes; principal and key id in every ledger
