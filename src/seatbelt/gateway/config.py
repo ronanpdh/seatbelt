@@ -28,6 +28,10 @@ def _none_is_empty(value: object) -> object:
     return [] if value is None else value  # `key:` with its entries deleted is null in YAML
 
 
+def _none_is_no_keys(value: object) -> object:
+    return {} if value is None else value  # `policy:` with every key deleted
+
+
 class PolicyConfig(_Strict):
     models: list[str] | None = None
     tools_denied: list[str] = Field(default_factory=list[str])
@@ -52,6 +56,7 @@ class GatewayConfig(_Strict):
     principals: list[Principal] = Field(default_factory=list[Principal])
 
     _principals = field_validator("principals", mode="before")(_none_is_empty)
+    _policy = field_validator("policy", mode="before")(_none_is_no_keys)
 
     def lookup(self, key: str) -> Principal | None:
         if not key:

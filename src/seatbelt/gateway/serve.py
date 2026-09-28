@@ -109,9 +109,9 @@ def _on_sighup(action: Callable[[], None]) -> Generator[bool]:
 def _graceful_stop() -> Generator[None]:
     """uvicorn stops on SIGINT, SIGTERM or (Windows) SIGBREAK, puts back the handlers it
     found, and raises the signal again. Under a default handler that ends the process before
-    its sessions are closed and signed, so uvicorn finds handlers that do nothing. The
-    defaults return when uvicorn does, so a second signal during the close stops the process
-    at once; the next start signs what it left."""
+    its sessions are closed and signed, so uvicorn finds handlers that do nothing, and they
+    stay until every session is signed: a second signal then would leave a closed ledger
+    unsigned, which no restart may sign (see `close_open_chains`). SIGKILL still stops it."""
     if threading.current_thread() is not threading.main_thread():
         yield
         return
@@ -137,7 +137,7 @@ def serve(path: Path) -> None:
         host, port = _host_port(cfg.listen)
         closed = close_open_chains(cfg.ledgers, signer)
         if closed:
-            _log.warning("closed and signed %d ledgers a previous run left", len(closed))
+            _log.warning("closed %d chains left open by a previous run", len(closed))
         sessions = Sessions(cfg.ledgers, signer, idle=cfg.session_idle)
         app = create_app(cfg, sessions)
         reloader = Reloader(path, app, sessions, loaded)
@@ -166,8 +166,8 @@ def serve(path: Path) -> None:
         ]
         for thread in threads:
             thread.start()
-        try:
-            with _graceful_stop():
+        with _graceful_stop():
+            try:
                 uvicorn.run(
                     app,
                     host=host,
@@ -175,13 +175,13 @@ def serve(path: Path) -> None:
                     log_level="info",
                     timeout_graceful_shutdown=DRAIN,
                 )
-        finally:
-            if sighup:  # a late SIGHUP must not run its handler inside hup.set below
-                signal.signal(signal.SIGHUP, signal.SIG_IGN)
-            stop.set()
-            hup.set()  # wake the watcher so it sees stop
-            for thread in threads:  # a sweep or reload may be signing a ledger it closed
-                thread.join(timeout=DRAIN)
-            left = sessions.close_all(timeout=DRAIN)
-            if left:
-                _log.warning("%d sessions still busy at shutdown; closed on next start", left)
+            finally:
+                if sighup:  # a late SIGHUP must not run its handler inside hup.set below
+                    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+                stop.set()
+                hup.set()  # wake the watcher so it sees stop
+                for thread in threads:  # a sweep or reload may be signing a ledger it closed
+                    thread.join(timeout=DRAIN)
+                left = sessions.close_all(timeout=DRAIN)
+                if left:
+                    _log.warning("%d sessions still busy at shutdown; closed on next start", left)

@@ -96,7 +96,8 @@ def test_sessions_are_signed_when_uvicorn_re_raises_sigterm(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """uvicorn raises the stop signal again once it has stopped. Under the default SIGTERM
-    handler that would kill the process before the open sessions are closed and signed."""
+    handler that would kill the process before the open sessions are closed and signed; a
+    second signal during the close is ignored for the same reason."""
     import signal
 
     import httpx2
@@ -118,6 +119,14 @@ def test_sessions_are_signed_when_uvicorn_re_raises_sigterm(
         with TestClient(app) as client:
             client.post("/v1/messages", json={"model": "m"}, headers={"x-api-key": key})
         signal.raise_signal(signal.SIGTERM)  # what uvicorn does after a SIGTERM stop
+
+    close_all = serve_mod.Sessions.close_all
+
+    def impatient(self: serve_mod.Sessions, timeout: float = 30.0) -> int:
+        signal.raise_signal(signal.SIGTERM)  # a second stop signal while sessions close
+        return close_all(self, timeout)
+
+    monkeypatch.setattr(serve_mod.Sessions, "close_all", impatient)
 
     def killed(_signum: int, _frame: object) -> None:
         raise _Killed  # stands in for the default handler, which would end the test run

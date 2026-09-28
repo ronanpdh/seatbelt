@@ -19,7 +19,7 @@ from seatbelt.gateway.app import Live, create_app
 from seatbelt.gateway.config import add_principal, load_config
 from seatbelt.gateway.reload import Reloader
 from seatbelt.gateway.sessions import Session, Sessions
-from seatbelt.ledger.events import Kind
+from seatbelt.ledger.events import Event, Kind
 from seatbelt.ledger.store import read_events
 from seatbelt.verify.chain import verify_file
 
@@ -61,6 +61,9 @@ class Running:
         text = self.path.read_text()
         assert old in text
         self.path.write_text(text.replace(old, new))
+
+    def events_of(self, kind: Kind) -> list[Event]:
+        return [e for p in self.ledgers.glob("*.jsonl") for e in read_events(p) if e.kind is kind]
 
     @property
     def live(self) -> Live:
@@ -268,6 +271,42 @@ def test_relaxing_tools_denied_releases_results_already_refused(gw: Running) -> 
     assert gw.reloader.check()
     gw.app.state.transport = _upstream()
     assert send() == 200  # the same session, no longer denied
+    allowed = [e for e in gw.events_of(Kind.POLICY_CHECK) if e.attrs["policy.allowed"]]
+    assert "no longer denied" in allowed[-1].attrs["policy.reason"]
+
+
+def test_a_result_is_refused_while_its_remembered_or_its_named_tool_is_denied(
+    tmp_path: Path,
+) -> None:
+    from seatbelt.gateway.app import _refusal  # pyright: ignore[reportPrivateUsage]
+    from seatbelt.gateway.formats.anthropic import AnthropicFormat
+    from seatbelt.policy.engine import Policy, denylist
+
+    sessions = Sessions(tmp_path, None, idle=60)
+    s = sessions.get("alice@corp", None, {})
+    s.denied_calls["c1"] = "Bash"  # recorded as denied when the model called it
+    fmt = AnthropicFormat(s.rec)
+    body: dict[str, Any] = {  # the history names the call differently
+        "messages": [
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "c1", "name": "Write"}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "c1"}]},
+        ]
+    }
+
+    def verdict(*denied: str) -> str | None:
+        return _refusal(s, fmt, body, "req", None, Policy(denylist(*denied)))
+
+    assert verdict("Write") == "tool result for denied call c1 (Write)"
+    assert verdict("Bash") == "tool result for denied call c1 (Bash)"
+    assert verdict("Other") is None
+    sessions.release(s)
+    assert sessions.close_all(timeout=1) == 0
+
+
+def test_a_policy_with_every_key_deleted_loads(tmp_path: Path) -> None:
+    path = tmp_path / "gateway.yaml"
+    path.write_text(BASE + "policy:\n")
+    assert load_config(path).policy.tools_denied == []
 
 
 def _status(client: TestClient, key: str) -> int:

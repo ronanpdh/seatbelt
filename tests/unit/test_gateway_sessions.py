@@ -86,9 +86,12 @@ def test_close_open_chains_on_startup(tmp_path: Path) -> None:
     assert close_open_chains(tmp_path, signer) == []
 
 
-def test_close_open_chains_signs_a_ledger_closed_but_not_signed(tmp_path: Path) -> None:
-    """A gateway stopped between run.end and its signature (a second signal during
-    shutdown) leaves a closed, unsigned ledger; the next start signs it, and only its own."""
+def test_close_open_chains_never_signs_a_closed_ledger(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A closed gateway ledger without a signature may be one the gateway was killed while
+    signing, or one rewritten and its signature deleted: the two look the same, so it is
+    reported and left for a person, never signed."""
     from seatbelt.record.recorder import Recorder
 
     sessions = Sessions(tmp_path, None, idle=60)  # no signer: closes without signing
@@ -98,11 +101,11 @@ def test_close_open_chains_signs_a_ledger_closed_but_not_signed(tmp_path: Path) 
     ours = s.rec.ledger.path
     with Recorder.start(tmp_path, agent_id="someone-else", run_id="foreign"):
         pass  # closed, unsigned, and not the gateway's
-    signer = Signer.generate()
-    assert close_open_chains(tmp_path, signer) == [ours]
-    assert sidecar(ours).exists() and verify_file(ours).complete
-    assert not sidecar(tmp_path / "foreign.jsonl").exists()
-    assert close_open_chains(tmp_path, signer) == []
+    with caplog.at_level(logging.WARNING, logger="seatbelt.gateway.sessions"):
+        assert close_open_chains(tmp_path, Signer.generate()) == []
+    assert not sidecar(ours).exists() and not sidecar(tmp_path / "foreign.jsonl").exists()
+    (warning,) = [r.getMessage() for r in caplog.records]
+    assert str(ours) in warning and "seatbelt attest" in warning
 
 
 def test_sessions_are_per_issued_key(tmp_path: Path) -> None:

@@ -85,7 +85,7 @@ Requests from the same employee go into one ledger until `session_idle` seconds 
 
 Behind a reverse proxy, `client.ip` is the proxy's address unless uvicorn trusts the proxy's `X-Forwarded-For`. uvicorn trusts forwarded headers only from `127.0.0.1` and `::1` by default; set `FORWARDED_ALLOW_IPS` in the container's environment to the address the proxy's connections arrive from. With `-p 8080:8080` that is usually the Docker bridge gateway (for example `172.17.0.1`), not the proxy's own address.
 
-On shutdown (SIGTERM or Ctrl-C) the gateway stops accepting requests and waits up to 30 seconds for in-flight ones, then up to 30 more for any session still busy, and closes and signs every session it can. A session still busy after that is left open and closed on the next start. If it is killed instead, the next start closes each ledger left open with `run.ok: false` and `run.error: "gateway restarted"` and signs it, and signs any ledger it had closed but not yet signed. A ledger it cannot read, or whose chain does not verify, is left untouched and logged, never signed.
+On shutdown (SIGTERM or Ctrl-C) the gateway stops accepting requests and waits up to 30 seconds for in-flight ones, then up to 30 more for any session still busy, and closes and signs every session it can. A session still busy after that is left open and closed on the next start. A second stop signal during that close is ignored, so a ledger is never left closed but unsigned; `docker stop` escalates to SIGKILL after its timeout (`--stop-timeout`, step 4). If it is killed instead, the next start closes each ledger left open with `run.ok: false` and `run.error: "gateway restarted"` and signs it. A ledger killed between its `run.end` and its signature is never signed at the next start, because it looks the same as one rewritten and its signature deleted: the start logs it as closed but not signed, for a person to check and sign with `seatbelt attest`. A ledger it cannot read, or whose chain does not verify, is left untouched and logged, never signed.
 
 ## Changing the config while it runs
 
@@ -103,7 +103,7 @@ Each reload is logged as `config reloaded:` with the number of principals, the i
 
 - `models`: requests for any other model are refused with 403 before they leave the gateway. The match is exact, so list the model ids your clients send.
 - `max_output_tokens`: a request whose `max_tokens` or `max_completion_tokens` exceeds it is refused with 403. A request that sets neither passes.
-- `tools_denied`: when the model asks for one of these tools, the call is recorded as denied and the response is still relayed, because the gateway cannot stop a client running a tool on its own machine. Any later request that carries that tool's result is refused with 403, so the result never reaches the model.
+- `tools_denied`: when the model asks for one of these tools, the call is recorded as denied and the response is still relayed, because the gateway cannot stop a client running a tool on its own machine. Any later request that carries that tool's result is refused with 403 while the tool stays denied, so the result does not reach the model. A config reload that removes the tool lets such results through, in open sessions too, and records that it did.
 
 Every verdict is a `policy.check` event in the ledger. `seatbelt report` counts each denying check per employee (a request two rules deny counts twice; a denied tool call counts too) and, for refused requests, against the model asked for.
 

@@ -181,10 +181,12 @@ class Sessions:
 
 
 def close_open_chains(root: Path, signer: Signer | None) -> list[Path]:
-    """After a crash: append a failed run.end to every open chain and sign it, and sign any
-    ledger the gateway closed but was stopped before signing. A ledger that cannot be read or
-    whose chain is broken is left untouched and logged: closing it would put a signature over
-    evidence of tampering, and refusing to start would let one bad file stop all recording."""
+    """After a crash: append a failed run.end to every open chain and sign it. A ledger that
+    cannot be read or whose chain is broken is left untouched and logged: closing it would
+    put a signature over evidence of tampering, and refusing to start would let one bad file
+    stop all recording. A closed ledger is never signed here, even one of the gateway's with
+    no signature: a process killed between run.end and signing looks the same as a ledger
+    rewritten and its signature deleted, so it is logged for a person to check."""
     closed: list[Path] = []
     for path in sorted(root.glob("*.jsonl")):
         try:
@@ -194,14 +196,15 @@ def close_open_chains(root: Path, signer: Signer | None) -> list[Path]:
             continue
         if not events:
             continue
-        ended = events[-1].kind is Kind.RUN_END
-        unsigned = (  # the gateway was stopped between run.end and its signature
-            ended
-            and signer is not None
-            and events[-1].actor.id == _GATEWAY
-            and not sidecar(path).exists()
-        )
-        if ended and not unsigned:
+        if events[-1].kind is Kind.RUN_END:
+            gateway = signer is not None and "principal.id" in events[0].attrs
+            if gateway and not sidecar(path).exists():
+                _log.warning(
+                    "%s is closed but not signed: the gateway was killed while signing it, "
+                    "or its signature was deleted. Check it, then sign it with "
+                    "`seatbelt attest` if it is genuine",
+                    path,
+                )
             continue
         verdict = verify_events(events)
         if not verdict.ok:
@@ -212,14 +215,11 @@ def close_open_chains(root: Path, signer: Signer | None) -> list[Path]:
                 verdict.reason,
             )
             continue
-        if not ended:
-            Ledger(path, events[0].run_id).append(
-                Kind.RUN_END,
-                Actor(type=ActorType.AGENT, id=_GATEWAY, version=__version__),
-                {"run.ok": False, "run.error": "gateway restarted", "run.events": len(events) + 1},
-            )
-        else:
-            _log.warning("signing %s: it was closed but not signed", path)
+        Ledger(path, events[0].run_id).append(
+            Kind.RUN_END,
+            Actor(type=ActorType.AGENT, id=_GATEWAY, version=__version__),
+            {"run.ok": False, "run.error": "gateway restarted", "run.events": len(events) + 1},
+        )
         if signer is not None and not sidecar(path).exists():
             attest(path, signer)
         closed.append(path)

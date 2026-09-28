@@ -193,19 +193,28 @@ def _refusal(
     tool_policy: Policy | None,
 ) -> str | None:
     """Record the checks on a request; return the first denial, or None. A tool result is
-    refused if this session denied its call, or if the history names a denied tool (a new
-    session after the idle window still carries the old conversation)."""
+    refused while the policy denies the tool this session recorded for its call, or the tool
+    the history names (a new session after the idle window still carries the old
+    conversation). A result held back earlier is let through, and that recorded, once a
+    config reload stops denying its tool."""
     if tool_policy is not None:
         for call_id, name in fmt.tool_result_calls(body):
-            # a call denied earlier stays denied only while the policy still denies its tool,
-            # which a config reload can change
-            denied = session.denied_calls.get(call_id) or name
-            if denied is not None and not any(r for _, r in tool_policy.evaluate(denied, {})):
-                denied = None
+            remembered = session.denied_calls.get(call_id)
+            denied = next(
+                (
+                    tool
+                    for tool in dict.fromkeys(t for t in (remembered, name) if t)
+                    if any(r for _, r in tool_policy.evaluate(tool, {}))
+                ),
+                None,
+            )
             if denied is not None:
                 reason = f"tool result for denied call {call_id} ({denied})"
                 session.rec.policy_check("denylist", request_id, False, reason)
                 return reason
+            if remembered is not None:  # denied when called; the policy has changed since
+                reason = f"tool result for call {call_id} ({remembered}): no longer denied"
+                session.rec.policy_check("denylist", request_id, True, reason)
     if request_policy is None:
         return None
     first: str | None = None
