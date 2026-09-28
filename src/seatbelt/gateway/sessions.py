@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import secrets
 import threading
@@ -17,10 +18,12 @@ from seatbelt import __version__
 from seatbelt.attest.manifest import sidecar
 from seatbelt.attest.sign import Signer, attest
 from seatbelt.ledger.events import Actor, ActorType, Kind
-from seatbelt.ledger.store import Ledger, read_events
+from seatbelt.ledger.store import Ledger, LedgerError, read_events
 from seatbelt.record.recorder import Recorder
+from seatbelt.verify.chain import verify_events
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9_-]+")
+_log = logging.getLogger(__name__)
 
 
 def _slug(text: str) -> str:
@@ -151,11 +154,27 @@ class Sessions:
 
 
 def close_open_chains(root: Path, signer: Signer | None) -> list[Path]:
-    """After a crash: append a failed run.end to every open chain and sign it."""
+    """After a crash: append a failed run.end to every open chain and sign it. A ledger that
+    cannot be read or whose chain is broken is left untouched and logged: closing it would
+    put a signature over evidence of tampering, and refusing to start would let one bad file
+    stop all recording."""
     closed: list[Path] = []
     for path in sorted(root.glob("*.jsonl")):
-        events = list(read_events(path))
+        try:
+            events = list(read_events(path))
+        except (OSError, UnicodeDecodeError, LedgerError) as exc:
+            _log.warning("skipping unreadable ledger %s: %s", path, exc)
+            continue
         if not events or events[-1].kind is Kind.RUN_END:
+            continue
+        verdict = verify_events(events)
+        if not verdict.ok:
+            _log.warning(
+                "skipping broken ledger %s at seq %s: %s",
+                path,
+                verdict.first_bad_seq,
+                verdict.reason,
+            )
             continue
         ledger = Ledger(path, events[0].run_id)
         ledger.append(

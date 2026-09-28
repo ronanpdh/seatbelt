@@ -11,7 +11,7 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 - `seatbelt.gateway.formats.anthropic`: the Anthropic Messages wire format on plain JSON (request, response, SSE reassembly), shared by the SDK adapter and the gateway.
 - `seatbelt.gateway.formats.openai_chat`: the OpenAI Chat Completions wire format on plain JSON, including SSE reassembly, for the gateway.
 - `seatbelt.gateway.config`: the gateway's YAML configuration (upstreams, policy, session idle, signing key) and issued employee keys stored as SHA-256 hashes; `add_principal` returns a key once and refuses a duplicate id.
-- `seatbelt.gateway.sessions`: one ledger per `(principal, run name)`, opened on first request and closed and signed on idle, explicit end or shutdown, never while a request is in flight (`get`/`release` pairs; `close_all` waits up to a timeout); `close_open_chains` closes chains a crash left open with `run.ok=false` and signs them.
+- `seatbelt.gateway.sessions`: one ledger per `(principal, run name)`, opened on first request and closed and signed on idle, explicit end or shutdown, never while a request is in flight (`get`/`release` pairs; `close_all` waits up to a timeout); `close_open_chains` closes chains a crash left open with `run.ok=false` and signs them, and skips (with a logged warning) any ledger it cannot read or whose chain does not verify, so a bad file neither blocks startup nor gets signed.
 
 ### Changed
 - The Anthropic adapter records every integer `usage` field the provider returns (cache tokens included), not only input and output tokens.
