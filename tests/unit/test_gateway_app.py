@@ -15,7 +15,7 @@ from tests.helpers import sse
 from seatbelt.attest.manifest import sidecar
 from seatbelt.attest.sign import Signer
 from seatbelt.gateway.app import create_app
-from seatbelt.gateway.config import add_principal, load_config
+from seatbelt.gateway.config import add_principal, key_hash, load_config
 from seatbelt.gateway.sessions import Sessions
 from seatbelt.ledger.events import Event, Kind
 from seatbelt.ledger.store import read_events
@@ -138,6 +138,7 @@ def test_anthropic_round_trip_is_relayed_and_recorded(gw: Gateway) -> None:
     assert kinds == [Kind.RUN_START, Kind.MODEL_REQUEST, Kind.MODEL_RESPONSE, Kind.TOOL_CALL]
     start = gw.events()[0]
     assert start.attrs["principal.id"] == "alice@corp" and start.attrs["client.user_agent"]
+    assert start.attrs["principal.key_id"] == key_hash(gw.key)[:12]
 
 
 def test_a_session_carries_tool_calls_across_requests(gw: Gateway) -> None:
