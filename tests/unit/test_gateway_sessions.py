@@ -1,0 +1,74 @@
+from pathlib import Path
+
+from seatbelt.attest.manifest import sidecar
+from seatbelt.attest.sign import Signer
+from seatbelt.gateway.sessions import Sessions, close_open_chains
+from seatbelt.ledger.events import Kind
+from seatbelt.ledger.store import read_events
+from seatbelt.verify.chain import verify_file
+
+
+class Clock:
+    now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def test_same_principal_continues_until_idle(tmp_path: Path) -> None:
+    clock = Clock()
+    sessions = Sessions(tmp_path, Signer.generate(), idle=60, clock=clock)
+    a = sessions.get("alice@corp", None, {"client.ip": "1.2.3.4"})
+    clock.now += 30
+    assert sessions.get("alice@corp", None, {}) is a
+    clock.now += 61
+    assert sessions.sweep() == 1
+    b = sessions.get("alice@corp", None, {})
+    assert b is not a
+    sessions.close_all()
+    ledgers = sorted(tmp_path.glob("*.jsonl"))
+    assert len(ledgers) == 2 and all(verify_file(p).complete for p in ledgers)
+    assert all(sidecar(p).exists() for p in ledgers)
+    start = next(read_events(a.rec.ledger.path))
+    assert start.attrs["principal.id"] == "alice@corp" and start.attrs["client.ip"] == "1.2.3.4"
+
+
+def test_client_metadata_cannot_override_the_principal(tmp_path: Path) -> None:
+    sessions = Sessions(tmp_path, None, idle=60)
+    s = sessions.get("alice@corp", "job", {"principal.id": "bob@corp", "run.name": "other"})
+    sessions.close_all()
+    start = next(read_events(s.rec.ledger.path))
+    assert start.attrs["principal.id"] == "alice@corp" and start.attrs["run.name"] == "job"
+
+
+def test_named_runs_are_separate_and_end_on_request(tmp_path: Path) -> None:
+    sessions = Sessions(tmp_path, None, idle=60)
+    a = sessions.get("alice@corp", "job-1", {})
+    b = sessions.get("alice@corp", None, {})
+    assert a is not b
+    assert sessions.end("alice@corp", "job-1") is True
+    assert sessions.end("alice@corp", "job-1") is False
+    sessions.close_all()
+    assert len(list(tmp_path.glob("*.jsonl"))) == 2
+
+
+def test_run_ids_are_safe_filenames(tmp_path: Path) -> None:
+    sessions = Sessions(tmp_path, None, idle=60)
+    s = sessions.get("alice.o'neil@corp", "a b/../c", {})
+    assert "/" not in s.rec.run_id and " " not in s.rec.run_id and ".." not in s.rec.run_id
+    sessions.close_all()
+
+
+def test_close_open_chains_on_startup(tmp_path: Path) -> None:
+    sessions = Sessions(tmp_path, None, idle=60)
+    s = sessions.get("alice@corp", None, {})
+    s.rec.user_message("u", "hello")
+    path = s.rec.ledger.path  # simulate a crash: never closed
+    signer = Signer.generate()
+    closed = close_open_chains(tmp_path, signer)
+    assert closed == [path]
+    events = list(read_events(path))
+    assert events[-1].kind == Kind.RUN_END and events[-1].attrs["run.ok"] is False
+    assert "restart" in events[-1].attrs["run.error"] and sidecar(path).exists()
+    assert verify_file(path).complete
+    assert close_open_chains(tmp_path, signer) == []
