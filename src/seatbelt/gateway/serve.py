@@ -42,14 +42,38 @@ def load_signer(cfg: GatewayConfig, env: Mapping[str, str]) -> Signer:
         return Signer.from_file(cfg.signing_key)
     if not value:
         raise AttestError(f"no signing key: set signing_key in the config or {KEY_ENV}")
+    return _signer_from_env(value)
+
+
+_B64 = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=")
+
+
+def _signer_from_env(raw: str) -> Signer:
+    """Forgives what env var editors add: surrounding quotes, and spaces or line breaks
+    inside a base64 value. Errors describe the value's shape, never its content."""
+    value = raw
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        value = value[1:-1].strip()
     if value.startswith("-----BEGIN"):
         # some env var UIs flatten a multi-line value into backslash-n sequences
         return Signer.from_pem(value.replace("\\n", "\n").encode(), KEY_ENV)
+    compact = "".join(value.split())
     try:
-        pem = base64.b64decode(value, validate=True)
+        pem = base64.b64decode(compact, validate=True)
     except (binascii.Error, ValueError) as exc:
-        raise AttestError(f"{KEY_ENV}: neither a PEM key nor base64 of one") from exc
-    return Signer.from_pem(pem, KEY_ENV)
+        raise AttestError(f"{KEY_ENV}: neither a PEM key nor base64 of one; {_shape(raw)}") from exc
+    return Signer.from_pem(pem, f"{KEY_ENV} (decoded from base64)")
+
+
+def _shape(raw: str) -> str:
+    stray = sorted({c for c in raw if c not in _B64})
+    compact = "".join(c for c in raw if c in _B64)
+    return (
+        f"{len(raw)} characters, "
+        f"{'starts' if compact.startswith('LS0tLS1CRUdJT') else 'does not start'} like base64 "
+        f"of a PEM key, characters that are not base64: {', '.join(map(repr, stray)) or 'none'}"
+        + ("" if len(compact) % 4 == 0 else ", length is not a multiple of 4 (cut short?)")
+    )
 
 
 def serve(cfg: GatewayConfig) -> None:
