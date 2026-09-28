@@ -38,10 +38,13 @@ The container image runs as uid 1000 and writes ledgers under `/var/lib/seatbelt
    seatbelt gateway keygen --user alice@corp --config gateway/gateway.yaml
    ```
 
-4. Build the image and run it, with the config directory mounted read-only and the provider keys passed as environment:
+4. Pull the released image, or build it, and run it with the config directory mounted read-only and the provider keys passed as environment. Each release from 0.3.0 publishes `ghcr.io/ronanpdh/seatbelt-gateway:<version>` (and `:latest`) with signed build provenance; check it before you run it:
 
    ```sh
-   docker build -f docker/Dockerfile.gateway -t seatbelt-gateway .   # builds the wheel itself
+   docker pull ghcr.io/ronanpdh/seatbelt-gateway:0.3.0
+   gh attestation verify oci://ghcr.io/ronanpdh/seatbelt-gateway:0.3.0 --repo ronanpdh/seatbelt
+   docker tag ghcr.io/ronanpdh/seatbelt-gateway:0.3.0 seatbelt-gateway
+   # or build it from a checkout: docker build -f docker/Dockerfile.gateway -t seatbelt-gateway .
    docker volume create seatbelt-runs
    docker run -d --name seatbelt-gateway -p 8080:8080 --stop-timeout 70 \
      -v "$PWD/gateway:/etc/seatbelt:ro" \
@@ -73,7 +76,7 @@ The container image runs as uid 1000 and writes ledgers under `/var/lib/seatbelt
 
 ### On a PaaS (Coolify and similar)
 
-A host that builds from git can use `docker/Dockerfile.gateway` as is: it builds seatbelt from the repository, no `uv build` first. Mount `gateway.yaml` at `/etc/seatbelt/gateway.yaml` (a directory mount at `/etc/seatbelt` where the host offers one, for the reason in step 4), give `/var/lib/seatbelt` a persistent volume, expose port 8080 and put the host's HTTPS domain in front.
+A host that runs images can run `ghcr.io/ronanpdh/seatbelt-gateway:<version>` (in Coolify, the Docker Image build pack), which pins a verified release rather than whatever the branch holds. A host that builds from git can use `docker/Dockerfile.gateway` as is: it builds seatbelt from the repository, no `uv build` first. Mount `gateway.yaml` at `/etc/seatbelt/gateway.yaml` (a directory mount at `/etc/seatbelt` where the host offers one, for the reason in step 4), give `/var/lib/seatbelt` a persistent volume, expose port 8080 and put the host's HTTPS domain in front.
 
 Where you cannot control a mounted file's owner or mode, leave `signing_key` out of the config and pass the key in the environment instead, as `SEATBELT_SIGNING_KEY`: the PEM itself, or its base64 so it survives any env var editor (`base64 < gateway/keys/seatbelt.key | tr -d '\n'`). Setting both is refused. Treat the variable like the key file: anyone who can read the service's environment can sign ledgers.
 

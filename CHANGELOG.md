@@ -12,6 +12,7 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 - The `max_output_tokens` policy rule also caps the Responses API's `max_output_tokens`.
 - Each release attaches its SLSA build provenance as `seatbelt-<version>.intoto.jsonl` (the Sigstore bundle from the attestation), beside the attestation GitHub stores, so tools that read release assets, OpenSSF Scorecard among them, find it. Verify with `gh attestation verify <wheel> --bundle seatbelt-<version>.intoto.jsonl --repo ronanpdh/seatbelt`.
 - CodeQL analyses the Python code on every push to main, every pull request and weekly; Hadolint lints both Dockerfiles in CI.
+- Each release publishes the gateway image to `ghcr.io/ronanpdh/seatbelt-gateway:<version>` and `:latest`, with a signed build provenance attestation pushed beside it (`gh attestation verify oci://ghcr.io/ronanpdh/seatbelt-gateway:<version> --repo ronanpdh/seatbelt`).
 ### Changed
 - The Docker base images are pinned by digest, and Dependabot keeps the digests current (Python patch updates only). The gateway image installs its dependencies from `docker/requirements-gateway.txt`, exported from `uv.lock` with hashes and installed with `--require-hashes`; CI fails if the file drifts from the lockfile.
 - `seatbelt.gateway.serve.serve` takes the config's path and loads it itself, so the reload watcher compares the file with the exact bytes the gateway started on.
