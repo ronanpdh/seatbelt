@@ -16,9 +16,9 @@ Seatbelt is built so the record proves itself:
 - **Reconstructable.** One JSONL file per run, one event per line, in order. A timeline can be rebuilt with nothing but the file.
 - **Provable.** Each event carries the SHA-256 of the previous one and of its own canonical form. Any edit, reorder, insertion or deletion inside the file breaks the chain at a named sequence number. A signed manifest pins the final hash and file digest, so a rewritten or truncated tail is caught too.
 - **Redacted before it is provable.** Secrets are scrubbed before hashing and writing, so the stored, signed content never contained them.
-- **Self-contained.** No database, no service, no network. The process being observed writes to its own disk, and the reviewer checks the file with the CLI and a public key.
+- **Self-contained.** No database and no network to verify. The process being observed, or the organisation's recording gateway, writes the files, and the reviewer checks them with the CLI and a public key.
 
-The design choices and their trade-offs are recorded in ADR 0001 (ledger), 0002 (attestation), 0003 (scenarios), 0004 (evidence pack) and 0005 (sandbox).
+The design choices and their trade-offs are recorded in ADR 0001 (ledger), 0002 (attestation), 0003 (scenarios), 0004 (evidence pack), 0005 (sandbox), 0006 (recording gateway) and 0007 (launcher).
 
 ## Features
 
@@ -77,6 +77,30 @@ You supply `target(rec: Recorder, inputs: Inputs)`. Checks (`no_tool_call`, `too
 ### Evidence pack
 
 `seatbelt pack` bundles a runs directory (ledgers, attestation sidecars, `findings.json`, optionally the corpus) into one deterministic zip with a signed `pack.json` manifest. `seatbelt verify-pack` re-checks the signature, every member hash, every chain, every attestation and every finding's evidence, offline. Format: `docs/spec/evidence-pack-v1.md`.
+
+### Recording gateway
+
+`seatbelt gateway serve` is a service the organisation runs so that clients employees already use are recorded with no code change. It speaks the Anthropic Messages API and OpenAI Chat Completions, authenticates each employee by an issued key (stored as a hash), swaps in the real provider key, relays the response byte for byte, streamed or not, and records the exchange into one signed ledger per employee session. A session closes and is signed after an idle window, or when a named run ends; a crash leaves no unsigned open chain behind. An org policy can restrict models, cap output tokens and refuse the results of denied tools. Deployment: `docs/deploy/gateway.md`; Claude Desktop and Cowork: `docs/deploy/claude-desktop-gateway.md`.
+
+Which clients it records:
+
+| Client | How it is pointed at the gateway | Release |
+|---|---|---|
+| Claude Code | `seatbelt run claude`, or `ANTHROPIC_BASE_URL` | 0.2.0 |
+| Claude Desktop, Cowork | MDM or in-app gateway configuration | 0.2.0 |
+| Claude SDKs, Claude Agent SDK | base URL | 0.2.0 |
+| OpenAI Chat Completions clients (OpenAI SDKs, LangChain, Cursor) | `OPENAI_BASE_URL` | 0.2.0 |
+| Codex, OpenAI Agents SDK (Responses API) | base URL | 0.3.0 |
+| Gemini CLI, Google SDKs | base URL | 0.3.0 |
+| claude.ai web, unmanaged desktops | Compliance API importer | 0.3.0 |
+
+### Launcher
+
+`seatbelt run claude` starts Claude Code pointed at the gateway with the employee's key from `~/.config/seatbelt/gateway.toml`, names the run, strips real provider keys from its environment, and ends the run when it exits. Standard library only.
+
+### Fleet report
+
+`seatbelt report <runs>` sums a runs directory by employee, model and tool: runs, model calls, tokens, policy refusals, and the failed, open, unsigned, forged and broken runs. Only chains that verify are counted.
 
 ### Supply chain
 
@@ -172,6 +196,19 @@ uv run seatbelt scenarios scenarios/ --target my_agent:target --image seatbelt-t
 
 Extend the image with your dependencies (`FROM seatbelt-target`). Keep keys, `.env` and `runs/` outside `--target-dir`; everything under it is visible to the target.
 
+### Run it for a team
+
+```sh
+uv sync --extra gateway
+uv run seatbelt keygen keys
+uv run seatbelt gateway keygen --user alice@corp --config gateway.yaml
+uv run seatbelt gateway serve --config gateway.yaml
+seatbelt run claude                          # on alice's machine, with ~/.config/seatbelt/gateway.toml
+uv run seatbelt report runs --pubkey keys/seatbelt.pub
+```
+
+The config format, a container image, sessions, policy and backups are in `docs/deploy/gateway.md`.
+
 ### Hand over the evidence
 
 ```sh
@@ -193,11 +230,16 @@ The recipient needs the zip, the public key and the harness. Nothing else.
 | `seatbelt scenarios <corpus> --target m:f [--out] [--key] [--list] [--image] [--target-dir] [--timeout]` | runs the adversarial corpus | any finding (2: bad target) |
 | `seatbelt pack <runs> --out <zip> [--key] [--corpus]` | builds an evidence pack | broken ledger, output exists |
 | `seatbelt verify-pack <zip> [--pubkey]` | re-checks a pack offline | forged, or a broken ledger inside |
+| `seatbelt gateway keygen --user <id> [--config]` | issues a gateway key; stores only its hash | the user already has a key |
+| `seatbelt gateway serve [--config]` | runs the recording gateway | bad config or signing key |
+| `seatbelt run <cli> [--config] [--exe] [-- args]` | launches `claude` through the gateway | bad config or unknown CLI; otherwise the CLI's exit code |
+| `seatbelt report <runs> [--pubkey] [--json]` | usage by employee, model and tool | a ledger is broken, or forged with a key given |
 
 ## What it does not do
 
 - It does not judge whether an agent's behaviour was correct. It records, checks the record, and evaluates the explicit scenario checks you asked for.
 - It does not enforce policy inside a framework's own tool loop. Adapters observe; enforcement is through `Recorder.tool_call`.
+- The gateway cannot stop a client running a tool on the employee's machine. It records a denied tool call and refuses to pass the tool's result to the model.
 - It does not protect a ledger from a writer who also holds the private key. Attestation proves the file matches what the key holder signed, not that the key holder was honest.
 - It is pre-1.0. The ledger schema may change between minor versions; each change bumps `schema_version` and is noted in the changelog.
 
@@ -206,5 +248,6 @@ The recipient needs the zip, the public key and the harness. Nothing else.
 - `README.md`: quick start.
 - `docs/adr/`: why each format is the way it is.
 - `docs/spec/evidence-pack-v1.md`, `docs/schema/`: normative formats.
+- `docs/deploy/`: running the gateway, and pointing Claude Desktop at it.
 - `docs/openssf-best-practices.md`: supply-chain and process evidence.
 - `ROADMAP.md`, `CHANGELOG.md`: what is done and what is next.

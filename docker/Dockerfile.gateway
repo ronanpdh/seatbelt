@@ -1,0 +1,14 @@
+# The recording gateway. See docs/deploy/gateway.md.
+# Build:  rm -rf dist && uv build && docker build -f docker/Dockerfile.gateway -t seatbelt-gateway .
+# Run:    mount the config at /etc/seatbelt/gateway.yaml and the signing key read-only, give
+#         /var/lib/seatbelt a volume writable by uid 1000, and pass the provider keys as env.
+#         The config must set `listen: 0.0.0.0:8080` to be reachable from outside the container.
+FROM python:3.12-slim
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+COPY dist/*.whl /tmp/
+RUN for w in /tmp/*.whl; do pip install --no-cache-dir "${w}[gateway]"; done && rm -f /tmp/*.whl \
+    && mkdir -p /var/lib/seatbelt && chown 1000:1000 /var/lib/seatbelt
+USER 1000
+VOLUME /var/lib/seatbelt
+EXPOSE 8080
+ENTRYPOINT ["seatbelt", "gateway", "serve", "--config", "/etc/seatbelt/gateway.yaml"]

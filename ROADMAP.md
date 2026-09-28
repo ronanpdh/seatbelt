@@ -25,3 +25,22 @@ Signed Ed25519 attestation of each run (`seatbelt.attest`, `keygen`, `attest`, `
 - Done: evidence pack format (`seatbelt pack`, `seatbelt verify-pack`), documented as a versioned spec in `docs/spec/evidence-pack-v1.md`
 - Done: signed releases (Sigstore), CycloneDX SBOM and SLSA provenance (since 0.0.2)
 - Done (repository side): OpenSSF Best Practices badge, evidence in `docs/openssf-best-practices.md`; registration on bestpractices.dev is a maintainer step
+
+## 0.2.0
+
+- Done: recording gateway (`seatbelt gateway serve`) for the Anthropic Messages API and OpenAI Chat Completions, streamed or not, with the Claude Code and Claude Desktop probe endpoints
+- Done: per-employee issued keys (`seatbelt gateway keygen`), stored as hashes; principal and key id in every ledger
+- Done: one signed ledger per employee session, idle close, named runs, crash-safe close on restart
+- Done: org policy at the gateway: allowed models, output token cap, denied tools
+- Done: launcher, `seatbelt run claude`
+- Done: fleet report, `seatbelt report`
+- Done: gateway Docker image (`docker/Dockerfile.gateway`) and deployment docs, including Claude Desktop and Cowork via MDM (`docs/deploy/`)
+
+## 0.3.0
+
+- OpenAI Responses format (current Codex, the OpenAI Agents SDK) and a `codex` launcher preset
+- Gemini `generateContent` format (Gemini CLI)
+- Config reload on SIGHUP, so a revoked key takes effect without a restart
+- Central sink: ship each signed ledger to object storage at run end
+- OIDC sign-in for Claude Desktop (`inferenceGatewayOidc`) and SSO principal lookup
+- Compliance API importer (`seatbelt import compliance`) for Team and Enterprise transcripts, Cowork included, where desktop clients are not routed through the gateway

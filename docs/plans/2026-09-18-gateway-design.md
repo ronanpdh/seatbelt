@@ -78,7 +78,8 @@ ADR 0006 (gateway), ADR 0007 (launcher), README "Run it for a team", `docs/overv
 | Claude Code | `seatbelt run claude` or `ANTHROPIC_BASE_URL` | 0.2.0 |
 | Claude Desktop, Cowork | MDM or in-app gateway config | 0.2.0 |
 | Claude SDKs, Agent SDK | base URL | 0.2.0 |
-| Codex, Cursor, LangChain, OpenAI SDKs | `OPENAI_BASE_URL` | 0.2.0 |
+| Cursor, LangChain, OpenAI SDKs (Chat Completions) | `OPENAI_BASE_URL` | 0.2.0 |
+| Codex (Responses only since February 2026, see openai/codex discussion 7782) | `OPENAI_BASE_URL` | 0.3.0 |
 | OpenAI Agents SDK (Responses) | base URL | 0.3.0 |
 | Gemini CLI, Google SDKs | base URL | 0.3.0 |
 | claude.ai web, unmanaged desktop | Compliance API importer | 0.3.0 |
