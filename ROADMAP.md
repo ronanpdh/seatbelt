@@ -39,7 +39,8 @@ Signed Ed25519 attestation of each run (`seatbelt.attest`, `keygen`, `attest`, `
 ## 0.3.0
 
 - Done: OpenAI Responses format (current Codex, the OpenAI Agents SDK) and a `codex` launcher preset
-- Gemini `generateContent` format (Gemini CLI)
+- Done: local recording, `seatbelt run` with no gateway: the CLI keeps its own sign-in (subscriptions included) and each run is signed on the machine
+- Done: Gemini `generateContent` format (Gemini CLI, Google Gen AI SDKs) and a `gemini` launcher preset
 - Done: config reload when the file changes or on SIGHUP, so a new or revoked key takes effect without a restart
 - Done: central sink, shipping each signed ledger to S3-compatible object storage (Hetzner Object Storage) at run end
 - Done: OIDC sign-in for Claude Desktop (`inferenceGatewayOidc`), users identified by the provider's immutable id

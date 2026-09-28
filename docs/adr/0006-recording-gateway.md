@@ -25,5 +25,5 @@ Rejected: a proxy on each employee's machine (the record sits on their disk; ide
 - `verify`, `reconstruct`, `pack` and `verify-pack` work unchanged on gateway ledgers. `seatbelt report` aggregates them, counting only chains that verify.
 - The gateway sees every prompt in clear before redaction; its host is as sensitive as the provider keys it holds.
 - A shared key in a fleet-wide client profile attributes everyone to one principal; per-user attribution needs per-user keys.
-- Traffic in the OpenAI Responses format (current Codex, the OpenAI Agents SDK's Responses model) or Gemini's is not recorded until those formats land (0.3.0).
+- Traffic in the OpenAI Responses format (current Codex, the OpenAI Agents SDK's Responses model) or Gemini's was not recorded in 0.2.0; both formats are served from 0.3.0. Gemini CLI signed in with Google or through Vertex AI does not use the gateway's base URL and stays unrecorded ([deploy/gateway.md](../deploy/gateway.md)).
 - Config was read once at start in 0.2.0, so revoking a key meant restarting. From 0.3.0 the gateway reloads the file when it changes or on `SIGHUP`, and ends a withdrawn key's open sessions ([deploy/gateway.md](../deploy/gateway.md#changing-the-config-while-it-runs)).

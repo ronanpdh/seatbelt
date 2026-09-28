@@ -10,11 +10,17 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    # the recording gateway, which `seatbelt run` also starts in-process to record locally
+    "anyio>=4.15",
     "cryptography>=50.0.1",
+    "httpx2>=2.13",
     "pydantic>=2.13.5",
+    "pyjwt>=2.15",
     "pyyaml>=6.0.3",
     "rich>=15.0.0",
+    "starlette>=1.6",
     "typer>=0.27.2",
+    "uvicorn>=0.53",
 ]
 
 [project.scripts]
@@ -27,6 +33,7 @@ anthropic = [
 openai-agents = [
     "openai-agents>=0.22.2",
 ]
+# kept so `seatbelt[gateway]` still installs; its packages are now core dependencies
 gateway = [
     "anyio>=4.15",
     "httpx2>=2.13",

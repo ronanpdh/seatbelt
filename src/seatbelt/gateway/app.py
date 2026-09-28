@@ -5,9 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+import zlib
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, cast
+from urllib.parse import unquote_plus
 
 import anyio
 import httpx2
@@ -19,9 +22,17 @@ from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
 from seatbelt import __version__
-from seatbelt.gateway.config import GatewayConfig, Principal
-from seatbelt.gateway.formats import Format, anthropic, openai_chat, openai_responses
+from seatbelt.gateway.config import KEY_PREFIX, GatewayConfig, Principal, Upstream
+from seatbelt.gateway.formats import (
+    Format,
+    anthropic,
+    as_dicts,
+    gemini,
+    openai_chat,
+    openai_responses,
+)
 from seatbelt.gateway.formats.anthropic import AnthropicFormat
+from seatbelt.gateway.formats.gemini import CodeAssistFormat, GeminiFormat
 from seatbelt.gateway.formats.openai_chat import OpenAIChatFormat
 from seatbelt.gateway.formats.openai_responses import OpenAIResponsesFormat
 from seatbelt.gateway.oidc import OidcError, OidcVerifier, looks_like_jwt
@@ -32,6 +43,9 @@ from seatbelt.record.recorder import ModelCall
 
 RUN_HEADER = "x-seatbelt-run"
 RUN_END_HEADER = "x-seatbelt-run-end"
+# the issued key, for a client whose own auth headers carry its provider credentials to a
+# pass-through upstream (`key_env` unset): `seatbelt run` in local mode
+KEY_HEADER = "x-seatbelt-key"
 _HOP = {
     "connection",
     "keep-alive",
@@ -49,14 +63,20 @@ _STRIP_REQUEST = _HOP | {
     "accept-encoding",
     "authorization",
     "x-api-key",
+    "x-goog-api-key",
     RUN_HEADER,
     RUN_END_HEADER,
+    KEY_HEADER,
 }
+_AUTH_HEADERS = frozenset({"authorization", "x-api-key", "x-goog-api-key"})
+# to a pass-through upstream the client's own credentials go on as sent
+_STRIP_PASSTHROUGH = _STRIP_REQUEST - _AUTH_HEADERS
 # the body is relayed decoded, so the upstream's encoding and length no longer describe it
 _STRIP_RESPONSE = _HOP | {"content-encoding", "content-length"}
 type Assemble = Callable[[list[dict[str, Any]]], dict[str, Any]]
-# path -> (upstream, auth header, format, stream assembler)
-_FORMATS: dict[str, tuple[str, str, type[Format], Assemble]] = {
+type Spec = tuple[str, str, type[Format], Assemble]  # upstream, auth header, format, assembler
+# path -> how it is relayed and recorded
+_FORMATS: dict[str, Spec] = {
     "/v1/messages": ("anthropic", "x-api-key", AnthropicFormat, anthropic.assemble_sse),
     "/v1/chat/completions": (
         "openai",
@@ -70,6 +90,52 @@ _FORMATS: dict[str, tuple[str, str, type[Format], Assemble]] = {
         OpenAIResponsesFormat,
         openai_responses.assemble_sse,
     ),
+}
+# Gemini: POST /{version}/models/{model}:{method}. The model is in the path
+_GEMINI: Spec = ("gemini", "x-goog-api-key", GeminiFormat, gemini.assemble_sse)
+_GEMINI_VERSIONS = ("v1beta", "v1", "v1alpha")
+_GEMINI_RECORDED = frozenset({"generateContent", "streamGenerateContent"})
+# forwarded unrecorded, like Anthropic's count_tokens: nothing a model acts on comes back.
+# Gemini CLI counts tokens for images and files; Google's SDKs embed with batchEmbedContents.
+# Any other method is refused rather than let through unrecorded
+_GEMINI_FORWARDED = frozenset({"countTokens", "embedContent", "batchEmbedContents"})
+_GEMINI_MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # e.g. gemini-2.5-pro
+# the query parameters Google reads as an API key (cloud.google.com/apis/docs/system-parameters)
+_KEY_PARAMS = frozenset({"key", "$key"})
+# Gemini CLI signed in with Google: POST /v1internal:{method} on Google's Code Assist service
+# (gemini-cli packages/core/src/code_assist/server.ts), reached through CODE_ASSIST_ENDPOINT
+_CODE_ASSIST: Spec = (
+    "codeassist",
+    "authorization",
+    CodeAssistFormat,
+    gemini.assemble_code_assist_sse,
+)
+_CODE_ASSIST_FORWARDED = frozenset(
+    {
+        "loadCodeAssist",
+        "onboardUser",
+        "retrieveUserQuota",
+        "listExperiments",
+        "fetchAdminControls",
+        "getCodeAssistGlobalUserSetting",
+        "setCodeAssistGlobalUserSetting",
+        "countTokens",
+        "recordCodeAssistMetrics",
+    }
+)
+# Codex signed in with ChatGPT sends its account id beside the token; its Responses traffic
+# goes to ChatGPT's backend, not the public API (codex-rs model-provider-info, chatgpt base)
+_CHATGPT_ACCOUNT = "chatgpt-account-id"
+_CHATGPT_PREFIX = "/backend-api/codex"
+_MAX_BODY = 64 * 1024 * 1024  # a decompressed request body larger than this is refused
+# google.rpc.Code names, which Google's clients read beside the HTTP status. 502 has no code
+# of its own; UNAVAILABLE is the nearest
+_GOOGLE_STATUS = {
+    400: "INVALID_ARGUMENT",
+    401: "UNAUTHENTICATED",
+    403: "PERMISSION_DENIED",
+    404: "NOT_FOUND",
+    502: "UNAVAILABLE",
 }
 
 type Finish = Callable[[ModelCall, dict[str, Any] | None, str | None], None]
@@ -90,17 +156,21 @@ class Identity:
         return cls(principal.id, principal.key_sha256, attrs)
 
 
-def _oidc_identity(verifier: OidcVerifier, token: str) -> Identity | Response:
+def _oidc_identity(request: Request, verifier: OidcVerifier, token: str) -> Identity | Response:
     try:
         claims = verifier.verify(token)
     except OidcError as exc:
-        return _error(401, "authentication_error", f"sign-in token refused: {exc}")
+        return _error(request, 401, "authentication_error", f"sign-in token refused: {exc}")
     cfg = verifier.cfg
     subject = claims.get(cfg.principal_claim)
     if not isinstance(subject, str) or not subject:
-        return _error(401, "authentication_error", f"sign-in token has no {cfg.principal_claim}")
+        return _error(
+            request, 401, "authentication_error", f"sign-in token has no {cfg.principal_claim}"
+        )
     if cfg.allow is not None and subject not in cfg.allow:
-        return _error(403, "permission_error", f"{subject} is not allowed to use this gateway")
+        return _error(
+            request, 403, "permission_error", f"{subject} is not allowed to use this gateway"
+        )
     name = claims.get(cfg.name_claim) if cfg.name_claim else None
     attrs: dict[str, Any] = {
         "principal.auth": "oidc",
@@ -112,28 +182,56 @@ def _oidc_identity(verifier: OidcVerifier, token: str) -> Identity | Response:
 
 
 async def _identify(live: Live, request: Request) -> Identity | Response:
-    """An issued key in either header (Claude Code can send both, one of them another
-    credential, e.g. an `apiKeyHelper` key in `x-api-key`), else a provider's sign-in token as
-    the Bearer (Claude Desktop with `inferenceGatewayOidc`). An error response otherwise."""
+    """An issued key in any header a client puts its key in (Claude Code can send two, one of
+    them another credential, e.g. an `apiKeyHelper` key in `x-api-key`; Google's clients send
+    `x-goog-api-key`, or `?key=` by hand; beside provider credentials, `x-seatbelt-key`),
+    else a provider's sign-in token as the Bearer (Claude Desktop with
+    `inferenceGatewayOidc`). An error response otherwise."""
     bearer = request.headers.get("authorization", "")
     token = bearer[7:].strip() if bearer[:7].lower() == "bearer " else ""
-    for raw in (request.headers.get("x-api-key", "").strip(), token):
+    for raw in (
+        request.headers.get(KEY_HEADER, "").strip(),
+        request.headers.get("x-api-key", "").strip(),
+        request.headers.get("x-goog-api-key", "").strip(),
+        request.query_params.get("key", "").strip(),
+        token,
+    ):
         if raw and (principal := live.cfg.lookup(raw)) is not None:
             return Identity.of_key(principal)
     if live.oidc is not None and looks_like_jwt(token):
-        return await run_in_threadpool(_oidc_identity, live.oidc, token)  # may fetch keys
-    return _unauthorized()
+        # may fetch keys
+        return await run_in_threadpool(_oidc_identity, request, live.oidc, token)
+    return _unauthorized(request)
 
 
-def _error(status: int, kind: str, message: str) -> Response:
-    """Shaped like Anthropic's errors; OpenAI clients read the same `error.message`."""
+def _google_style(request: Request) -> bool:
+    """A request from a Google client: a Gemini API path, or its key header or parameter."""
+    path = request.url.path
+    return (
+        path.startswith(("/v1beta/", "/v1alpha/", "/v1internal"))
+        or (path.startswith("/v1/models/") and ":" in path)  # a method: /v1/models/{m}:{method}
+        or "x-goog-api-key" in request.headers
+        or "key" in request.query_params
+    )
+
+
+def _error(request: Request, status: int, kind: str, message: str) -> Response:
+    """Shaped like Anthropic's errors, whose `error.message` OpenAI clients read too; for a
+    Google client like Google's (`error.code`, `error.message`, `error.status`)."""
+    if _google_style(request):
+        error = {
+            "code": status,
+            "message": message,
+            "status": _GOOGLE_STATUS.get(status, "UNKNOWN"),
+        }
+        return JSONResponse({"error": error}, status_code=status)
     return JSONResponse(
         {"type": "error", "error": {"type": kind, "message": message}}, status_code=status
     )
 
 
-def _unauthorized() -> Response:
-    return _error(401, "authentication_error", "unknown seatbelt key")
+def _unauthorized(request: Request) -> Response:
+    return _error(request, 401, "authentication_error", "unknown seatbelt key")
 
 
 def _policies(cfg: GatewayConfig) -> tuple[Policy | None, Policy | None]:
@@ -175,8 +273,19 @@ def _live(request: Request) -> Live:
     return cast(Live, request.app.state.live)
 
 
-def _upstream_headers(request: Request, auth_header: str, real_key: str) -> dict[str, str]:
+def _upstream_headers(request: Request, upstream: Upstream, auth_header: str) -> dict[str, str]:
+    """The request's headers for the upstream: with the gateway's provider key in place of the
+    client's, or for a pass-through upstream with the client's own credentials. A seatbelt
+    key is never sent on, whatever header it came in."""
+    if upstream.key_env is None:
+        return {
+            k: v
+            for k, v in request.headers.items()
+            if k.lower() not in _STRIP_PASSTHROUGH
+            and not (k.lower() in _AUTH_HEADERS and KEY_PREFIX in v)
+        }
     headers = {k: v for k, v in request.headers.items() if k.lower() not in _STRIP_REQUEST}
+    real_key = os.environ.get(upstream.key_env, "")
     headers[auth_header] = f"Bearer {real_key}" if auth_header == "authorization" else real_key
     return headers
 
@@ -185,16 +294,60 @@ def _relay_headers(resp: httpx2.Response) -> dict[str, str]:
     return {k: v for k, v in resp.headers.items() if k.lower() not in _STRIP_RESPONSE}
 
 
-def _json_object(raw: bytes) -> dict[str, Any] | None:
+def _decoded(raw: bytes, encoding: str) -> bytes | None:
+    """A request body as sent before its content-encoding (gzip or deflate), or None for an
+    encoding the gateway cannot read or a body that inflates past `_MAX_BODY`."""
+    encoding = encoding.strip().lower()
+    if encoding in ("", "identity"):
+        return raw
+    wbits = {"gzip": 31, "x-gzip": 31, "deflate": 15}.get(encoding)
+    if wbits is None:
+        return None
     try:
-        value: Any = json.loads(raw)  # provider JSON
+        inflater = zlib.decompressobj(wbits)
+        out = inflater.decompress(raw, _MAX_BODY)
+    except zlib.error:
+        return None
+    return out if not inflater.unconsumed_tail else None
+
+
+def _route(cfg: GatewayConfig, request: Request, name: str) -> tuple[str, str]:
+    """(upstream name, path prefix to put in place of /v1) for a request meant for `name`: a
+    Codex signed in with ChatGPT goes to ChatGPT's backend when a `chatgpt` upstream is set."""
+    if name == "openai" and "chatgpt" in cfg.upstreams and request.headers.get(_CHATGPT_ACCOUNT):
+        return "chatgpt", _CHATGPT_PREFIX
+    return name, ""
+
+
+def _routed(path: str, prefix: str) -> str:
+    return prefix + path.removeprefix("/v1") if prefix else path
+
+
+def _json(raw: bytes) -> Any:
+    try:
+        return json.loads(raw)  # provider JSON
     except ValueError:
         return None
+
+
+def _json_object(raw: bytes) -> dict[str, Any] | None:
+    value = _json(raw)
     return cast(dict[str, Any], value) if isinstance(value, dict) else None
 
 
-def _with_query(request: Request) -> str:
-    return request.url.path + (f"?{request.url.query}" if request.url.query else "")
+def _with_query(request: Request, upstream: Upstream) -> str:
+    """The path and query to send upstream, less any key parameter: a seatbelt key given as
+    `?key=` goes no further than the gateway, and a client's own provider key is not used
+    unless the upstream passes the client's credentials through (a seatbelt key never is)."""
+
+    def kept(param: str) -> bool:
+        name, _, value = param.partition("=")
+        if unquote_plus(name) not in _KEY_PARAMS:
+            return True
+        return upstream.key_env is None and KEY_PREFIX not in unquote_plus(value)
+
+    query = "&".join(p for p in request.url.query.split("&") if p and kept(p))
+    return request.url.path + (f"?{query}" if query else "")
 
 
 def _meta(request: Request) -> dict[str, Any]:
@@ -289,6 +442,39 @@ def sse_events(raw: bytes) -> list[dict[str, Any]]:
     return out
 
 
+PATH_PREFIX = "/_seatbelt/"
+
+
+class _PathCredentials:
+    """`/_seatbelt/{key}/{run}/...`: the run's key and name in the base URL's path rather
+    than in headers, for `seatbelt run` recording locally. A CLI sends its custom headers to
+    other hosts too (Claude Code sends them to api.anthropic.com's bootstrap endpoint); only
+    the requests it points at the base URL carry the path. The prefix is taken off and the two
+    become the `x-seatbelt-key` and `x-seatbelt-run` headers, replacing any sent."""
+
+    def __init__(self, app: Callable[[Scope, Receive, Send], Awaitable[None]]) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        path = str(scope.get("path", ""))
+        if scope["type"] == "http" and path.startswith(PATH_PREFIX):
+            key, _, rest = path[len(PATH_PREFIX) :].partition("/")
+            run, _, rest = rest.partition("/")
+            headers = [
+                (k, v)
+                for k, v in scope["headers"]
+                if k.lower() not in (b"x-seatbelt-key", b"x-seatbelt-run")
+            ]
+            headers += [(b"x-seatbelt-key", key.encode()), (b"x-seatbelt-run", run.encode())]
+            scope = {
+                **scope,
+                "path": "/" + rest,
+                "raw_path": ("/" + rest).encode(),
+                "headers": headers,
+            }
+        await self.app(scope, receive, send)
+
+
 class _RelayStream(StreamingResponse):
     """Runs `on_close` however the response ends: finished, upstream broke, or client left.
     Starlette skips `background` on a disconnect and an abandoned generator's `finally` runs
@@ -354,22 +540,48 @@ def create_app(
     cfg: GatewayConfig, sessions: Sessions, transport: httpx2.AsyncBaseTransport | None = None
 ) -> Starlette:
     async def relay(request: Request) -> Response:
+        return await record(request, _FORMATS[request.url.path])
+
+    async def gemini_method(request: Request) -> Response:
+        """POST /{version}/models/{model}:{method}"""
+        model, _, method = str(request.path_params["target"]).rpartition(":")
+        if _GEMINI_MODEL.fullmatch(model) and method in _GEMINI_RECORDED:
+            return await record(request, _GEMINI, model)
+        # a strict model name: nothing Google could read as another method goes unrecorded
+        if _GEMINI_MODEL.fullmatch(model) and method in _GEMINI_FORWARDED:
+            return await forward(request)
+        return _error(request, 400, "invalid_request_error", f"{method or 'this'} is not recorded")
+
+    async def record(request: Request, spec: Spec, path_model: str | None = None) -> Response:
+        """Relay an inference request and record it. `path_model` is the model a Gemini
+        request names in its URL, put in the body that is recorded (not the one sent)."""
         live = _live(request)
         cfg, request_policy, tool_policy = live.cfg, live.request_policy, live.tool_policy
         principal = await _identify(live, request)
         if isinstance(principal, Response):
             return principal
-        upstream_name, auth_header, format_cls, assemble = _FORMATS[request.url.path]
+        upstream_name, auth_header, format_cls, assemble = spec
+        upstream_name, prefix = _route(cfg, request, upstream_name)
         upstream = cfg.upstreams.get(upstream_name)
         if upstream is None:
-            return _error(404, "not_found_error", f"no {upstream_name} upstream")
-        raw = await request.body()
-        body = _json_object(raw)
+            return _error(request, 404, "not_found_error", f"no {upstream_name} upstream")
+        raw = await request.body()  # sent on as it came, encoding and all
+        encoding = request.headers.get("content-encoding", "")
+        plain = _decoded(raw, encoding)
+        if plain is None:
+            return _error(
+                request, 415, "invalid_request_error", f"a body encoded {encoding} is not recorded"
+            )
+        body = _json_object(plain)
         if body is None:
-            return _error(400, "invalid_request_error", "body must be a JSON object")
+            return _error(request, 400, "invalid_request_error", "body must be a JSON object")
+        if path_model is not None:
+            body = {**body, "model": path_model}
         if format_cls is OpenAIResponsesFormat and body.get("background") is True:
             # its output is fetched later with GET /v1/responses/{id}, which is not recorded
-            return _error(400, "invalid_request_error", "background responses are not recorded")
+            return _error(
+                request, 400, "invalid_request_error", "background responses are not recorded"
+            )
         run = request.headers.get(RUN_HEADER) or None
         run_end = request.headers.get(RUN_END_HEADER, "").lower() == "true"
         meta = {**_meta(request), **principal.attrs}
@@ -410,17 +622,16 @@ def create_app(
             call, refusal = await run_in_threadpool(_locked, session, admit)
             if refusal is not None:
                 refused = True
-                return _error(403, "permission_error", refusal)
+                return _error(request, 403, "permission_error", refusal)
             client = httpx2.AsyncClient(
                 base_url=upstream.url, transport=request.app.state.transport, timeout=600
             )
             outgoing = client.build_request(
                 "POST",
-                _with_query(request),  # Claude Code posts /v1/messages?beta=true
+                # Claude Code posts /v1/messages?beta=true
+                _routed(_with_query(request, upstream), prefix),
                 content=raw,
-                headers=_upstream_headers(
-                    request, auth_header, os.environ.get(upstream.key_env, "")
-                ),
+                headers=_upstream_headers(request, upstream, auth_header),
             )
             try:
                 resp = await client.send(outgoing, stream=True)
@@ -433,12 +644,16 @@ def create_app(
                 await client.aclose()
                 error = f"upstream unreachable: {type(exc).__name__}: {exc}"
                 await run_in_threadpool(finish, call, None, error)
-                return _error(502, "api_error", error)
+                return _error(request, 502, "api_error", error)
             if streaming:
                 handed_off = True
                 return _stream(resp, client, call, assemble, finish, settle)
             await client.aclose()
-            payload = _json_object(resp.content)
+            value = _json(resp.content)
+            if isinstance(value, list) and issubclass(format_cls, GeminiFormat):
+                # streamGenerateContent without alt=sse answers with a JSON array of chunks
+                value = assemble(as_dicts(value))
+            payload = cast(dict[str, Any], value) if isinstance(value, dict) else None
             if resp.status_code >= 400:
                 error: str | None = f"{resp.status_code}: {resp.text[:200]}"
                 payload = None
@@ -455,9 +670,10 @@ def create_app(
                 with anyio.CancelScope(shield=True):
                     await settle()
 
-    async def forward(request: Request) -> Response:
+    async def forward(request: Request, to: str | None = None) -> Response:
         """Probes a client makes besides inference: authenticated and forwarded, not recorded.
-        A token count or a model list is nothing an auditor needs."""
+        A token count or a model list is nothing an auditor needs. `to` names the upstream;
+        by default the request's style picks it."""
         live = _live(request)
         cfg = live.cfg
         principal = await _identify(live, request)
@@ -470,13 +686,19 @@ def create_app(
             or "anthropic-version" in request.headers
             or "x-api-key" in request.headers
         )
-        name, auth_header = (
-            ("anthropic", "x-api-key") if anthropic_style else ("openai", "authorization")
-        )
+        if to is not None:
+            name, auth_header = to, "authorization"
+        elif _google_style(request):
+            name, auth_header = "gemini", "x-goog-api-key"
+        elif anthropic_style:
+            name, auth_header = "anthropic", "x-api-key"
+        else:
+            name, auth_header = "openai", "authorization"
+        name, prefix = _route(cfg, request, name)
         upstream = cfg.upstreams.get(name)
         if upstream is None:
-            return _error(404, "not_found_error", f"no {name} upstream")
-        path = _with_query(request)
+            return _error(request, 404, "not_found_error", f"no {name} upstream")
+        path = _routed(_with_query(request, upstream), prefix)
         async with httpx2.AsyncClient(
             base_url=upstream.url, transport=request.app.state.transport, timeout=60
         ) as client:
@@ -485,15 +707,27 @@ def create_app(
                     request.method,
                     path,
                     content=await request.body(),
-                    headers=_upstream_headers(
-                        request, auth_header, os.environ.get(upstream.key_env, "")
-                    ),
+                    headers=_upstream_headers(request, upstream, auth_header),
                 )
             except httpx2.HTTPError as exc:
                 return _error(
-                    502, "api_error", f"upstream unreachable: {type(exc).__name__}: {exc}"
+                    request, 502, "api_error", f"upstream unreachable: {type(exc).__name__}: {exc}"
                 )
         return Response(resp.content, status_code=resp.status_code, headers=_relay_headers(resp))
+
+    async def code_assist(request: Request) -> Response:
+        """/v1internal:{method}: the two inference methods recorded, the account and quota
+        calls Gemini CLI makes forwarded, any other refused rather than let through
+        unrecorded."""
+        method = str(request.path_params["method"])
+        if method in _GEMINI_RECORDED and request.method == "POST":
+            return await record(request, _CODE_ASSIST)
+        if method in _CODE_ASSIST_FORWARDED:
+            return await forward(request, "codeassist")
+        return _error(request, 400, "invalid_request_error", f"{method} is not recorded")
+
+    async def code_assist_operation(request: Request) -> Response:
+        return await forward(request, "codeassist")  # GET /v1internal/{operation}: onboarding
 
     async def hello(_: Request) -> Response:
         return Response(status_code=200)
@@ -514,10 +748,21 @@ def create_app(
             Route("/v1/messages/count_tokens", forward, methods=["POST"]),
             Route("/v1/models", forward, methods=["GET"]),
             Route("/v1/models/{id:path}", forward, methods=["GET"]),
+            *(
+                Route(f"/{v}/models/{{target:path}}", gemini_method, methods=["POST"])
+                for v in _GEMINI_VERSIONS
+            ),
+            Route("/v1beta/models", forward, methods=["GET"]),
+            Route("/v1beta/models/{id:path}", forward, methods=["GET"]),
+            Route("/v1alpha/models", forward, methods=["GET"]),
+            Route("/v1alpha/models/{id:path}", forward, methods=["GET"]),
+            Route("/v1internal:{method}", code_assist, methods=["GET", "POST"]),
+            Route("/v1internal/{name:path}", code_assist_operation, methods=["GET"]),
             Route("/api/hello", hello, methods=["GET", "HEAD"]),
             Route("/seatbelt/runs/{name}/end", end_run, methods=["POST"]),
         ]
     )
+    app.add_middleware(_PathCredentials)
     app.state.live = Live.of(cfg)  # replaced by a config reload
     app.state.transport = transport  # read per request so tests can swap upstreams
     return app

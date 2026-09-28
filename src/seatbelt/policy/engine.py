@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from seatbelt.ledger.events import Event
@@ -68,12 +68,23 @@ def models(*allowed: str) -> Rule:
 
 def max_output_tokens(limit: int) -> Rule:
     """For a model request: caps `max_tokens` (Anthropic, OpenAI), `max_completion_tokens`
-    (OpenAI Chat Completions) and `max_output_tokens` (OpenAI Responses). A request that sets
-    none passes; the provider's default applies."""
+    (OpenAI Chat Completions), `max_output_tokens` (OpenAI Responses) and
+    `generationConfig.maxOutputTokens` (Gemini; inside `request` from Gemini CLI signed in with
+    Google). A request that sets none passes; the provider's default applies."""
 
     def check(_: str, args: dict[str, Any]) -> str | None:
-        for key in ("max_tokens", "max_completion_tokens", "max_output_tokens"):
-            n = args.get(key)
+        caps = {
+            k: args.get(k) for k in ("max_tokens", "max_completion_tokens", "max_output_tokens")
+        }
+        inner: Any = args.get("request")  # Gemini CLI signed in with Google wraps the request
+        holders: list[tuple[str, Any]] = [("", args), ("request.", inner)]
+        for path, holder in holders:
+            config = cast(dict[str, Any], holder) if isinstance(holder, dict) else {}
+            generation: Any = config.get("generationConfig")
+            if isinstance(generation, dict):
+                value: Any = cast(dict[str, Any], generation).get("maxOutputTokens")
+                caps[f"{path}generationConfig.maxOutputTokens"] = value
+        for key, n in caps.items():
             if isinstance(n, int) and n > limit:
                 return f"{key} {n} exceeds {limit}"
         return None

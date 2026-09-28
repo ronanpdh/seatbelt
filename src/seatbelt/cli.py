@@ -12,12 +12,11 @@ from rich.text import Text
 
 from seatbelt import __version__
 from seatbelt.attest.manifest import AttestError, sidecar
-from seatbelt.attest.sign import Signer
+from seatbelt.attest.sign import PUB_FILE, Signer
 from seatbelt.attest.sign import attest as sign_ledger
 from seatbelt.attest.sign import keygen as make_keys
 from seatbelt.gateway.config import add_principal
-from seatbelt.gateway.launcher import DEFAULT_CONFIG as DEFAULT_CLIENT_CONFIG
-from seatbelt.gateway.launcher import run_cli
+from seatbelt.gateway.launcher import data_dir, load_client_config, run_cli
 from seatbelt.ledger.store import LedgerError
 from seatbelt.record.recorder import Recorder
 from seatbelt.report.fleet import fleet as build_fleet
@@ -315,13 +314,18 @@ def gateway_serve(config: ConfigOpt = Path("gateway.yaml")) -> None:
 @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
 def run(
     ctx: typer.Context,
-    cli: Annotated[str, typer.Argument(help="client to launch: claude or codex")],
+    cli: Annotated[str, typer.Argument(help="client to launch: claude, codex or gemini")],
     config: Annotated[
-        Path, typer.Option(help="gateway url and your key (TOML)")
-    ] = DEFAULT_CLIENT_CONFIG,
+        Path | None,
+        typer.Option(
+            help="client config (TOML); default ~/.config/seatbelt/config.toml. With no "
+            "gateway in it, the run is recorded on this machine"
+        ),
+    ] = None,
     exe: Annotated[str | None, typer.Option(help="executable, if not the preset's name")] = None,
 ) -> None:
-    """Launch a CLI through the recording gateway. Arguments after -- go to the CLI."""
+    """Launch a CLI and record it: on this machine, or through your org's gateway if one is
+    configured. Arguments after -- go to the CLI."""
     try:
         code = run_cli(cli, list(ctx.args), config=config, exe=exe)
     except ValueError as exc:
@@ -333,14 +337,26 @@ def run(
     raise typer.Exit(code=code)
 
 
+def _local_runs(pubkey: Path | None) -> tuple[Path, Path | None]:
+    cfg = load_client_config()
+    root = data_dir()
+    local_pub = root / "keys" / PUB_FILE
+    return cfg.ledgers or root / "runs", pubkey or (local_pub if local_pub.exists() else None)
+
+
 @app.command()
 def report(
-    runs: Path,
+    runs: Annotated[
+        Path | None, typer.Argument(help="runs directory; default: this machine's local runs")
+    ] = None,
     pubkey: PubKey = None,
     json_out: Annotated[bool, typer.Option("--json", help="print the report as JSON")] = False,
 ) -> None:
     """Usage across a runs directory by person, model and tool, with refused, failed, open and
-    unsigned runs. Exit 1 if any ledger is broken or, with --pubkey, forged."""
+    unsigned runs. Exit 1 if any ledger is broken or, with --pubkey, forged. With no
+    directory: the runs `seatbelt run` recorded here, checked against this machine's key."""
+    if runs is None:
+        runs, pubkey = _local_runs(pubkey)
     try:
         fleet = build_fleet(runs, pubkey)
     except AttestError as exc:

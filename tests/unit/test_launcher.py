@@ -1,4 +1,5 @@
 import ast
+import json
 import os
 import sys
 import tomllib
@@ -14,6 +15,8 @@ from seatbelt.gateway.launcher import (
     PRESETS,
     arguments,
     environment,
+    gemini_system_settings,
+    gemini_warnings,
     load_client_config,
     run_cli,
 )
@@ -27,12 +30,37 @@ def _config(tmp_path: Path, mode: int = 0o600) -> Path:
 
 
 def test_client_config_is_read_from_toml(tmp_path: Path) -> None:
-    assert load_client_config(_config(tmp_path)) == ("https://gw.corp", "sbk_abc")
+    legacy = load_client_config(_config(tmp_path))  # 0.2.0's url and key
+    assert (legacy.gateway, legacy.key) == ("https://gw.corp", "sbk_abc")
     with pytest.raises(ValueError):
         load_client_config(tmp_path / "missing.toml")
-    (tmp_path / "bad.toml").write_text('url = "x"\n')
+    (tmp_path / "bad.toml").write_text('gateway = "x"\n')
     with pytest.raises(ValueError, match="key"):
         load_client_config(tmp_path / "bad.toml")
+    (tmp_path / "typo.toml").write_text('gatway = "x"\n')
+    with pytest.raises(ValueError, match="unknown keys gatway"):
+        load_client_config(tmp_path / "typo.toml")
+    local = tmp_path / "config.toml"
+    local.write_text(
+        'ledgers = "runs"\n[upstreams]\nanthropic = "https://proxy.corp"\n'
+        '[sink]\nurl = "https://fsn1.your-objectstorage.com"\nbucket = "b"\nregion = "fsn1"\n'
+    )
+    cfg = load_client_config(local)
+    assert cfg.gateway is None and cfg.ledgers == tmp_path / "runs"
+    assert cfg.upstreams == {"anthropic": "https://proxy.corp"}
+    assert cfg.sink is not None and cfg.sink["bucket"] == "b"
+
+
+def test_no_client_config_at_all_means_record_locally(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from seatbelt.gateway import launcher
+
+    monkeypatch.setattr(launcher, "DEFAULT_CONFIG", tmp_path / "config.toml")
+    monkeypatch.setattr(launcher, "LEGACY_CONFIG", tmp_path / "gateway.toml")
+    assert load_client_config() == launcher.ClientConfig()
+    _config(tmp_path)  # a 0.2.0 gateway.toml is still found
+    assert load_client_config().gateway == "https://gw.corp"
 
 
 def test_claude_preset_sets_base_url_token_and_run_header() -> None:
@@ -97,10 +125,79 @@ def test_run_cli_puts_the_codex_provider_before_the_users_arguments(
     assert _provider(argv[:4])["http_headers"]["X-Seatbelt-Run"].startswith("codex-")
 
 
+def test_gemini_preset_points_its_api_key_mode_at_the_gateway() -> None:
+    base = {
+        "PATH": "/bin",
+        "GEMINI_API_KEY": "AIza-real",
+        "GOOGLE_API_KEY": "AIza-real",
+        "GOOGLE_GENAI_USE_GCA": "true",
+        "GEMINI_CLI_CUSTOM_HEADERS": "X-Team: a",
+    }
+    env = environment("gemini", "https://gw.corp", "sbk_abc", "run-1", base=base)
+    assert env["GEMINI_API_KEY"] == "sbk_abc"
+    assert env["GOOGLE_GEMINI_BASE_URL"] == "https://gw.corp"
+    assert env["GEMINI_CLI_CUSTOM_HEADERS"] == "X-Team: a, X-Seatbelt-Run: run-1"
+    # set empty or false rather than left unset, so a .env file cannot put them back
+    assert env["GOOGLE_API_KEY"] == ""
+    assert env["GOOGLE_GENAI_USE_GCA"] == env["GOOGLE_GENAI_USE_VERTEXAI"] == "false"
+    assert env["PATH"] == "/bin"
+
+
+def _gemini_settings(root: Path, settings: dict[str, Any] | str) -> None:
+    (root / ".gemini").mkdir(parents=True, exist_ok=True)
+    text = settings if isinstance(settings, str) else json.dumps(settings)
+    (root / ".gemini" / "settings.json").write_text(text)
+
+
+def test_gemini_settings_that_bypass_the_gateway_are_warned_about(tmp_path: Path) -> None:
+    home, cwd, etc = tmp_path / "home", tmp_path / "work", tmp_path / "etc"
+    cwd.mkdir()
+    system, defaults = etc / ".gemini" / "settings.json", etc / "system-defaults.json"
+
+    def warnings() -> list[str]:
+        return gemini_warnings(home, cwd, system, defaults)
+
+    sign_in, usage = warnings()  # no settings at all
+    assert "not set" in sign_in and "selectedType" in sign_in
+    assert "usageStatisticsEnabled" in usage
+    ready = {
+        "security": {"auth": {"selectedType": "gemini-api-key"}},
+        "privacy": {"usageStatisticsEnabled": False},
+    }
+    _gemini_settings(home, ready)
+    assert warnings() == []
+    # the workspace's settings win only in a folder Gemini CLI trusts: either way is warned
+    _gemini_settings(cwd, {"security": {"auth": {"selectedType": "oauth-personal"}}})
+    (warning,) = warnings()
+    assert "oauth-personal, which is not recorded" in warning
+    # recording locally, a Google sign-in is recorded through CODE_ASSIST_ENDPOINT
+    assert gemini_warnings(home, cwd, system, defaults, local=True) == []
+    _gemini_settings(cwd, {"security": {"auth": {"selectedType": "vertex-ai"}}})
+    (warning,) = gemini_warnings(home, cwd, system, defaults, local=True)
+    assert "vertex-ai" in warning and '"oauth-personal"' in warning
+    _gemini_settings(home, {"privacy": {"usageStatisticsEnabled": False}})
+    _gemini_settings(cwd, ready)
+    (warning,) = warnings()  # set only in the workspace, which may not be trusted
+    assert "gemini-api-key or not set" in warning
+    _gemini_settings(etc, {"security": {"auth": {"selectedType": "gemini-api-key"}}})
+    assert warnings() == []  # the system settings override every other file
+    defaults.write_text(json.dumps({"privacy": {"usageStatisticsEnabled": True}}))
+    assert warnings() == []  # system defaults are overridden by the user's
+    _gemini_settings(cwd, "// a comment\n{}")
+    assert warnings() == []  # JSON with comments: no guessing
+
+
+def test_gemini_system_settings_path_follows_gemini_cli() -> None:
+    assert gemini_system_settings({}, "linux") == Path("/etc/gemini-cli/settings.json")
+    assert gemini_system_settings({}, "darwin").parts[1] == "Library"
+    custom = {"GEMINI_CLI_SYSTEM_SETTINGS_PATH": "/opt/g.json"}
+    assert gemini_system_settings(custom, "linux") == Path("/opt/g.json")
+
+
 def test_unknown_cli_is_refused() -> None:
     with pytest.raises(ValueError):
         environment("vim", "u", "k", "r", base={})
-    assert set(PRESETS) >= {"claude", "codex"}
+    assert set(PRESETS) >= {"claude", "codex", "gemini"}
 
 
 PROBE = (
@@ -178,3 +275,19 @@ def test_end_run_posts_to_the_gateway_and_tolerates_it_being_down() -> None:
     server.server_close()
     assert seen == [("POST", "/seatbelt/runs/claude-1234/end", "Bearer sbk_abc")]
     end_run(url, "sbk_abc", "claude-1234")  # nothing listening now: no exception
+
+
+def test_run_cli_warns_before_launching_gemini(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("GEMINI_CLI_HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+    run_cli(
+        "gemini",
+        ["-c", "pass"],
+        config=_config(tmp_path),
+        exe=sys.executable,
+        end=lambda url, key, run: None,
+    )
+    err = capfd.readouterr().err
+    assert str(tmp_path / "home" / ".gemini" / "settings.json") in err
