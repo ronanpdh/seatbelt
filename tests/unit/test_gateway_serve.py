@@ -61,6 +61,7 @@ MANGLES: list[Callable[[str], str]] = [
     lambda v: f"'{v}'",
     lambda v: v[:40] + "\n" + v[40:80] + " " + v[80:],  # a paste that wrapped or split it
     lambda v: f"  {v}\n",
+    lambda v: v + "%",  # zsh's no-newline marker, copied from the terminal
 ]
 
 
@@ -79,9 +80,9 @@ def test_a_bad_env_key_is_described_without_revealing_it(tmp_path: Path) -> None
     good = base64.b64encode(key.read_bytes()).decode()
     cfg = load_config(_config(tmp_path, None))
     with pytest.raises(AttestError) as err:
-        load_signer(cfg, {KEY_ENV: good[:-3] + "\\" + good[-3:]})  # a stray backslash
+        load_signer(cfg, {KEY_ENV: good[:40] + "A" + good[41:]})  # a character changed
     message = str(err.value)
-    assert "'\\\\'" in message and "starts like base64 of a PEM key" in message
+    assert "not a PEM private key" in message and "starts like base64 of a PEM key" in message
     assert good[20:40] not in message  # no key material
     with pytest.raises(AttestError, match="cut short"):
         load_signer(cfg, {KEY_ENV: good[:-2]})
