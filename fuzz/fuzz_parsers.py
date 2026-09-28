@@ -12,7 +12,7 @@ import atheris
 
 with atheris.instrument_imports():
     from seatbelt.gateway.app import sse_events
-    from seatbelt.gateway.formats import anthropic, openai_chat, openai_responses
+    from seatbelt.gateway.formats import anthropic, gemini, openai_chat, openai_responses
     from seatbelt.ledger.store import LedgerError, read_events
     from seatbelt.verify.chain import verify_events
 
@@ -38,6 +38,7 @@ def stream(data: bytes) -> None:
         anthropic.assemble_sse,
         openai_chat.assemble_sse,
         openai_responses.assemble_sse,
+        gemini.assemble_sse,
     ):
         assemble(events)
 

@@ -1,0 +1,45 @@
+[
+  {
+    "candidates": [
+      {
+        "content": {
+          "role": "model",
+          "parts": [
+            {"text": "Checking the order.", "thought": true},
+            {"functionCall": {"name": "lookup_order", "args": {"order_id": "1001"}}}
+          ]
+        },
+        "finishReason": "STOP",
+        "index": 0
+      }
+    ],
+    "usageMetadata": {
+      "promptTokenCount": 120,
+      "candidatesTokenCount": 21,
+      "thoughtsTokenCount": 10,
+      "cachedContentTokenCount": 5,
+      "totalTokenCount": 151
+    },
+    "modelVersion": "gemini-2.5-pro",
+    "responseId": "resp-01"
+  },
+  {
+    "candidates": [
+      {
+        "content": {
+          "role": "model",
+          "parts": [{"text": "Order 1001 was delivered; a refund is on its way."}]
+        },
+        "finishReason": "STOP",
+        "index": 0
+      }
+    ],
+    "usageMetadata": {
+      "promptTokenCount": 180,
+      "candidatesTokenCount": 20,
+      "totalTokenCount": 200
+    },
+    "modelVersion": "gemini-2.5-pro",
+    "responseId": "resp-02"
+  }
+]

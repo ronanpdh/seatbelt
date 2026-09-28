@@ -24,6 +24,7 @@ The container image runs as uid 1000 and writes ledgers under `/var/lib/seatbelt
    upstreams:
      anthropic: {url: https://api.anthropic.com, key_env: ANTHROPIC_API_KEY}
      openai: {url: https://api.openai.com, key_env: OPENAI_API_KEY}
+     gemini: {url: https://generativelanguage.googleapis.com, key_env: GEMINI_API_KEY}
    policy: # optional; omit a key to leave it unrestricted
      models: [claude-sonnet-5, claude-opus-5]
      tools_denied: [run_shell]
@@ -49,7 +50,7 @@ The container image runs as uid 1000 and writes ledgers under `/var/lib/seatbelt
    docker run -d --name seatbelt-gateway -p 8080:8080 --stop-timeout 70 \
      -v "$PWD/gateway:/etc/seatbelt:ro" \
      -v seatbelt-runs:/var/lib/seatbelt \
-     -e ANTHROPIC_API_KEY -e OPENAI_API_KEY \
+     -e ANTHROPIC_API_KEY -e OPENAI_API_KEY -e GEMINI_API_KEY \
      seatbelt-gateway
    ```
 
@@ -62,9 +63,17 @@ The container image runs as uid 1000 and writes ledgers under `/var/lib/seatbelt
    key = "sbk_..."
    ```
 
-   and runs `seatbelt run claude`, or `seatbelt run codex` for Codex. Any Anthropic SDK client works with `ANTHROPIC_BASE_URL=https://gw.corp.example` and the key as its API key; an OpenAI SDK client (Chat Completions or Responses, the OpenAI Agents SDK included) with `OPENAI_BASE_URL=https://gw.corp.example/v1` and the key as `OPENAI_API_KEY`. Claude Desktop and Cowork: [claude-desktop-gateway.md](claude-desktop-gateway.md).
+   and runs `seatbelt run claude`, `seatbelt run codex` for Codex, or `seatbelt run gemini` for Gemini CLI. Any Anthropic SDK client works with `ANTHROPIC_BASE_URL=https://gw.corp.example` and the key as its API key; an OpenAI SDK client (Chat Completions or Responses, the OpenAI Agents SDK included) with `OPENAI_BASE_URL=https://gw.corp.example/v1` and the key as `OPENAI_API_KEY`; a Google Gen AI SDK client (Gemini API, not Vertex AI) with `GOOGLE_GEMINI_BASE_URL=https://gw.corp.example` and the key as its API key. Claude Desktop and Cowork: [claude-desktop-gateway.md](claude-desktop-gateway.md).
 
    `seatbelt run codex` gives Codex its own model provider on the command line (`-c model_provider="seatbelt"` and a `model_providers.seatbelt` table): the gateway URL plus `/v1`, the Responses API over HTTP, the key from the environment, and the run name as a header. Pointing Codex's built-in provider at the gateway with `openai_base_url` instead would have it try a WebSocket first, which the gateway does not serve. The OpenAI Agents SDK traces by default, straight to `api.openai.com` and not through `OPENAI_BASE_URL`, and authenticates with `OPENAI_API_KEY`: here the employee's gateway key, sent to OpenAI along with the traced prompts. Set `OPENAI_AGENTS_DISABLE_TRACING=1`, or give tracing its own key with `set_tracing_export_api_key`. Its Conversations API, `/responses/compact` and WebSocket transport are opt-in and not served, and a request with `background: true` is refused with 400: its output is fetched later with a request the gateway does not record.
+
+   `seatbelt run gemini` sets `GEMINI_API_KEY` to the employee's key, `GOOGLE_GEMINI_BASE_URL` to the gateway and the run name as a header (through `GEMINI_CLI_CUSTOM_HEADERS`, which Gemini CLI reads but does not document), and strips `GOOGLE_API_KEY`, `GOOGLE_GENAI_USE_VERTEXAI` and `GOOGLE_GENAI_USE_GCA`. Gemini CLI uses the base URL only when it signs in with an API key, so its settings (`~/.gemini/settings.json`) need
+
+   ```json
+   {"security": {"auth": {"selectedType": "gemini-api-key"}}, "privacy": {"usageStatisticsEnabled": false}}
+   ```
+
+   `selectedType` makes it use the gateway: signed in with Google or through Vertex AI it goes to Google directly, unrecorded, and with nothing selected a non-interactive run refuses to start. An org can enforce it with `"enforcedType": "gemini-api-key"` under `security.auth` in Gemini CLI's system settings file. The second stops the usage statistics Gemini CLI sends straight to Google, which are on by default. `seatbelt run gemini` warns when either is missing. Its `countTokens` and embedding calls are forwarded without being recorded, like Claude Code's token counts; any other Gemini API method (batch generation, for one) is refused, so nothing reaches the model unrecorded. Voice input connects to Google directly. Sources: [docs/plans/2026-09-28-gemini-format.md](../plans/2026-09-28-gemini-format.md).
 
 6. Report on what was recorded (with `gateway/keys/seatbelt.pub` readable by uid 1000, see step 4):
 
@@ -104,9 +113,9 @@ Each reload is logged as `config reloaded:` with the number of principals, the i
 
 ## Policy
 
-- `models`: requests for any other model are refused with 403 before they leave the gateway. The match is exact, so list the model ids your clients send.
-- `max_output_tokens`: a request whose `max_tokens`, `max_completion_tokens` or (Responses API) `max_output_tokens` exceeds it is refused with 403. A request that sets none of them passes.
-- `tools_denied`: when the model asks for one of these tools, the call is recorded as denied and the response is still relayed, because the gateway cannot stop a client running a tool on its own machine. Any later request that carries that tool's result is refused with 403 while the tool stays denied, so the result does not reach the model. The gateway remembers each employee's denied calls across sessions, for Responses clients that send a tool's output without the call (`previous_response_id`), until it restarts; after a restart such an output is refused only if the request names the tool. A Codex MCP tool is named `mcp__<server>__<tool>`, as in Claude Code. A config reload that removes the tool lets such results through, in open sessions too, and records that it did.
+- `models`: requests for any other model are refused with 403 before they leave the gateway. The match is exact, so list the model ids your clients send (for Gemini, the model in the URL, e.g. `gemini-2.5-pro`).
+- `max_output_tokens`: a request whose `max_tokens`, `max_completion_tokens`, (Responses API) `max_output_tokens` or (Gemini) `generationConfig.maxOutputTokens` exceeds it is refused with 403. A request that sets none of them passes.
+- `tools_denied`: when the model asks for one of these tools, the call is recorded as denied and the response is still relayed, because the gateway cannot stop a client running a tool on its own machine. Any later request that carries that tool's result is refused with 403 while the tool stays denied, so the result does not reach the model. The gateway remembers each employee's denied calls across sessions, for Responses clients that send a tool's output without the call (`previous_response_id`), until it restarts; after a restart such an output is refused only if the request names the tool. A Codex MCP tool is named `mcp__<server>__<tool>`, as in Claude Code. A Gemini tool result is refused by the tool name it carries. A config reload that removes the tool lets such results through, in open sessions too, and records that it did.
 
 Every verdict is a `policy.check` event in the ledger. `seatbelt report` counts each denying check per employee (a request two rules deny counts twice; a denied tool call counts too) and, for refused requests, against the model asked for.
 

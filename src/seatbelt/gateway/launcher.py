@@ -17,6 +17,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import Any, cast
 
 DEFAULT_CONFIG = Path.home() / ".config" / "seatbelt" / "gateway.toml"
 
@@ -28,6 +29,13 @@ PRESETS: dict[str, dict[str, str]] = {  # cli -> env template
         "ANTHROPIC_CUSTOM_HEADERS": "X-Seatbelt-Run: {run}",
     },
     "codex": {CODEX_KEY_ENV: "{key}"},  # the rest is on the command line, see `arguments`
+    # read in Gemini CLI's API-key mode only; see `gemini_warnings`. GEMINI_CLI_CUSTOM_HEADERS
+    # is undocumented: see docs/plans/2026-09-28-gemini-format.md
+    "gemini": {
+        "GEMINI_API_KEY": "{key}",
+        "GOOGLE_GEMINI_BASE_URL": "{url}",
+        "GEMINI_CLI_CUSTOM_HEADERS": "X-Seatbelt-Run: {run}",
+    },
 }
 NOT_YET: dict[str, str] = {}  # clients a preset would launch but the gateway cannot record yet
 # real provider credentials never reach the child, so it cannot bypass the gateway by accident
@@ -36,7 +44,13 @@ _PROVIDER_KEYS = (
     "ANTHROPIC_AUTH_TOKEN",
     "OPENAI_API_KEY",
     "CODEX_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    # these switch Gemini CLI to Vertex AI or a Google login, which do not use the base URL
+    "GOOGLE_GENAI_USE_VERTEXAI",
+    "GOOGLE_GENAI_USE_GCA",
 )
+_HEADER_SEPARATOR = {"ANTHROPIC_CUSTOM_HEADERS": "\n", "GEMINI_CLI_CUSTOM_HEADERS": ", "}
 
 EndRun = Callable[[str, str, str], None]  # (gateway url, key, run name)
 
@@ -61,8 +75,8 @@ def environment(cli: str, url: str, key: str, run: str, base: Mapping[str, str])
     env = {k: v for k, v in base.items() if k not in _PROVIDER_KEYS}
     for name, template in PRESETS[cli].items():
         value = template.format(url=url, key=key, run=run)
-        if name == "ANTHROPIC_CUSTOM_HEADERS" and base.get(name):
-            value = f"{base[name]}\n{value}"  # keep the user's own headers
+        if name in _HEADER_SEPARATOR and base.get(name):
+            value = f"{base[name]}{_HEADER_SEPARATOR[name]}{value}"  # keep the user's own
         env[name] = value
     return env
 
@@ -93,6 +107,54 @@ def arguments(cli: str, url: str, run: str) -> list[str]:
     return ["-c", 'model_provider="seatbelt"', "-c", f"model_providers.seatbelt={provider}"]
 
 
+def _settings(path: Path) -> dict[str, Any] | None:
+    try:
+        data: Any = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError):
+        return None  # unreadable, or JSON with comments, which Gemini CLI accepts: no guess
+    return cast(dict[str, Any], data) if isinstance(data, dict) else None
+
+
+def _setting(settings: dict[str, Any], *keys: str) -> Any:
+    value: Any = settings
+    for key in keys:
+        value = cast(dict[str, Any], value).get(key) if isinstance(value, dict) else None
+    return value
+
+
+def gemini_warnings(home: Path, cwd: Path) -> list[str]:
+    """What in the user's and the workspace's Gemini CLI settings (the workspace's win) would
+    take its traffic around the gateway. Gemini CLI reads the base URL only in its API-key
+    mode, and picks that mode from `security.auth.selectedType`: with none set, a base URL
+    in the environment selects a mode it then refuses."""
+    files = [home / ".gemini" / "settings.json", cwd / ".gemini" / "settings.json"]
+    loaded = [_settings(f) for f in files]
+    if any(s is None for s in loaded):
+        return []
+    merged = [s for s in loaded if s is not None]
+
+    def last(*keys: str) -> Any:
+        values = [v for s in merged if (v := _setting(s, *keys)) is not None]
+        return values[-1] if values else None
+
+    warnings: list[str] = []
+    selected = last("security", "auth", "selectedType")
+    if selected != "gemini-api-key":
+        warnings.append(
+            f"Gemini CLI's sign-in is {selected or 'not set'}: only its API key sign-in goes "
+            f'through the gateway. Set "security": {{"auth": {{"selectedType": '
+            f'"gemini-api-key"}}}} in {files[0]}'
+        )
+    if last("privacy", "usageStatisticsEnabled") is not False:
+        warnings.append(
+            "Gemini CLI sends usage statistics to Google directly, not through the gateway. "
+            f'To stop it, set "privacy": {{"usageStatisticsEnabled": false}} in {files[0]}'
+        )
+    return warnings
+
+
 def end_run(url: str, key: str, run: str) -> None:
     request = urllib.request.Request(  # noqa: S310 - the org's configured gateway URL
         f"{url}/seatbelt/runs/{run}/end",
@@ -116,6 +178,10 @@ def run_cli(
     url, key = load_client_config(config)
     if readable_by_others(config):
         print(f"warning: {config} holds your gateway key; chmod 600 it", file=sys.stderr)
+    if cli == "gemini":
+        home = Path(os.environ.get("GEMINI_CLI_HOME") or Path.home())
+        for warning in gemini_warnings(home, Path.cwd()):
+            print(f"warning: {warning}", file=sys.stderr)
     run = f"{cli}-{secrets.token_hex(4)}"
     env = environment(cli, url, key, run, os.environ)
     try:

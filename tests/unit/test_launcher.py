@@ -1,4 +1,5 @@
 import ast
+import json
 import os
 import sys
 import tomllib
@@ -14,6 +15,7 @@ from seatbelt.gateway.launcher import (
     PRESETS,
     arguments,
     environment,
+    gemini_warnings,
     load_client_config,
     run_cli,
 )
@@ -97,10 +99,51 @@ def test_run_cli_puts_the_codex_provider_before_the_users_arguments(
     assert _provider(argv[:4])["http_headers"]["X-Seatbelt-Run"].startswith("codex-")
 
 
+def test_gemini_preset_points_its_api_key_mode_at_the_gateway() -> None:
+    base = {
+        "PATH": "/bin",
+        "GEMINI_API_KEY": "AIza-real",
+        "GOOGLE_API_KEY": "AIza-real",
+        "GOOGLE_GENAI_USE_GCA": "true",
+        "GEMINI_CLI_CUSTOM_HEADERS": "X-Team: a",
+    }
+    env = environment("gemini", "https://gw.corp", "sbk_abc", "run-1", base=base)
+    assert env["GEMINI_API_KEY"] == "sbk_abc"
+    assert env["GOOGLE_GEMINI_BASE_URL"] == "https://gw.corp"
+    assert env["GEMINI_CLI_CUSTOM_HEADERS"] == "X-Team: a, X-Seatbelt-Run: run-1"
+    assert "GOOGLE_API_KEY" not in env and "GOOGLE_GENAI_USE_GCA" not in env
+    assert env["PATH"] == "/bin"
+
+
+def _gemini_settings(root: Path, settings: dict[str, Any] | str) -> None:
+    (root / ".gemini").mkdir(parents=True, exist_ok=True)
+    text = settings if isinstance(settings, str) else json.dumps(settings)
+    (root / ".gemini" / "settings.json").write_text(text)
+
+
+def test_gemini_settings_that_bypass_the_gateway_are_warned_about(tmp_path: Path) -> None:
+    home, cwd = tmp_path / "home", tmp_path / "work"
+    cwd.mkdir()
+    sign_in, usage = gemini_warnings(home, cwd)  # no settings at all
+    assert "not set" in sign_in and "selectedType" in sign_in
+    assert "usageStatisticsEnabled" in usage
+    ready = {
+        "security": {"auth": {"selectedType": "gemini-api-key"}},
+        "privacy": {"usageStatisticsEnabled": False},
+    }
+    _gemini_settings(home, ready)
+    assert gemini_warnings(home, cwd) == []
+    _gemini_settings(cwd, {"security": {"auth": {"selectedType": "oauth-personal"}}})
+    (warning,) = gemini_warnings(home, cwd)  # the workspace's settings win
+    assert "oauth-personal" in warning
+    _gemini_settings(cwd, "// a comment\n{}")
+    assert gemini_warnings(home, cwd) == []  # JSON with comments: no guessing
+
+
 def test_unknown_cli_is_refused() -> None:
     with pytest.raises(ValueError):
         environment("vim", "u", "k", "r", base={})
-    assert set(PRESETS) >= {"claude", "codex"}
+    assert set(PRESETS) >= {"claude", "codex", "gemini"}
 
 
 PROBE = (
@@ -178,3 +221,19 @@ def test_end_run_posts_to_the_gateway_and_tolerates_it_being_down() -> None:
     server.server_close()
     assert seen == [("POST", "/seatbelt/runs/claude-1234/end", "Bearer sbk_abc")]
     end_run(url, "sbk_abc", "claude-1234")  # nothing listening now: no exception
+
+
+def test_run_cli_warns_before_launching_gemini(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("GEMINI_CLI_HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+    run_cli(
+        "gemini",
+        ["-c", "pass"],
+        config=_config(tmp_path),
+        exe=sys.executable,
+        end=lambda url, key, run: None,
+    )
+    err = capfd.readouterr().err
+    assert str(tmp_path / "home" / ".gemini" / "settings.json") in err

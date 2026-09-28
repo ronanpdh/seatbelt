@@ -92,12 +92,13 @@ Which clients it records:
 | OpenAI Chat Completions clients (OpenAI SDKs, LangChain) | `OPENAI_BASE_URL` | 0.2.0 |
 | Codex | `seatbelt run codex` | 0.3.0 |
 | OpenAI Agents SDK, OpenAI SDKs (Responses API) | `OPENAI_BASE_URL` | 0.3.0 |
-| Gemini CLI, Google SDKs | base URL | 0.3.0 |
+| Gemini CLI | `seatbelt run gemini` | 0.3.0 |
+| Google Gen AI SDKs (Gemini API) | `GOOGLE_GEMINI_BASE_URL` | 0.3.0 |
 | claude.ai web, unmanaged desktops | Compliance API importer | 0.3.0 |
 
 ### Launcher
 
-`seatbelt run claude` (or `seatbelt run codex`) starts the CLI pointed at the gateway with the employee's key from `~/.config/seatbelt/gateway.toml`, names the run, strips real provider keys from its environment, and ends the run when it exits. Standard library only.
+`seatbelt run claude` (or `codex`, or `gemini`) starts the CLI pointed at the gateway with the employee's key from `~/.config/seatbelt/gateway.toml`, names the run, strips real provider keys from its environment, and ends the run when it exits. Standard library only.
 
 ### Fleet report
 
