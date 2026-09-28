@@ -32,16 +32,28 @@
         "type": "function",
         "name": "lookup_order",
         "description": "Look up an order",
-        "parameters": {"type": "object", "properties": {"order_id": {"type": "string"}}},
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "order_id": {
+              "type": "string"
+            }
+          }
+        },
         "strict": true
       }
     ],
     "top_p": null,
     "usage": {
       "input_tokens": 120,
-      "input_tokens_details": {"cached_tokens": 5},
+      "input_tokens_details": {
+        "cached_tokens": 5,
+        "cache_write_tokens": 0
+      },
       "output_tokens": 31,
-      "output_tokens_details": {"reasoning_tokens": 2},
+      "output_tokens_details": {
+        "reasoning_tokens": 2
+      },
       "total_tokens": 151
     }
   },
@@ -62,7 +74,11 @@
         "role": "assistant",
         "status": "completed",
         "content": [
-          {"type": "output_text", "text": "Order 1001 was delivered.", "annotations": []}
+          {
+            "type": "output_text",
+            "text": "Order 1001 was delivered.",
+            "annotations": []
+          }
         ]
       }
     ],
@@ -73,9 +89,14 @@
     "top_p": null,
     "usage": {
       "input_tokens": 160,
-      "input_tokens_details": {"cached_tokens": 120},
+      "input_tokens_details": {
+        "cached_tokens": 120,
+        "cache_write_tokens": 3
+      },
       "output_tokens": 12,
-      "output_tokens_details": {"reasoning_tokens": 0},
+      "output_tokens_details": {
+        "reasoning_tokens": 0
+      },
       "total_tokens": 172
     }
   }

@@ -294,9 +294,11 @@ def _stream(
             await resp.aclose()
             await client.aclose()
         finally:
-            assembled = assemble(sse_events(bytes(received)))
-            await run_in_threadpool(finish, call, assembled, outcome[0])
-            await settle()
+            try:  # never raises by contract; if one does, the session must still be released
+                assembled = assemble(sse_events(bytes(received)))
+                await run_in_threadpool(finish, call, assembled, outcome[0])
+            finally:
+                await settle()
 
     return _RelayStream(chunks, resp.status_code, _relay_headers(resp), on_close)
 
@@ -318,6 +320,9 @@ def create_app(
         body = _json_object(raw)
         if body is None:
             return _error(400, "invalid_request_error", "body must be a JSON object")
+        if format_cls is OpenAIResponsesFormat and body.get("background") is True:
+            # its output is fetched later with GET /v1/responses/{id}, which is not recorded
+            return _error(400, "invalid_request_error", "background responses are not recorded")
         run = request.headers.get(RUN_HEADER) or None
         run_end = request.headers.get(RUN_END_HEADER, "").lower() == "true"
         meta = {**_meta(request), "principal.key_id": principal.key_sha256[:12]}  # which issued key

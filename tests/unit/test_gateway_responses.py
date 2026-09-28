@@ -34,6 +34,7 @@ class Gw:
     app: Starlette
     key: str
     ledgers: Path
+    sessions: Sessions
     seen: list[httpx2.Request] = field(default_factory=list[httpx2.Request])
 
     def upstream(self, *replies: httpx2.Response) -> None:
@@ -52,7 +53,9 @@ class Gw:
         return [e for p in sorted(self.ledgers.glob("*.jsonl")) for e in read_events(p)]
 
 
-def _gateway(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra: str) -> Iterator[Gw]:
+def _gateway(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra: str, idle: int = 900
+) -> Iterator[Gw]:
     monkeypatch.setenv("OPENAI_API_KEY", REAL)
     path = tmp_path / "gateway.yaml"
     path.write_text(
@@ -61,10 +64,10 @@ def _gateway(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra: str) -> Ite
     )
     key = add_principal(path, "alice@corp")
     cfg = load_config(path)
-    sessions = Sessions(cfg.ledgers, Signer.generate(), idle=cfg.session_idle)
+    sessions = Sessions(cfg.ledgers, Signer.generate(), idle=idle)
     app = create_app(cfg, sessions)
     with TestClient(app) as client:
-        yield Gw(client, app, key, cfg.ledgers)
+        yield Gw(client, app, key, cfg.ledgers, sessions)
     assert sessions.close_all(timeout=1) == 0
 
 
@@ -75,10 +78,13 @@ def gw(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Gw]:
 
 @pytest.fixture
 def gwp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Gw]:
-    policy = (
-        "policy:\n  models: [gpt-5]\n  tools_denied: [lookup_order]\n  max_output_tokens: 1000\n"
-    )
-    yield from _gateway(tmp_path, monkeypatch, policy)
+    yield from _gateway(tmp_path, monkeypatch, POLICY)
+
+
+POLICY = (
+    "policy:\n  models: [gpt-5]\n  max_output_tokens: 1000\n"
+    "  tools_denied: [lookup_order, local_shell, mcp__github__create_issue]\n"
+)
 
 
 def _body(*items: dict[str, Any], **extra: Any) -> dict[str, Any]:  # request JSON
@@ -110,7 +116,10 @@ def _stream_of(response: dict[str, Any]) -> list[dict[str, Any]]:  # SSE JSON
     created: dict[str, Any] = {**response, "status": "in_progress", "output": [], "usage": None}
     events: list[dict[str, Any]] = [{"type": "response.created", "response": created}]
     for i, item in enumerate(response["output"]):
-        events.append({"type": "response.output_item.added", "output_index": i, "item": item})
+        started = {**item, "status": "in_progress"}
+        if "arguments" in item:
+            started["arguments"] = ""
+        events.append({"type": "response.output_item.added", "output_index": i, "item": started})
         events.append({"type": "response.output_item.done", "output_index": i, "item": item})
     events.append({"type": "response.completed", "response": response})
     return [{**e, "sequence_number": n} for n, e in enumerate(events)]
@@ -133,7 +142,8 @@ def test_a_streamed_response_is_relayed_as_sent_and_recorded_whole(gw: Gw) -> No
 
 def test_a_stream_that_ends_before_completing_is_recorded_as_such(gw: Gw) -> None:
     first, _ = _replies()
-    raw = _sse(_stream_of(first)[:2])  # created, item added; the upstream then closes
+    # created, the reasoning item, then the function call only started: the upstream closes
+    raw = _sse(_stream_of(first)[:4])
     gw.upstream(httpx2.Response(200, headers=SSE_HEADERS, content=raw))
     assert gw.post(_body(stream=True)).content == raw
     events = gw.events()
@@ -181,3 +191,60 @@ def test_org_policy_applies_to_responses(gwp: Gw) -> None:
     (call,) = [e for e in gwp.events() if e.kind is Kind.TOOL_CALL]
     checks = [e for e in gwp.events() if e.kind is Kind.POLICY_CHECK and e.parent_id == call.id]
     assert [c.attrs["policy.allowed"] for c in checks] == [False]
+
+
+def test_the_agents_sdk_local_shell_output_is_refused_when_local_shell_is_denied(gwp: Gw) -> None:
+    call = {"type": "local_shell_call", "call_id": "s1", "action": {"command": ["ls"]}}
+    gwp.upstream(httpx2.Response(200, json={"status": "completed", "output": [call]}))
+    assert gwp.post(_body()).status_code == 200
+    output = {"type": "local_shell_call_output", "call_id": "s1", "output": "a.txt"}
+    assert gwp.post(_body(call, output)).status_code == 403
+    assert len(gwp.seen) == 1
+
+
+def test_a_denied_mcp_tool_is_not_mistaken_for_a_bare_name(gwp: Gw) -> None:
+    call = {
+        "type": "function_call",
+        "call_id": "m1",
+        "namespace": "mcp__github",
+        "name": "create_issue",
+        "arguments": "{}",
+    }
+    gwp.upstream(httpx2.Response(200, json={"status": "completed", "output": [call]}))
+    assert gwp.post(_body()).status_code == 200
+    output = {"type": "function_call_output", "call_id": "m1", "output": "done"}
+    refused = gwp.post(_body(call, output))
+    assert refused.status_code == 403
+    assert "mcp__github__create_issue" in refused.json()["error"]["message"]
+
+
+def test_a_denial_outlives_the_session_for_a_chained_response(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With previous_response_id the client sends the tool's output without the call; the
+    session that saw the call may have closed on idle meanwhile."""
+    first, _ = _replies()
+    gen = _gateway(tmp_path, monkeypatch, POLICY, idle=0)
+    gw = next(gen)
+    gw.upstream(httpx2.Response(200, json=first))
+    assert gw.post(_body()).status_code == 200  # lookup_order asked for: denied
+    assert gw.sessions.sweep() == 1  # the session closes
+    output = {"type": "function_call_output", "call_id": "call_01", "output": "delivered"}
+    chained = {"model": "gpt-5", "previous_response_id": "resp_01", "input": [output]}
+    assert gw.post(chained).status_code == 403
+    assert len(gw.seen) == 1
+    next(gen, None)
+
+
+def test_background_responses_are_refused_before_the_upstream(gw: Gw) -> None:
+    r = gw.post(_body(background=True))
+    assert r.status_code == 400 and "background" in r.json()["error"]["message"]
+    assert gw.seen == [] and not list(gw.ledgers.glob("*.jsonl"))
+
+
+def test_a_malformed_stream_still_releases_its_session(gw: Gw) -> None:
+    raw = b'data: {"type": ["x"]}\n\ndata: {"type": "response.completed", "response": 5}\n\n'
+    gw.upstream(httpx2.Response(200, headers=SSE_HEADERS, content=raw))
+    assert gw.post(_body(stream=True)).content == raw
+    (response,) = [e for e in gw.events() if e.kind is Kind.MODEL_RESPONSE]
+    assert response.attrs["error"] is not None  # the fixture checks the session was released

@@ -19,13 +19,14 @@ def _replies() -> list[dict[str, Any]]:  # fixture JSON
     return json.loads(FIXTURE.read_text())
 
 
-def _body(*items: dict[str, Any]) -> dict[str, Any]:  # request JSON
+def _body(*items: dict[str, Any], **extra: Any) -> dict[str, Any]:  # request JSON
     return {
         "model": "gpt-5",
         "input": [{"role": "user", "content": "refund 1001"}, *items],
         "store": False,
         "stream": True,
         "max_output_tokens": 500,
+        **extra,
     }
 
 
@@ -60,6 +61,7 @@ def test_function_calls_and_their_outputs_are_linked(tmp_path: Path) -> None:
     assert response.attrs["gen_ai.usage.output_tokens"] == 31
     assert response.attrs["gen_ai.usage.input_tokens.cached_tokens"] == 5
     assert response.attrs["gen_ai.usage.output_tokens.reasoning_tokens"] == 2
+    assert response.attrs["gen_ai.usage.input_tokens.cache_write_tokens"] == 0
     assert response.attrs["error"] is None
     assert call.parent_id == response.id and call.attrs["gen_ai.tool.call.id"] == "call_01"
     assert result.parent_id == call.id and result.attrs["gen_ai.tool.call.result"] == "delivered"
@@ -76,6 +78,9 @@ def test_every_client_run_tool_type_is_a_tool_call(tmp_path: Path) -> None:
         {"type": "shell_call", "call_id": "c3", "action": {"commands": ["pwd"]}},
         {"type": "apply_patch_call", "call_id": "c4", "operation": {"type": "update_file"}},
         {"type": "computer_call", "call_id": "c5", "action": {"type": "click"}},
+        {"type": "computer_call", "call_id": "c6", "actions": [{"type": "scroll"}]},
+        {"type": "tool_search_call", "call_id": "c7", "execution": "client", "arguments": {}},
+        {"type": "tool_search_call", "call_id": "c8", "execution": "server", "arguments": {}},
         {"type": "web_search_call", "id": "ws1", "status": "completed"},  # run by the provider
     ]
     with Recorder.start(tmp_path, agent_id="gw", run_id="s") as rec:
@@ -89,6 +94,8 @@ def test_every_client_run_tool_type_is_a_tool_call(tmp_path: Path) -> None:
             ("shell", {"action": {"commands": ["pwd"]}}),
             ("apply_patch", {"operation": {"type": "update_file"}}),
             ("computer", {"action": {"type": "click"}}),
+            ("computer", {"actions": [{"type": "scroll"}]}),
+            ("tool_search", {"arguments": {}}),  # the client's; the server's is not a call
         ]
         answers = _body(
             {"type": "custom_tool_call_output", "call_id": "c1", "output": "patched"},
@@ -96,11 +103,66 @@ def test_every_client_run_tool_type_is_a_tool_call(tmp_path: Path) -> None:
             {"type": "shell_call_output", "call_id": "c3", "output": []},
             {"type": "apply_patch_call_output", "call_id": "c4", "status": "failed"},
             {"type": "computer_call_output", "call_id": "c5", "output": {}},
+            {"type": "computer_call_output", "call_id": "c6", "output": {}},
+            {"type": "tool_search_output", "call_id": "c7", "tools": [{"type": "function"}]},
         )
         fmt.begin(answers)
     results = [e for e in read_events(tmp_path / "s.jsonl") if e.kind is Kind.TOOL_RESULT]
-    assert len(results) == 5
-    assert [r.attrs["error"] for r in results] == [None, None, None, "tool reported failure", None]
+    assert len(results) == 7
+    assert [r.attrs["error"] for r in results][3] == "tool reported failure"
+    assert results[-1].attrs["gen_ai.tool.call.result"] == [{"type": "function"}]
+
+
+def test_the_agents_sdk_local_shell_output_is_a_result_by_call_id_or_id(tmp_path: Path) -> None:
+    calls: list[dict[str, Any]] = [  # response JSON
+        {"type": "local_shell_call", "call_id": "s1", "action": {"command": ["ls"]}},
+        {"type": "local_shell_call", "call_id": "s2", "action": {"command": ["pwd"]}},
+    ]
+    outputs = (
+        {"type": "local_shell_call_output", "call_id": "s1", "output": "a"},  # the Agents SDK
+        {"type": "local_shell_call_output", "id": "s2", "output": "b"},  # the spec's type
+    )
+    assert OpenAIResponsesFormat.tool_result_calls(_body(*calls, *outputs)) == [
+        ("s1", "local_shell"),
+        ("s2", "local_shell"),
+    ]
+    with Recorder.start(tmp_path, agent_id="gw", run_id="s") as rec:
+        fmt = OpenAIResponsesFormat(rec)
+        fmt.finish(fmt.begin(_body()), {"status": "completed", "output": calls})
+        fmt.begin(_body(*outputs))
+    results = [e for e in read_events(tmp_path / "s.jsonl") if e.kind is Kind.TOOL_RESULT]
+    assert [r.attrs["gen_ai.tool.call.result"] for r in results] == ["a", "b"]
+
+
+def _mcp(call_id: str, namespace: str, name: str) -> dict[str, Any]:  # response JSON
+    return {
+        "type": "function_call",
+        "call_id": call_id,
+        "namespace": namespace,
+        "name": name,
+        "arguments": "{}",
+    }
+
+
+def test_a_namespaced_tool_is_named_with_its_namespace(tmp_path: Path) -> None:
+    """Codex sends MCP tools under a namespace; the bare name could be a built-in's."""
+    output = [
+        _mcp("m1", "mcp__github", "create_issue"),
+        _mcp("m2", "mcp__fs__", "exec_command"),
+        _mcp("m3", "functions", "exec_command"),  # Codex's default namespace
+    ]
+    with Recorder.start(tmp_path, agent_id="gw", run_id="s") as rec:
+        fmt = OpenAIResponsesFormat(rec)
+        calls = fmt.finish(fmt.begin(_body()), {"status": "completed", "output": output})
+    assert [c.attrs["gen_ai.tool.name"] for c in calls] == [
+        "mcp__github__create_issue",
+        "mcp__fs__exec_command",
+        "exec_command",
+    ]
+    answer = {"type": "function_call_output", "call_id": "m1", "output": "ok"}
+    assert OpenAIResponsesFormat.tool_result_calls(_body(output[0], answer)) == [
+        ("m1", "mcp__github__create_issue")
+    ]
 
 
 def test_tool_result_calls_name_each_result_from_the_input() -> None:
@@ -134,6 +196,8 @@ def test_unfinished_calls_and_failed_responses_record_no_tool_calls(tmp_path: Pa
         "status": "incomplete",
         "incomplete_details": {"reason": "max_output_tokens"},
     }
+    cut_short: dict[str, Any] = {**incomplete}  # response JSON
+    cut_short["output"] = [{**first["output"][1], "status": "incomplete"}]
     with Recorder.start(tmp_path, agent_id="gw", run_id="s") as rec:
         fmt = OpenAIResponsesFormat(rec)
         assert fmt.finish(fmt.begin(_body()), cut) == []
@@ -141,6 +205,7 @@ def test_unfinished_calls_and_failed_responses_record_no_tool_calls(tmp_path: Pa
         assert fmt.finish(fmt.begin(_body()), None, error="502: upstream") == []
         # an incomplete response is not an error, and its completed items are still calls
         assert len(fmt.finish(fmt.begin(_body()), incomplete)) == 1
+        assert fmt.finish(fmt.begin(_body()), cut_short) == []  # an incomplete item is not
         bad: dict[str, Any] = {"output": "oops", "usage": 5, "model": 7}  # JSON
         fmt.finish(fmt.begin({"model": "m", "input": 5}), bad)
     responses = [e for e in read_events(tmp_path / "s.jsonl") if e.kind is Kind.MODEL_RESPONSE]
@@ -148,6 +213,7 @@ def test_unfinished_calls_and_failed_responses_record_no_tool_calls(tmp_path: Pa
         "response did not complete (status in_progress)",
         "response failed: server_error: boom",
         "502: upstream",
+        None,
         None,
         "response did not complete (status unknown)",
     ]
@@ -236,3 +302,93 @@ def test_assemble_sse_reads_either_error_event_shape() -> None:
         {"type": "response.completed", "response": "oops"},
     ]
     assert assemble_sse(malformed) == {}
+
+
+def test_assemble_sse_records_incomplete_and_failed_terminal_events(tmp_path: Path) -> None:
+    first, _ = _replies()
+    incomplete = {
+        **first,
+        "status": "incomplete",
+        "incomplete_details": {"reason": "max_output_tokens"},
+    }
+    failed: dict[str, Any] = {  # response JSON
+        **first,
+        "status": "failed",
+        "output": [],
+        "usage": None,
+        "error": {"code": "server_error", "message": "boom"},
+    }
+    ends: list[list[dict[str, Any]]] = [  # SSE JSON
+        [*_stream_of(first)[:-1], {"type": "response.incomplete", "response": incomplete}],
+        [*_stream_of(first)[:1], {"type": "response.failed", "response": failed}],
+    ]
+    assert assemble_sse(ends[0]) == incomplete
+    assert assemble_sse(ends[1]) == failed
+    with Recorder.start(tmp_path, agent_id="gw", run_id="s") as rec:
+        fmt = OpenAIResponsesFormat(rec)
+        assert len(fmt.finish(fmt.begin(_body()), assemble_sse(ends[0]))) == 1
+        assert fmt.finish(fmt.begin(_body()), assemble_sse(ends[1])) == []
+    responses = [e for e in read_events(tmp_path / "s.jsonl") if e.kind is Kind.MODEL_RESPONSE]
+    assert [r.attrs["error"] for r in responses] == [None, "response failed: server_error: boom"]
+    assert responses[0].attrs["gen_ai.usage.output_tokens"] == 31
+
+
+def test_a_rebuilt_stream_records_only_the_calls_that_arrived_whole(tmp_path: Path) -> None:
+    """custom_tool_call has no status; one that arrived by output_item.done is whole, one
+    only started is not, and its input so far is kept in the record."""
+    patch: dict[str, Any] = {  # response JSON
+        "type": "custom_tool_call",
+        "call_id": "p1",
+        "name": "apply_patch",
+        "input": "*** Begin",
+    }
+    run: dict[str, Any] = {  # response JSON
+        "type": "function_call",
+        "call_id": "f1",
+        "name": "run",
+        "arguments": "",
+        "status": "in_progress",
+    }
+    events: list[dict[str, Any]] = [  # SSE JSON, cut before any terminal event
+        {"type": "response.created", "response": {"id": "r", "status": "in_progress"}},
+        {"type": "response.output_item.added", "output_index": 0, "item": {**patch, "input": ""}},
+        {"type": "response.output_item.done", "output_index": 0, "item": patch},
+        {
+            "type": "response.output_item.added",
+            "output_index": 1,
+            "item": {**patch, "call_id": "p2", "input": ""},
+        },
+        {"type": "response.custom_tool_call_input.delta", "output_index": 1, "delta": "*** Add"},
+        {"type": "response.output_item.added", "output_index": 2, "item": run},
+        {
+            "type": "response.function_call_arguments.delta",
+            "output_index": 2,
+            "delta": '{"path": "/etc',
+        },
+    ]
+    out = assemble_sse(events)
+    assert out["output"][1]["input"] == "*** Add" and out["output"][1]["status"] == "in_progress"
+    assert out["output"][2]["arguments"] == '{"path": "/etc'
+    with Recorder.start(tmp_path, agent_id="gw", run_id="s") as rec:
+        fmt = OpenAIResponsesFormat(rec)
+        calls = fmt.finish(fmt.begin(_body()), out)
+    assert [c.attrs["gen_ai.tool.call.id"] for c in calls] == ["p1"]
+
+
+def test_assemble_sse_and_finish_survive_unhashable_values(tmp_path: Path) -> None:
+    odd: list[dict[str, Any]] = [{"type": ["x"]}, {"type": {"a": 1}, "output_index": 0}]
+    assert assemble_sse(odd) == {"object": "response", "output": []}
+    with Recorder.start(tmp_path, agent_id="gw", run_id="s") as rec:
+        fmt = OpenAIResponsesFormat(rec)
+        assert fmt.finish(fmt.begin(_body()), {"status": ["x"], "output": []}) == []
+
+
+def test_prompt_conversation_and_background_are_recorded(tmp_path: Path) -> None:
+    prompt = {"id": "pmpt_1", "variables": {"x": "y"}}
+    body = _body(prompt=prompt, conversation="conv_1", background=False)
+    with Recorder.start(tmp_path, agent_id="gw", run_id="s") as rec:
+        OpenAIResponsesFormat(rec).begin(body)
+    (request,) = [e for e in read_events(tmp_path / "s.jsonl") if e.kind is Kind.MODEL_REQUEST]
+    kept = request.attrs["gen_ai.request"]
+    assert kept["prompt"] == prompt and kept["conversation"] == "conv_1"
+    assert kept["background"] is False

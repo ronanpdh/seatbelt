@@ -234,7 +234,7 @@ The recipient needs the zip, the public key and the harness. Nothing else.
 | `seatbelt verify-pack <zip> [--pubkey]` | re-checks a pack offline | forged, or a broken ledger inside |
 | `seatbelt gateway keygen --user <id> [--config]` | issues a gateway key; stores only its hash | the user already has a key |
 | `seatbelt gateway serve [--config]` | runs the recording gateway | bad config or signing key |
-| `seatbelt run <cli> [--config] [--exe] [-- args]` | launches `claude` through the gateway | bad config or unknown CLI (127: executable not found); otherwise the CLI's exit code |
+| `seatbelt run <cli> [--config] [--exe] [-- args]` | launches `claude` or `codex` through the gateway | bad config or unknown CLI (127: executable not found); otherwise the CLI's exit code |
 | `seatbelt report <runs> [--pubkey] [--json]` | usage by employee, model and tool | a ledger is broken, forged with a key given, or the key is unreadable |
 
 ## What it does not do

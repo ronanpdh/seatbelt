@@ -1,4 +1,4 @@
-# 7. Launcher: `seatbelt run` presets the environment, nothing more
+# 7. Launcher: `seatbelt run` presets the environment (and, for Codex, a model provider), nothing more
 
 - Status: accepted
 - Date: 2026-09-28
@@ -9,7 +9,7 @@ The gateway records a client only if the client is pointed at it with the employ
 
 ## Decision
 
-`seatbelt run <cli> [-- args]` reads the gateway URL and the employee's key from `~/.config/seatbelt/gateway.toml`, sets the environment variables the CLI honours, and runs the CLI with the inherited terminal. For `claude`: `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` (sent as `Authorization: Bearer`) and `ANTHROPIC_CUSTOM_HEADERS` with `X-Seatbelt-Run: <name>`, appended to any headers the user already set. It removes `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `OPENAI_API_KEY` from what the child inherits. When the CLI exits it ends the named run with `POST /seatbelt/runs/<name>/end`, and exits with the CLI's code.
+`seatbelt run <cli> [-- args]` reads the gateway URL and the employee's key from `~/.config/seatbelt/gateway.toml`, sets the environment variables the CLI honours, and runs the CLI with the inherited terminal. For `claude`: `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` (sent as `Authorization: Bearer`) and `ANTHROPIC_CUSTOM_HEADERS` with `X-Seatbelt-Run: <name>`, appended to any headers the user already set. For `codex` (from 0.3.0): `SEATBELT_GATEWAY_KEY`, and a `seatbelt` model provider given as `-c` overrides before the user's arguments (the gateway URL plus `/v1`, the Responses API over HTTP, `env_key = "SEATBELT_GATEWAY_KEY"`, `X-Seatbelt-Run` in `http_headers`), because Codex's built-in provider cannot carry a header. It removes `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `OPENAI_API_KEY` and `CODEX_API_KEY` from what the child inherits. When the CLI exits it ends the named run with `POST /seatbelt/runs/<name>/end`, and exits with the CLI's code.
 
 The launcher ignores Ctrl-C while the CLI runs, because Claude Code uses it to cancel a response and the terminal sends it to both processes; it starts ignoring only after the spawn, since an ignored signal is inherited. It uses only the standard library, so an employee machine needs no server dependencies. It warns when the config file is readable by others.
 

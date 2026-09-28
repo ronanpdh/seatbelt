@@ -15,6 +15,8 @@ from seatbelt.record.recorder import ModelCall, Recorder
 KEEP = (
     "input",
     "instructions",
+    "prompt",  # a stored prompt and its variables, which are model input
+    "conversation",  # a stored conversation whose items come before the input
     "tools",
     "tool_choice",
     "max_output_tokens",
@@ -28,6 +30,7 @@ KEEP = (
     "include",
     "parallel_tool_calls",
     "truncation",
+    "background",
 )
 # output items the client runs, by type: (tool name when the item has none, argument fields).
 # function_call's arguments are a JSON string, parsed. Hosted tools (web_search_call and
@@ -39,27 +42,54 @@ _CALLS: dict[str, tuple[str | None, tuple[str, ...]]] = {
     "shell_call": ("shell", ("action",)),
     "apply_patch_call": ("apply_patch", ("operation",)),
     "computer_call": ("computer", ("action", "actions")),
+    "tool_search_call": ("tool_search", ("arguments",)),  # only when the client runs it
 }
-# input items that answer a call, matched by call_id (Codex answers a local_shell_call with
-# a function_call_output)
+# input items that answer a call, matched by call_id. Codex answers a local_shell_call with a
+# function_call_output, the Agents SDK with a local_shell_call_output, which the spec's type
+# keys by `id`
 _RESULTS = frozenset(
     {
         "function_call_output",
         "custom_tool_call_output",
+        "local_shell_call_output",
         "shell_call_output",
         "apply_patch_call_output",
         "computer_call_output",
+        "tool_search_output",
     }
 )
+_DEFAULT_NAMESPACE = "functions"  # Codex's namespace for top-level tools
 _TERMINAL = frozenset({"response.completed", "response.incomplete", "response.failed"})
 _SNAPSHOT = frozenset({"response.created", "response.in_progress", "response.queued"})
 _FINISHED = frozenset({"completed", "incomplete"})  # statuses that are not errors
 
 
 def _name(item: dict[str, Any]) -> str | None:
+    """A namespaced tool (Codex's MCP tools: namespace `mcp__<server>`) is named as Codex's
+    hooks and Claude Code name it, `mcp__<server>__<tool>`, so it cannot pass for a built-in
+    tool of the same bare name, in the ledger or in `tools_denied`."""
     fixed, _ = _CALLS[str(item.get("type"))]
     name = fixed or item.get("name")
-    return str(name) if name else None
+    if not name:
+        return None
+    namespace = item.get("namespace")
+    if isinstance(namespace, str) and namespace.strip("_") and namespace != _DEFAULT_NAMESPACE:
+        return f"{namespace.rstrip('_')}__{name}"
+    return str(name)
+
+
+def _call_id(item: dict[str, Any]) -> str | None:
+    call_id = item.get("call_id")
+    if not call_id and item.get("type") == "local_shell_call_output":
+        call_id = item.get("id")  # the spec's form of this item
+    return str(call_id) if call_id else None
+
+
+def _is_call(item: dict[str, Any]) -> bool:
+    """A tool call the client runs and answers. A tool search can run at either end."""
+    if item.get("type") == "tool_search_call" and item.get("execution") != "client":
+        return False
+    return item.get("type") in _CALLS and bool(item.get("call_id"))
 
 
 def _arguments(item: dict[str, Any]) -> dict[str, Any]:
@@ -88,14 +118,14 @@ class OpenAIResponsesFormat:
         """Record tool results carried in the input, then the request. Clients that resend
         the whole history each turn (Codex) repeat old results; each is recorded once."""
         for item in _items(body):
-            if item.get("type") not in _RESULTS:
+            call_id = _call_id(item)
+            if item.get("type") not in _RESULTS or call_id is None:
                 continue
-            call = self._open.pop(str(item.get("call_id")), None)
+            call = self._open.pop(call_id, None)
             if call is not None:
                 failed = item.get("status") == "failed"  # apply_patch_call_output reports it
-                self._rec.tool_returned(
-                    call, item.get("output"), "tool reported failure" if failed else None
-                )
+                result = item.get("output") if "output" in item else item.get("tools")
+                self._rec.tool_returned(call, result, "tool reported failure" if failed else None)
         request = {k: body[k] for k in KEEP if k in body}
         return self._rec.model_requested(self.model(body), request, provider=self.provider)
 
@@ -103,15 +133,11 @@ class OpenAIResponsesFormat:
     def tool_result_calls(body: dict[str, Any]) -> list[tuple[str, str | None]]:
         """(call_id, tool name the input gives it) for every tool result in the request."""
         items = _items(body)
-        names = {
-            str(i.get("call_id")): _name(i)
-            for i in items
-            if i.get("type") in _CALLS and i.get("call_id")
-        }
+        names = {str(i["call_id"]): _name(i) for i in items if _is_call(i)}
         return [
-            (str(i.get("call_id")), names.get(str(i.get("call_id"))))
+            (call_id, names.get(call_id))
             for i in items
-            if i.get("type") in _RESULTS
+            if i.get("type") in _RESULTS and (call_id := _call_id(i)) is not None
         ]
 
     def finish(
@@ -122,6 +148,8 @@ class OpenAIResponsesFormat:
             call.respond({}, error=error)
             return []
         status = response.get("status")
+        if not isinstance(status, str):
+            status = None
         if error is None and status not in _FINISHED:
             error = _status_error(response)
         model = response.get("model")
@@ -133,7 +161,7 @@ class OpenAIResponsesFormat:
         )
         calls: list[Event] = []
         for item in as_dicts(response.get("output")):
-            if item.get("type") not in _CALLS or not item.get("call_id"):
+            if not _is_call(item):
                 continue
             # an item cut off mid-stream may carry truncated arguments
             done = item.get("status", "completed" if status == "completed" else None)
@@ -149,7 +177,8 @@ class OpenAIResponsesFormat:
 
 
 def _status_error(response: dict[str, Any]) -> str:
-    status = response.get("status") or "unknown"
+    status = response.get("status") if isinstance(response.get("status"), str) else None
+    status = status or "unknown"
     err = as_dict(response.get("error"))
     if err:
         return f"response {status}: {err.get('code')}: {err.get('message')}"
@@ -169,22 +198,35 @@ def _usage(raw: dict[str, Any]) -> dict[str, int]:
     return out
 
 
+_PARTIAL = {  # delta event -> the field of an unfinished item it fills
+    "response.output_text.delta": "text",
+    "response.function_call_arguments.delta": "arguments",
+    "response.custom_tool_call_input.delta": "input",
+}
+
+
 def assemble_sse(events: list[dict[str, Any]]) -> dict[str, Any]:
     """Rebuild the response from the stream's events, as far as they got. Never raises: the
     gateway calls this in a `finally`, and a malformed stream must still be recorded.
 
-    A terminal event carries the whole response; its `output` is filled from the finished
-    items if it came without one. With no terminal event, the last snapshot is taken with the
-    items finished so far, and the unfinished ones as they started, with their text so far."""
+    A terminal event carries the whole response, recorded as sent; its `output` is filled from
+    the finished items if it came without one. With no terminal event the response is rebuilt:
+    the last snapshot, the items finished so far, and the unfinished ones as they started with
+    their text, arguments or input so far. In a rebuilt response an item that arrived whole
+    (`output_item.done`) is marked completed even where its type has no status
+    (`custom_tool_call`), and an unfinished one in_progress, so `finish` records the one as a
+    tool call and not the other."""
     snapshot: dict[str, Any] = {}
     terminal: dict[str, Any] | None = None
     started: dict[int, dict[str, Any]] = {}
     finished: dict[int, dict[str, Any]] = {}
-    text: dict[int, str] = {}
+    partial: dict[tuple[int, str], str] = {}
     error: dict[str, Any] | None = None
     for event in events:
         kind = event.get("type")
         index = event.get("output_index")
+        if not isinstance(kind, str):
+            continue
         if kind in _TERMINAL:
             terminal = as_dict(event.get("response"))
         elif kind in _SNAPSHOT:
@@ -199,8 +241,9 @@ def assemble_sse(events: list[dict[str, Any]]) -> dict[str, Any]:
             started[index] = as_dict(event.get("item"))
         elif kind == "response.output_item.done":
             finished[index] = as_dict(event.get("item"))
-        elif kind == "response.output_text.delta" and isinstance(event.get("delta"), str):
-            text[index] = text.get(index, "") + event["delta"]
+        elif kind in _PARTIAL and isinstance(event.get("delta"), str):
+            key = (index, _PARTIAL[kind])
+            partial[key] = partial.get(key, "") + event["delta"]
     if terminal is not None:
         out = dict(terminal)
         if not as_dicts(out.get("output")) and finished:
@@ -210,11 +253,14 @@ def assemble_sse(events: list[dict[str, Any]]) -> dict[str, Any]:
     output: list[dict[str, Any]] = []
     for i in sorted(started.keys() | finished.keys()):
         if i in finished:
-            output.append(finished[i])
+            output.append({"status": "completed", **finished[i]})
             continue
-        item = dict(started[i])
-        if item.get("type") == "message" and i in text:
-            item["content"] = [{"type": "output_text", "text": text[i]}]
+        item = {**started[i], "status": "in_progress"}
+        if item.get("type") == "message" and (i, "text") in partial:
+            item["content"] = [{"type": "output_text", "text": partial[(i, "text")]}]
+        for field in ("arguments", "input"):
+            if (i, field) in partial:
+                item[field] = partial[(i, field)]
         output.append(item)
     out["output"] = output
     if error is not None:

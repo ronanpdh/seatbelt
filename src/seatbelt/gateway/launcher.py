@@ -1,4 +1,5 @@
-"""`seatbelt run <cli>`: preset the environment so an existing CLI talks to the gateway.
+"""`seatbelt run <cli>`: preset the environment (and, for Codex, a model provider on its
+command line) so an existing CLI talks to the gateway.
 
 Stdlib only: this runs on employee machines, which need no server dependencies."""
 

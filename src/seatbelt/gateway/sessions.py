@@ -7,6 +7,7 @@ import re
 import secrets
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass, field
@@ -32,6 +33,29 @@ def _slug(text: str) -> str:
     return _UNSAFE.sub("_", text).strip("_")[:40] or "x"
 
 
+class DeniedCalls:
+    """Tool calls the policy denied, by call id: a principal's, across its sessions. A
+    Responses client that chains `previous_response_id` sends a tool's output without the call
+    it answers, possibly after the session that saw the call has closed on idle. The newest
+    `limit` are kept; a restart forgets them (the history's tool name still applies)."""
+
+    def __init__(self, limit: int = 10_000) -> None:
+        self._calls: OrderedDict[str, str] = OrderedDict()
+        self._limit = limit
+        self._lock = threading.Lock()
+
+    def __setitem__(self, call_id: str, tool: str) -> None:
+        with self._lock:
+            self._calls[call_id] = tool
+            self._calls.move_to_end(call_id)
+            while len(self._calls) > self._limit:
+                self._calls.popitem(last=False)
+
+    def get(self, call_id: str) -> str | None:
+        with self._lock:
+            return self._calls.get(call_id)
+
+
 @dataclass(eq=False)  # identity, not field equality: sessions are tracked by object
 class Session:
     rec: Recorder
@@ -39,7 +63,7 @@ class Session:
     lock: threading.Lock = field(default_factory=threading.Lock)
     last: float = 0.0
     formats: dict[str, Format] = field(default_factory=dict[str, Format])  # open tool calls
-    denied_calls: dict[str, str] = field(default_factory=dict[str, str])  # call id -> tool
+    denied_calls: DeniedCalls = field(default_factory=DeniedCalls)  # the principal's
     busy: int = 0  # requests between Sessions.get and Sessions.release
     closing: bool = False
 
@@ -67,6 +91,7 @@ class Sessions:
         self._idle = idle
         self._clock = clock
         self._open: dict[_Key, Session] = {}
+        self._denied: dict[str, DeniedCalls] = {}  # principal -> its denied calls
         self._draining: list[Session] = []  # ended while busy; the last release closes them
         self._lock = threading.Lock()
         self._changed = threading.Condition(self._lock)
@@ -113,7 +138,8 @@ class Sessions:
                 signer=self._signer,
             )
         )
-        return Session(rec=rec, stack=stack, last=self._clock())
+        denied = self._denied.setdefault(principal, DeniedCalls())  # under self._lock
+        return Session(rec=rec, stack=stack, last=self._clock(), denied_calls=denied)
 
     def end(self, principal: str, run: str | None, key: str = "") -> bool:
         """Close now, or at the last release if a request is in flight. The next `get` for the
