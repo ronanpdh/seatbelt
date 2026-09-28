@@ -38,7 +38,7 @@ class Session:
     lock: threading.Lock = field(default_factory=threading.Lock)
     last: float = 0.0
     formats: dict[str, Format] = field(default_factory=dict[str, Format])  # open tool calls
-    denied_calls: set[str] = field(default_factory=set[str])  # tool call ids policy refused
+    denied_calls: dict[str, str] = field(default_factory=dict[str, str])  # call id -> tool
     busy: int = 0  # requests between Sessions.get and Sessions.release
     closing: bool = False
 

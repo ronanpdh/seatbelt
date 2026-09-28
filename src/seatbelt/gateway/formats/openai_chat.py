@@ -47,6 +47,21 @@ class OpenAIChatFormat:
         request = {k: body[k] for k in KEEP if k in body}
         return self._rec.model_requested(self.model(body), request, provider=self.provider)
 
+    @staticmethod
+    def tool_result_calls(body: dict[str, Any]) -> list[tuple[str, str | None]]:
+        """(tool_call id, tool name the history gives it) for every tool message in the request."""
+        messages = as_dicts(body.get("messages"))
+        names = {
+            str(tc.get("id")): str(as_dict(tc.get("function")).get("name"))
+            for m in messages
+            for tc in as_dicts(m.get("tool_calls"))
+        }
+        return [
+            (str(m.get("tool_call_id")), names.get(str(m.get("tool_call_id"))))
+            for m in messages
+            if m.get("role") == "tool"
+        ]
+
     def finish(
         self, call: ModelCall, response: dict[str, Any] | None, error: str | None = None
     ) -> list[Event]:

@@ -58,15 +58,20 @@ def _upstream(seen: list[httpx2.Request]) -> httpx2.MockTransport:
     return httpx2.MockTransport(handler)
 
 
-@pytest.fixture
-def gw(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Gateway]:
+POLICY = (
+    "policy:\n  models: [claude-sonnet-5, gpt-5]\n  tools_denied: [run_shell]\n"
+    "  max_output_tokens: 1000\n"
+)
+
+
+def _gateway(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra: str) -> Iterator[Gateway]:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-REAL0000000000000000000000")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-REAL00000000000000000000000")
     cfg_path = tmp_path / "gateway.yaml"
     cfg_path.write_text(
         "signing_key: keys/seatbelt.key\nledgers: runs\n"
         "upstreams:\n  anthropic: {url: https://api.anthropic.com, key_env: ANTHROPIC_API_KEY}\n"
-        "  openai: {url: https://api.openai.com, key_env: OPENAI_API_KEY}\n"
+        "  openai: {url: https://api.openai.com, key_env: OPENAI_API_KEY}\n" + extra
     )
     key = add_principal(cfg_path, "alice@corp")
     cfg = load_config(cfg_path)
@@ -76,6 +81,17 @@ def gw(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Gateway]:
     with TestClient(app) as client:
         yield Gateway(client, app, key, cfg.ledgers, seen)
     assert sessions.close_all(timeout=1) == 0  # every request released its session
+
+
+@pytest.fixture
+def gw(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Gateway]:
+    yield from _gateway(tmp_path, monkeypatch, "")
+
+
+@pytest.fixture
+def gwp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Gateway]:
+    """A gateway with an org policy."""
+    yield from _gateway(tmp_path, monkeypatch, POLICY)
 
 
 def test_unknown_key_is_401_and_nothing_is_written(gw: Gateway) -> None:
@@ -405,3 +421,117 @@ def test_client_that_disconnects_mid_stream_is_recorded_and_released(
     resp = _response(gw.events())
     assert resp.attrs["gen_ai.response"]["stop_reason"] is None
     assert resp.attrs["error"] == "stream ended early"  # teardown checks the release
+
+
+# -- org policy ----------------------------------------------------------------
+
+
+def test_no_policy_records_no_checks(gw: Gateway) -> None:
+    gw.client.post(
+        "/v1/messages", json={"model": "m", "messages": []}, headers={"x-api-key": gw.key}
+    )
+    assert Kind.POLICY_CHECK not in [e.kind for e in gw.events()]
+
+
+def test_allowed_request_records_a_check_per_rule(gwp: Gateway) -> None:
+    r = gwp.client.post(
+        "/v1/messages",
+        json={"model": "claude-sonnet-5", "max_tokens": 10, "messages": []},
+        headers={"x-api-key": gwp.key},
+    )
+    assert r.status_code == 200
+    events = gwp.events()
+    request = next(e for e in events if e.kind == Kind.MODEL_REQUEST)
+    checks = [e for e in events if e.kind == Kind.POLICY_CHECK and e.parent_id == request.id]
+    assert [(c.actor.id, c.attrs["policy.allowed"]) for c in checks] == [
+        ("models", True),
+        ("max_output_tokens", True),
+    ]
+
+
+def test_disallowed_model_is_403_and_recorded(gwp: Gateway) -> None:
+    r = gwp.client.post(
+        "/v1/messages",
+        json={"model": "claude-opus-5", "max_tokens": 10, "messages": []},
+        headers={"x-api-key": gwp.key},
+    )
+    assert r.status_code == 403 and gwp.seen == []
+    assert r.json()["error"] == {
+        "type": "permission_error",
+        "message": "model claude-opus-5 is not allowed",
+    }
+    events = gwp.events()
+    denied = [e for e in events if e.kind == Kind.POLICY_CHECK and not e.attrs["policy.allowed"]]
+    assert [d.actor.id for d in denied] == ["models"]
+    assert denied[0].parent_id == events[1].id and events[1].kind == Kind.MODEL_REQUEST
+    assert Kind.MODEL_RESPONSE not in [e.kind for e in events]  # no model ever answered
+
+
+def test_output_token_cap_applies_to_openai_too(gwp: Gateway) -> None:
+    r = gwp.client.post(
+        "/v1/chat/completions",
+        json={"model": "gpt-5", "max_completion_tokens": 5000, "messages": []},
+        headers={"authorization": f"Bearer {gwp.key}"},
+    )
+    assert r.status_code == 403 and "exceeds 1000" in r.json()["error"]["message"]
+
+
+def _shell_reply() -> dict[str, Any]:
+    shell = {**_first()}
+    shell["content"] = [
+        {"type": "tool_use", "id": "toolu_09", "name": "run_shell", "input": {"command": "ls"}}
+    ]
+    return shell
+
+
+def _followup(body: dict[str, Any], shell: dict[str, Any]) -> dict[str, Any]:
+    result = {"type": "tool_result", "tool_use_id": "toolu_09", "content": "file.txt"}
+    return {
+        **body,
+        "messages": [
+            *body["messages"],
+            {"role": "assistant", "content": shell["content"]},
+            {"role": "user", "content": [result]},
+        ],
+    }
+
+
+def test_denied_tool_is_recorded_and_its_result_refused(gwp: Gateway) -> None:
+    shell = _shell_reply()
+    gwp.upstream(lambda _: httpx2.Response(200, json=shell))
+    body: dict[str, Any] = {
+        "model": "claude-sonnet-5",
+        "max_tokens": 10,
+        "messages": [{"role": "user", "content": "ls"}],
+    }
+    r = gwp.client.post("/v1/messages", json=body, headers={"x-api-key": gwp.key})
+    assert r.status_code == 200  # relayed: the gateway cannot stop a local tool
+    r = gwp.client.post("/v1/messages", json=_followup(body, shell), headers={"x-api-key": gwp.key})
+    assert r.status_code == 403 and "run_shell" in r.json()["error"]["message"]
+    assert len(gwp.seen) == 1  # the result never reached the model
+    events = gwp.events()
+    denied = [e for e in events if e.kind == Kind.POLICY_CHECK and not e.attrs["policy.allowed"]]
+    assert [d.actor.id for d in denied] == ["denylist", "denylist"]
+    (call,) = [e for e in events if e.kind == Kind.TOOL_CALL]
+    assert denied[0].parent_id == call.id
+    assert Kind.TOOL_RESULT in [e.kind for e in events]  # what came back is still evidence
+
+
+def test_denied_tool_result_is_refused_in_a_new_session_too(gwp: Gateway) -> None:
+    """The idle window closed the session that denied the call; the history still names it."""
+    body: dict[str, Any] = {"model": "claude-sonnet-5", "max_tokens": 10, "messages": []}
+    r = gwp.client.post(
+        "/v1/messages", json=_followup(body, _shell_reply()), headers={"x-api-key": gwp.key}
+    )
+    assert r.status_code == 403 and gwp.seen == []
+
+
+def test_denied_tool_in_a_stream_is_recorded(gwp: Gateway) -> None:
+    gwp.upstream(lambda _: httpx2.Response(200, headers=SSE_HEADERS, content=sse(_shell_reply())))
+    gwp.client.post(
+        "/v1/messages",
+        json={"model": "claude-sonnet-5", "max_tokens": 10, "messages": [], "stream": True},
+        headers={"x-api-key": gwp.key},
+    )
+    last = gwp.events()[-1]
+    assert last.kind == Kind.POLICY_CHECK and last.attrs["policy.allowed"] is False
