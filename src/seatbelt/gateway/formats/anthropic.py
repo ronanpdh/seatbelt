@@ -46,6 +46,17 @@ class AnthropicFormat:
         request = {k: body[k] for k in KEEP if k in body}
         return self._rec.model_requested(self.model(body), request, provider=self.provider)
 
+    @staticmethod
+    def tool_result_calls(body: dict[str, Any]) -> list[tuple[str, str | None]]:
+        """(tool_use id, tool name the history gives it) for every tool result in the request."""
+        names = {
+            str(b.get("id")): str(b.get("name"))
+            for m in as_dicts(body.get("messages"))
+            for b in as_dicts(m.get("content"))
+            if b.get("type") == "tool_use"
+        }
+        return [(tid, names.get(tid)) for tid, _, _ in tool_results(body)]
+
     def finish(
         self, call: ModelCall, response: dict[str, Any] | None, error: str | None = None
     ) -> list[Event]:

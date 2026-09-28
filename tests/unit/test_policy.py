@@ -87,3 +87,17 @@ def test_rule_that_raises_is_a_denial_and_later_rules_still_run(tmp_path: Path) 
     assert checks[0].attrs == {"policy.allowed": False, "policy.reason": "KeyError: 'missing'"}
     assert checks[1].attrs["policy.allowed"] is True
     assert info.value.rule == "boom"
+
+
+def test_models_and_max_output_tokens_rules() -> None:
+    from seatbelt.policy.engine import max_output_tokens, models
+
+    assert models("a", "b").check("a", {}) is None
+    assert models("a").check("z", {}) == "model z is not allowed"
+    assert max_output_tokens(10).check("m", {"max_tokens": 10}) is None
+    assert max_output_tokens(10).check("m", {"max_tokens": 11}) == "max_tokens 11 exceeds 10"
+    assert (
+        max_output_tokens(10).check("m", {"max_completion_tokens": 11})
+        == "max_completion_tokens 11 exceeds 10"
+    )
+    assert max_output_tokens(10).check("m", {}) is None

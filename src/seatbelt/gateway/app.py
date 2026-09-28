@@ -22,6 +22,8 @@ from seatbelt.gateway.formats import Format, anthropic, openai_chat
 from seatbelt.gateway.formats.anthropic import AnthropicFormat
 from seatbelt.gateway.formats.openai_chat import OpenAIChatFormat
 from seatbelt.gateway.sessions import Session, Sessions
+from seatbelt.ledger.events import Event
+from seatbelt.policy.engine import Policy, denylist, max_output_tokens, models
 from seatbelt.record.recorder import ModelCall
 
 RUN_HEADER = "x-seatbelt-run"
@@ -66,8 +68,28 @@ def _principal(cfg: GatewayConfig, request: Request) -> Principal | None:
     return cfg.lookup(key.strip()) if key.strip() else None
 
 
+def _error(status: int, kind: str, message: str) -> Response:
+    """Shaped like Anthropic's errors; OpenAI clients read the same `error.message`."""
+    return JSONResponse(
+        {"type": "error", "error": {"type": kind, "message": message}}, status_code=status
+    )
+
+
 def _unauthorized() -> Response:
-    return JSONResponse({"error": "unknown seatbelt key"}, status_code=401)
+    return _error(401, "authentication_error", "unknown seatbelt key")
+
+
+def _policies(cfg: GatewayConfig) -> tuple[Policy | None, Policy | None]:
+    """(request policy, tool policy). None when unset, so policy-free ledgers stay unchanged."""
+    p = cfg.policy
+    rules = [
+        *([models(*p.models)] if p.models is not None else []),
+        *([max_output_tokens(p.max_output_tokens)] if p.max_output_tokens is not None else []),
+    ]
+    return (
+        Policy(*rules) if rules else None,
+        Policy(denylist(*p.tools_denied)) if p.tools_denied else None,
+    )
 
 
 def _upstream_headers(request: Request, auth_header: str, real_key: str) -> dict[str, str]:
@@ -106,6 +128,51 @@ def _format(session: Session, name: str, cls: type[Format]) -> Format:
     if fmt is None:
         fmt = session.formats[name] = cls(session.rec)
     return fmt
+
+
+def _check_tool_call(session: Session, policy: Policy, event: Event) -> None:
+    """Record the verdict on a tool call the model asked for. The gateway cannot stop a local
+    tool, so the call is relayed; a denied call's result is refused on the way back."""
+    name = str(event.attrs.get("gen_ai.tool.name"))
+    arguments = event.attrs.get("gen_ai.tool.call.arguments")
+    args = cast(dict[str, Any], arguments) if isinstance(arguments, dict) else {}
+    for rule, reason in policy.evaluate(name, args):
+        session.rec.policy_check(rule, event.id, reason is None, reason or "allowed")
+        if reason:
+            session.denied_calls[str(event.attrs.get("gen_ai.tool.call.id"))] = name
+
+
+def _refusal(
+    session: Session,
+    fmt: Format,
+    body: dict[str, Any],
+    request_id: str,
+    request_policy: Policy | None,
+    tool_policy: Policy | None,
+) -> str | None:
+    """Record the checks on a request; return the first denial, or None. A tool result is
+    refused if this session denied its call, or if the history names a denied tool (a new
+    session after the idle window still carries the old conversation)."""
+    if tool_policy is not None:
+        for call_id, name in fmt.tool_result_calls(body):
+            denied = session.denied_calls.get(call_id)
+            if (
+                denied is None
+                and name is not None
+                and any(r for _, r in tool_policy.evaluate(name, {}))
+            ):
+                denied = name
+            if denied is not None:
+                reason = f"tool result for denied call {call_id} ({denied})"
+                session.rec.policy_check("denylist", request_id, False, reason)
+                return reason
+    if request_policy is None:
+        return None
+    first: str | None = None
+    for rule, reason in request_policy.evaluate(fmt.model(body), body):
+        session.rec.policy_check(rule, request_id, reason is None, reason or "allowed")
+        first = first or reason
+    return first
 
 
 def sse_events(raw: bytes) -> list[dict[str, Any]]:
@@ -188,6 +255,8 @@ def _stream(
 def create_app(
     cfg: GatewayConfig, sessions: Sessions, transport: httpx2.AsyncBaseTransport | None = None
 ) -> Starlette:
+    request_policy, tool_policy = _policies(cfg)
+
     async def relay(request: Request) -> Response:
         principal = _principal(cfg, request)
         if principal is None:
@@ -195,33 +264,49 @@ def create_app(
         upstream_name, auth_header, format_cls = _FORMATS[request.url.path]
         upstream = cfg.upstreams.get(upstream_name)
         if upstream is None:
-            return JSONResponse({"error": f"no {upstream_name} upstream"}, status_code=404)
+            return _error(404, "not_found_error", f"no {upstream_name} upstream")
         raw = await request.body()
         body = _json_object(raw)
         if body is None:
-            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+            return _error(400, "invalid_request_error", "body must be a JSON object")
         run = request.headers.get(RUN_HEADER) or None
         run_end = request.headers.get(RUN_END_HEADER, "").lower() == "true"
         session = await run_in_threadpool(sessions.get, principal.id, run, _meta(request))
         call: ModelCall | None = None
         handed_off = False  # a stream settles the session itself when it closes
+        refused = False  # policy answered the request; no model ever saw it
 
         def fmt() -> Format:  # under the session lock, so parallel requests share one
             return _format(session, upstream_name, format_cls)
 
         def finish(call: ModelCall, payload: dict[str, Any] | None, error: str | None) -> None:
-            _locked(session, lambda: fmt().finish(call, payload, error=error))
+            def run() -> None:
+                for event in fmt().finish(call, payload, error=error):
+                    if tool_policy is not None:
+                        _check_tool_call(session, tool_policy, event)
+
+            _locked(session, run)
+
+        def admit() -> tuple[ModelCall, str | None]:
+            """Record the request, then the policy verdicts on it. Returns a refusal reason."""
+            f = fmt()
+            call = f.begin(body)
+            refusal = _refusal(session, f, body, call.request.id, request_policy, tool_policy)
+            return call, refusal
 
         async def settle() -> None:
             """Answer a dangling call, end the run if asked, release the session."""
-            if call is not None and call.response is None:
+            if call is not None and call.response is None and not refused:
                 await run_in_threadpool(finish, call, None, "request did not complete")
             if run_end:
                 await run_in_threadpool(sessions.end, principal.id, run)
             await run_in_threadpool(sessions.release, session)
 
         try:
-            call = await run_in_threadpool(_locked, session, lambda: fmt().begin(body))
+            call, refusal = await run_in_threadpool(_locked, session, admit)
+            if refusal is not None:
+                refused = True
+                return _error(403, "permission_error", refusal)
             client = httpx2.AsyncClient(
                 base_url=upstream.url, transport=request.app.state.transport, timeout=600
             )
@@ -244,7 +329,7 @@ def create_app(
                 await client.aclose()
                 error = f"upstream unreachable: {type(exc).__name__}: {exc}"
                 await run_in_threadpool(finish, call, None, error)
-                return JSONResponse({"error": error}, status_code=502)
+                return _error(502, "api_error", error)
             if streaming:
                 handed_off = True
                 return _stream(resp, client, call, upstream_name, finish, settle)

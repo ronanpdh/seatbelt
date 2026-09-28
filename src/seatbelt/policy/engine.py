@@ -57,3 +57,24 @@ def allowlist(*tools: str) -> Rule:
 
 def denylist(*tools: str) -> Rule:
     return Rule("denylist", lambda tool, _: f"{tool} is denied" if tool in tools else None)
+
+
+def models(*allowed: str) -> Rule:
+    """For a model request: the first argument is the model name. Exact match."""
+    return Rule(
+        "models", lambda model, _: None if model in allowed else f"model {model} is not allowed"
+    )
+
+
+def max_output_tokens(limit: int) -> Rule:
+    """For a model request: caps `max_tokens` (Anthropic, OpenAI) and `max_completion_tokens`
+    (OpenAI). A request that sets neither passes; the provider's default applies."""
+
+    def check(_: str, args: dict[str, Any]) -> str | None:
+        for key in ("max_tokens", "max_completion_tokens"):
+            n = args.get(key)
+            if isinstance(n, int) and n > limit:
+                return f"{key} {n} exceeds {limit}"
+        return None
+
+    return Rule("max_output_tokens", check)
