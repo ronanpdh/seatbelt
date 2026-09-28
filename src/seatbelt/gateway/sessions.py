@@ -85,11 +85,14 @@ class Sessions:
         signer: Signer | None,
         idle: float,
         clock: Callable[[], float] = time.monotonic,
+        on_close: Callable[[Path], None] | None = None,
     ) -> None:
+        """`on_close` gets each ledger once it is closed and signed (the sink ships it)."""
         self._root = root
         self._signer = signer
         self._idle = idle
         self._clock = clock
+        self._on_close = on_close
         self._open: dict[_Key, Session] = {}
         self._denied: dict[str, DeniedCalls] = {}  # principal -> its denied calls
         self._draining: list[Session] = []  # ended while busy; the last release closes them
@@ -199,6 +202,11 @@ class Sessions:
         try:
             with session.lock:  # never close mid-request
                 session.stack.close()
+            if self._on_close is not None:
+                try:
+                    self._on_close(session.rec.ledger.path)
+                except Exception:  # shipping is best effort; the next start catches up
+                    _log.exception("on_close failed for %s", session.rec.ledger.path)
         finally:
             with self._changed:
                 if session in self._draining:

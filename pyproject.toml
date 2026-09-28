@@ -52,6 +52,11 @@ dev = [
     "starlette>=1.6",
     "uvicorn>=0.53",
     "types-pyyaml>=6.0.12.20260906",
+    "botocore>=1.43",  # oracle for the sink's SigV4 signing in tests; never shipped
+    "botocore-stubs>=1.43.67",  # types for the test oracle
+]
+fuzz = [
+    "atheris>=3.1",
 ]
 
 [tool.ruff]

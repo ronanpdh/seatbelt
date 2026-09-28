@@ -40,6 +40,18 @@ class PolicyConfig(_Strict):
     _tools_denied = field_validator("tools_denied", mode="before")(_none_is_empty)
 
 
+class SinkConfig(_Strict):
+    """S3-compatible object storage each closed ledger is shipped to, e.g. Hetzner Object
+    Storage: url `https://fsn1.your-objectstorage.com`, region `fsn1`."""
+
+    url: str
+    bucket: str
+    region: str
+    prefix: str = ""  # prepended to each object key, e.g. "runs/"
+    access_key_env: str = "SEATBELT_SINK_ACCESS_KEY"  # env var names; never the keys
+    secret_key_env: str = "SEATBELT_SINK_SECRET_KEY"  # noqa: S105 - an env var name
+
+
 class Principal(_Strict):
     id: str
     key_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -54,6 +66,7 @@ class GatewayConfig(_Strict):
     upstreams: dict[str, Upstream]
     policy: PolicyConfig = Field(default_factory=PolicyConfig)
     principals: list[Principal] = Field(default_factory=list[Principal])
+    sink: SinkConfig | None = None
 
     _principals = field_validator("principals", mode="before")(_none_is_empty)
     _policy = field_validator("policy", mode="before")(_none_is_no_keys)

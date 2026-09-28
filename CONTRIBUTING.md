@@ -26,7 +26,7 @@ Open a [GitHub issue](https://github.com/ronanpdh/seatbelt/issues). Include the 
 
 ## Tests
 
-New functionality comes with tests, and a bug fix comes with a test that fails without it. Tests are `pytest` under `tests/`, never touch a live model or the network, and use recorded fixtures or ledgers written in `tmp_path`. A change to the shipped scenario corpus updates `tests/fixtures/corpus.sha256`; a change to a schema model reruns `scripts/export_schemas.py`.
+New functionality comes with tests, and a bug fix comes with a test that fails without it. Tests are `pytest` under `tests/`, never touch a live model or the network, and use recorded fixtures or ledgers written in `tmp_path`. Code that parses untrusted bytes (ledgers, provider streams) is also fuzzed: `uv run --group fuzz python fuzz/fuzz_parsers.py -max_total_time=60 fuzz/corpus` (Linux, CPython 3.12-3.14; CI runs it on a copy of the seeds). A change to the shipped scenario corpus updates `tests/fixtures/corpus.sha256`; a change to a schema model reruns `scripts/export_schemas.py`.
 
 ## Changes
 
