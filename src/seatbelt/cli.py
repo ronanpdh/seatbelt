@@ -357,6 +357,9 @@ def report(
     directory: the runs `seatbelt run` recorded here, checked against this machine's key."""
     if runs is None:
         runs, pubkey = _local_runs(pubkey)
+        if not any(runs.glob("*.jsonl")):
+            console.print(f"No runs recorded yet in {runs}. Start one with: seatbelt run claude")
+            return
     try:
         fleet = build_fleet(runs, pubkey)
     except AttestError as exc:

@@ -89,3 +89,22 @@ def test_cli_report(tmp_path: Path) -> None:
     assert json.loads(r.output)["by_principal"]["bob@corp"]["input_tokens"] == 7
     r = runner.invoke(app, ["report", str(tmp_path / "runs")])
     assert "alice@corp" in r.output and "lookup_order" in r.output and "broken" in r.output
+
+
+def test_cli_report_with_no_directory_reads_this_machines_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from seatbelt.gateway import launcher
+
+    monkeypatch.setattr(launcher, "DEFAULT_CONFIG", tmp_path / "config.toml")
+    monkeypatch.setattr(launcher, "LEGACY_CONFIG", tmp_path / "gateway.toml")
+    monkeypatch.setenv("SEATBELT_HOME", str(tmp_path / "home"))
+    runner = CliRunner()
+    r = runner.invoke(app, ["report"])
+    assert r.exit_code == 0 and "No runs recorded yet" in r.output
+    keygen(tmp_path / "home" / "keys")
+    signer = Signer.from_file(tmp_path / "home" / "keys" / "seatbelt.key")
+    with Recorder.start(tmp_path / "home" / "runs", agent_id="gw", signer=signer) as rec:
+        rec.user_message("u", "hi")
+    r = runner.invoke(app, ["report"])
+    assert r.exit_code == 0 and "1 runs" in r.output and "unattested" not in r.output
