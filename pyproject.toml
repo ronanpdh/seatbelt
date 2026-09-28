@@ -55,6 +55,9 @@ dev = [
     "botocore>=1.43",  # oracle for the sink's SigV4 signing in tests; never shipped
     "botocore-stubs>=1.43.67",  # types for the test oracle
 ]
+fuzz = [
+    "atheris>=3.1",
+]
 
 [tool.ruff]
 line-length = 100
