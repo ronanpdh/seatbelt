@@ -2,8 +2,9 @@
 
 Started on a free localhost port for one run and stopped when the CLI exits. Every upstream
 passes the CLI's own credentials through (an API key or a subscription login), so nothing
-is configured but where the ledgers go. The CLI names the run's key in `x-seatbelt-key`: the
-port is on localhost, but only this run can write to its ledger."""
+is configured but where the ledgers go. The CLI names the run's key in its base URL's path
+(`/_seatbelt/<key>/<run>`), or Codex in `x-seatbelt-key`: the port is on localhost, but only
+this run can write to its ledger."""
 
 from __future__ import annotations
 
@@ -57,7 +58,7 @@ def local_signer(keys: Path) -> Signer:
 
 @dataclass
 class LocalRecorder:
-    """A running local gateway: point the CLI at `url` and send `key` as `x-seatbelt-key`."""
+    """A running local gateway: point the CLI at `url` with `key` (see `launcher.local_url`)."""
 
     url: str
     key: str

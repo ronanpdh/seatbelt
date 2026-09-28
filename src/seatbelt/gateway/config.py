@@ -23,7 +23,8 @@ class Upstream(_Strict):
     url: str
     # name of the env var holding the real provider key; never the key itself. Unset: the
     # client's own credentials are passed through, and it names its seatbelt key in the
-    # x-seatbelt-key header (`seatbelt run` recording locally)
+    # x-seatbelt-key header or a /_seatbelt/<key>/<run>/ path prefix (`seatbelt run`
+    # recording locally)
     key_env: str | None = None
 
 

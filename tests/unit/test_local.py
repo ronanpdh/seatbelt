@@ -164,22 +164,42 @@ def test_with_no_config_a_run_is_recorded_locally(
         run_cli("aider", [], exe=sys.executable)
 
 
-def test_codex_keeps_its_own_login_and_names_the_runs_key(
+def test_codex_keeps_its_own_login_and_its_key_off_the_command_line(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
 ) -> None:
+    """Any user on the machine can read a process's arguments, so the run's key goes to
+    Codex in its environment, which Codex sends as a header to the provider alone."""
     monkeypatch.setenv("SEATBELT_HOME", str(tmp_path / "home"))
     fake = tmp_path / "codex"
-    fake.write_text(f"#!{sys.executable}\nimport sys; print(repr(sys.argv[1:]))\n")
+    fake.write_text(
+        f"#!{sys.executable}\nimport os, sys\n"
+        "print(repr([sys.argv[1:], os.environ['SEATBELT_RUN_KEY']]))\n"
+    )
     fake.chmod(0o755)
     empty = tmp_path / "config.toml"
     empty.write_text("")
     run_cli("codex", ["exec", "hi"], config=empty, exe=str(fake))
-    argv = ast.literal_eval(capfd.readouterr().out.strip())
+    argv, key = ast.literal_eval(capfd.readouterr().out.strip())
     assert argv[:3] == ["-c", 'model_provider="seatbelt"', "-c"] and argv[-2:] == ["exec", "hi"]
+    assert key.startswith("sbk_") and not any(key in a for a in argv)
     provider = tomllib.loads(f"x = {argv[3].partition('=')[2]}")["x"]
-    origin, _, path = provider["base_url"].partition("/_seatbelt/")
-    assert origin.startswith("http://127.0.0.1:")
-    key, run, v1 = path.split("/")
-    assert key.startswith("sbk_") and run.startswith("codex-") and v1 == "v1"
+    assert provider["base_url"].startswith("http://127.0.0.1:")
+    assert provider["base_url"].endswith("/v1")
     assert provider["requires_openai_auth"] is True and "env_key" not in provider
-    assert provider["supports_websockets"] is False and "http_headers" not in provider
+    assert provider["supports_websockets"] is False
+    assert provider["http_headers"]["X-Seatbelt-Run"].startswith("codex-")
+    assert provider["env_http_headers"] == {"X-Seatbelt-Key": "SEATBELT_RUN_KEY"}
+
+
+def test_a_base_url_the_cli_already_has_is_where_the_recorder_forwards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: Provider
+) -> None:
+    """Your own LLM gateway, say, with its token in ANTHROPIC_AUTH_TOKEN: recorded, then on
+    to it, not to api.anthropic.com."""
+    monkeypatch.setenv("SEATBELT_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", provider.url + "/")
+    empty = tmp_path / "config.toml"
+    empty.write_text("")
+    assert run_cli("claude", ["-c", CLAUDE], config=empty, exe=sys.executable) == 7
+    (sent,) = provider.seen
+    assert sent["path"] == "/v1/messages?beta=true"

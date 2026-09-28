@@ -19,7 +19,7 @@ seatbelt run claude                  # Claude Code, recorded; also: seatbelt run
 seatbelt report                      # what your runs did, checked against this machine's key
 ```
 
-`seatbelt run` starts a recorder on localhost for the run, points the CLI at it and passes the CLI's own credentials through, so it keeps signing in as it always does: a Claude subscription or API key, ChatGPT or an API key for Codex, a Google account or API key for Gemini CLI. How it works, what is and is not recorded, and the settings: [docs/local-recording.md](docs/local-recording.md). Each run's ledger lands in `~/.local/share/seatbelt/runs` (macOS: `~/Library/Application Support/seatbelt`, Windows: `%LOCALAPPDATA%\seatbelt`), signed with a key made there on first use. To record through your org's gateway instead, put its URL and your key in `~/.config/seatbelt/config.toml`:
+`seatbelt run` starts a recorder on localhost for the run, points the CLI at it and passes the CLI's own credentials through, so it keeps signing in as it always does: a Claude subscription or API key, ChatGPT or an API key for Codex, a Google account or API key for Gemini CLI. How it works, what is and is not recorded, and the settings: [docs/local-recording.md](docs/local-recording.md). Each run's ledger is signed and lands in `runs/` in your data folder (Linux `~/.local/share/seatbelt`, macOS `~/Library/Application Support/seatbelt`, Windows `%LOCALAPPDATA%\seatbelt`), with the signing key, made on first use, in `keys/` beside it. To record through your org's gateway instead, put its URL and your key in `~/.config/seatbelt/config.toml`:
 
 ```toml
 gateway = "https://gw.corp.example"

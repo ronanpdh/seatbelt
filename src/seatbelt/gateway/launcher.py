@@ -29,6 +29,7 @@ DEFAULT_CONFIG = CONFIG_DIR / "config.toml"
 LEGACY_CONFIG = CONFIG_DIR / "gateway.toml"  # 0.2.0: url and key only
 
 CODEX_KEY_ENV = "SEATBELT_GATEWAY_KEY"  # the env var the codex preset's provider reads
+RUN_KEY_ENV = "SEATBELT_RUN_KEY"  # the local run's key, which Codex sends as a header
 PRESETS: dict[str, dict[str, str]] = {  # cli -> env template
     "claude": {
         "ANTHROPIC_BASE_URL": "{url}",
@@ -54,12 +55,32 @@ PRESETS: dict[str, dict[str, str]] = {  # cli -> env template
 # custom headers, which some CLIs also send to other hosts
 LOCAL_PRESETS: dict[str, dict[str, str]] = {
     "claude": {"ANTHROPIC_BASE_URL": "{url}"},
-    "codex": {},  # on the command line, see `arguments`
+    # the rest is on the command line (see `arguments`); the key stays off it, where any
+    # user on the machine could read it, and in the environment, which only this user can
+    "codex": {RUN_KEY_ENV: "{key}"},
     "gemini": {
         "GOOGLE_GEMINI_BASE_URL": "{url}",  # signed in with an API key
         "CODE_ASSIST_ENDPOINT": "{url}",  # signed in with Google
     },
 }
+
+
+# a base URL the CLI already has, which the local recorder forwards to in its place: your own
+# LLM gateway, say. Its credentials, e.g. ANTHROPIC_AUTH_TOKEN, go on with it
+_CHAINED = {
+    "ANTHROPIC_BASE_URL": "anthropic",
+    "GOOGLE_GEMINI_BASE_URL": "gemini",
+    "CODE_ASSIST_ENDPOINT": "codeassist",
+}
+
+
+def chained_upstreams(env: Mapping[str, str]) -> dict[str, str]:
+    """Upstreams from base URLs already in the environment (not another run's recorder)."""
+    return {
+        name: env[var].rstrip("/")
+        for var, name in _CHAINED.items()
+        if env.get(var) and "/_seatbelt/" not in env[var]
+    }
 
 
 def local_url(recorder: str, key: str, run: str) -> str:
@@ -199,13 +220,18 @@ def arguments(cli: str, url: str, run: str, local: bool = False) -> list[str]:
     turn, and reads the gateway key from the environment. See
     docs/plans/2026-09-28-responses-format.md for the sources.
 
-    Recording locally (`url` from `local_url`, which names the run), the provider signs in
-    with Codex's own stored login instead (`requires_openai_auth`: an API key, or ChatGPT,
-    whose requests the local gateway sends on to ChatGPT's backend)."""
+    Recording locally (`url` the local recorder's), the provider signs in with Codex's own
+    stored login instead (`requires_openai_auth`: an API key, or ChatGPT, whose requests the
+    local gateway sends on to ChatGPT's backend), and sends the run's key from the
+    environment (`env_http_headers`) to the provider alone."""
     if cli != "codex":
         return []
     if local:
-        rest = "requires_openai_auth=true,"
+        rest = (
+            "requires_openai_auth=true,"
+            f'http_headers={{"X-Seatbelt-Run"={_toml(run)}}},'
+            f'env_http_headers={{"X-Seatbelt-Key"={_toml(RUN_KEY_ENV)}}},'
+        )
     else:
         rest = (
             f"env_key={_toml(CODEX_KEY_ENV)},requires_openai_auth=false,"
@@ -362,17 +388,16 @@ def _run_local(cli: str, args: list[str], cfg: ClientConfig, exe: str | None, ru
     environment(cli, "", "", run, {}, local=True)  # an unsupported CLI fails before any start
     try:
         from seatbelt.gateway.local import local_recorder
-    except ImportError as exc:  # the server code is an optional install
-        raise ValueError(
-            f"recording locally needs the gateway extra: pip install 'seatbelt[gateway]' ({exc})"
-        ) from exc
+    except ImportError as exc:  # a broken install: the server packages are dependencies
+        raise ValueError(f"recording locally needs seatbelt's server packages: {exc}") from exc
     root = data_dir()
     ledgers = cfg.ledgers or root / "runs"
-    with local_recorder(ledgers, root / "keys", cfg.sink, cfg.upstreams) as recorder:
+    upstreams = {**chained_upstreams(os.environ), **cfg.upstreams}
+    with local_recorder(ledgers, root / "keys", cfg.sink, upstreams) as recorder:
         url = local_url(recorder.url, recorder.key, run)
         env = environment(cli, url, recorder.key, run, os.environ, local=True)
         try:
-            extra = arguments(cli, url, run, local=True)
+            extra = arguments(cli, recorder.url, run, local=True)
             code = _spawn([exe or cli, *extra, *args], env)
         finally:
             recorder.end(run)
