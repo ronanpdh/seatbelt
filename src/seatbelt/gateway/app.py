@@ -278,7 +278,8 @@ def create_app(
             return _error(400, "invalid_request_error", "body must be a JSON object")
         run = request.headers.get(RUN_HEADER) or None
         run_end = request.headers.get(RUN_END_HEADER, "").lower() == "true"
-        session = await run_in_threadpool(sessions.get, principal.id, run, _meta(request))
+        meta = {**_meta(request), "principal.key_id": principal.key_sha256[:12]}  # which issued key
+        session = await run_in_threadpool(sessions.get, principal.id, run, meta)
         call: ModelCall | None = None
         handed_off = False  # a stream settles the session itself when it closes
         refused = False  # policy answered the request; no model ever saw it
