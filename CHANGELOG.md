@@ -11,6 +11,9 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 - `seatbelt.gateway.serve.serve` takes the config's path as well as the loaded config.
 - The deployment docs mount the config's directory, not the file: `keygen` replaces the file, which a single-file bind mount does not follow.
 
+### Fixed
+- `seatbelt gateway serve` stopped by SIGTERM outside a container (systemd, `kill`, `docker run --init`) exited before closing and signing its open sessions, which the next start then recorded as `gateway restarted`: uvicorn raises the signal again after its own graceful stop, and the default handler ended the process. As PID 1 in a container the re-raised SIGTERM was ignored, so the image was not affected.
+
 ## [0.2.0] - 2026-09-28
 
 ### Added

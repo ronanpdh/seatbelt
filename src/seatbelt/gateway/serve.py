@@ -8,7 +8,8 @@ import logging
 import os
 import signal
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Generator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 from types import FrameType
 
@@ -101,6 +102,24 @@ def _on_sighup(action: Callable[[], None]) -> tuple[bool, _Handler]:
     return True, signal.SIG_DFL if previous is None else previous  # None: set outside Python
 
 
+@contextmanager
+def _graceful_stop() -> Generator[None]:
+    """uvicorn stops on SIGINT or SIGTERM, puts back the handlers it found, and raises the
+    signal again. Under the default SIGTERM handler that kills the process before its sessions
+    are closed and signed, so uvicorn finds handlers that do nothing. The defaults return when
+    uvicorn does, so a second signal during the close stops the process at once."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    stops = (signal.SIGINT, signal.SIGTERM)
+    previous = {sig: signal.signal(sig, lambda _signum, _frame: None) for sig in stops}
+    try:
+        yield
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, signal.SIG_DFL if handler is None else handler)
+
+
 def serve(cfg: GatewayConfig, path: Path) -> None:
     """`cfg` is `path` loaded; the file is watched and reloaded when it changes."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(name)s: %(message)s")
@@ -137,13 +156,14 @@ def serve(cfg: GatewayConfig, path: Path) -> None:
     threading.Thread(target=watcher, name="seatbelt-reload", daemon=True).start()
     installed, previous = _on_sighup(hup.set)
     try:
-        uvicorn.run(
-            app,
-            host=host,
-            port=port,
-            log_level="info",
-            timeout_graceful_shutdown=DRAIN,
-        )
+        with _graceful_stop():
+            uvicorn.run(
+                app,
+                host=host,
+                port=port,
+                log_level="info",
+                timeout_graceful_shutdown=DRAIN,
+            )
     finally:
         if installed:  # before hup.set below, so the handler cannot run inside it
             signal.signal(signal.SIGHUP, previous)

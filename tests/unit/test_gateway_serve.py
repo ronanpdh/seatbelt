@@ -86,3 +86,48 @@ def test_a_bad_env_key_is_described_without_revealing_it(tmp_path: Path) -> None
     assert good[20:40] not in message  # no key material
     with pytest.raises(AttestError, match="cut short"):
         load_signer(cfg, {KEY_ENV: good[:-2]})
+
+
+class _Killed(Exception):
+    pass
+
+
+def test_sessions_are_signed_when_uvicorn_re_raises_sigterm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """uvicorn raises the stop signal again once it has stopped. Under the default SIGTERM
+    handler that would kill the process before the open sessions are closed and signed."""
+    import signal
+
+    import httpx2
+    from starlette.applications import Starlette
+    from starlette.testclient import TestClient
+
+    from seatbelt.attest.manifest import sidecar
+    from seatbelt.gateway import serve as serve_mod
+    from seatbelt.gateway.config import add_principal
+    from seatbelt.verify.chain import verify_file
+
+    keygen(tmp_path / "keys")
+    path = _config(tmp_path, "keys/seatbelt.key")
+    key = add_principal(path, "alice@corp")
+    cfg = load_config(path)
+
+    def fake_run(app: Starlette, **_: object) -> None:
+        app.state.transport = httpx2.MockTransport(lambda _: httpx2.Response(200, json={}))
+        with TestClient(app) as client:
+            client.post("/v1/messages", json={"model": "m"}, headers={"x-api-key": key})
+        signal.raise_signal(signal.SIGTERM)  # what uvicorn does after a SIGTERM stop
+
+    def killed(_signum: int, _frame: object) -> None:
+        raise _Killed  # stands in for the default handler, which would end the test run
+
+    monkeypatch.setattr(serve_mod.uvicorn, "run", fake_run)
+    previous = signal.signal(signal.SIGTERM, killed)
+    try:
+        serve_mod.serve(cfg, path)
+        assert signal.getsignal(signal.SIGTERM) is killed  # put back after the close
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+    (ledger,) = cfg.ledgers.glob("*.jsonl")
+    assert verify_file(ledger).complete and sidecar(ledger).exists()
