@@ -8,6 +8,7 @@ import typer
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Column, Table
+from rich.text import Text
 
 from seatbelt import __version__
 from seatbelt.attest.manifest import AttestError, sidecar
@@ -19,6 +20,7 @@ from seatbelt.gateway.launcher import DEFAULT_CONFIG as DEFAULT_CLIENT_CONFIG
 from seatbelt.gateway.launcher import run_cli
 from seatbelt.ledger.store import LedgerError
 from seatbelt.record.recorder import Recorder
+from seatbelt.report.fleet import fleet as build_fleet
 from seatbelt.report.pack import PackError, PackStatus
 from seatbelt.report.pack import build as build_pack
 from seatbelt.report.pack import verify_pack as check_pack
@@ -329,3 +331,48 @@ def run(
         console.print(f"[red]{escape(str(exc))}[/]")
         raise typer.Exit(code=127) from exc
     raise typer.Exit(code=code)
+
+
+@app.command()
+def report(
+    runs: Path,
+    pubkey: PubKey = None,
+    json_out: Annotated[bool, typer.Option("--json", help="print the report as JSON")] = False,
+) -> None:
+    """Usage across a runs directory by person, model and tool, with refused, failed, open and
+    unsigned runs. Exit 1 if any ledger is broken or, with --pubkey, forged."""
+    try:
+        fleet = build_fleet(runs, pubkey)
+    except AttestError as exc:
+        console.print(f"[red]{escape(str(exc))}[/]")
+        raise typer.Exit(code=1) from exc
+    if json_out:
+        print(fleet.model_dump_json(indent=2))
+    else:
+        people = Table(Column("principal", no_wrap=True), "runs", "calls", "in", "out", "denied")
+        for name, u in fleet.by_principal.items():
+            people.add_row(
+                Text(name), *map(str, (u.runs, u.calls, u.input_tokens, u.output_tokens, u.denials))
+            )
+        models = Table(Column("model", no_wrap=True), "runs", "calls", "in", "out", "denied")
+        for name, u in fleet.by_model.items():
+            models.add_row(
+                Text(name), *map(str, (u.runs, u.calls, u.input_tokens, u.output_tokens, u.denials))
+            )
+        tools = Table(Column("tool", no_wrap=True), "calls")
+        for name, n in fleet.by_tool.items():
+            tools.add_row(Text(name), str(n))
+        for table in (people, models, tools):
+            console.print(table)
+        console.print(f"{fleet.runs} runs")
+        for label, ids in (
+            ("failed", fleet.failed),
+            ("incomplete", fleet.incomplete),
+            ("unattested", fleet.unattested),
+            ("forged", fleet.forged),
+            ("broken", fleet.broken),
+        ):
+            if ids:
+                console.print(Text(f"{label}: {len(ids)} ({', '.join(ids)})"))
+    if fleet.broken or fleet.forged:
+        raise typer.Exit(code=1)
