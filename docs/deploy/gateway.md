@@ -2,7 +2,7 @@
 
 The gateway is an HTTP service your organisation runs. Employees' clients send model traffic to it instead of to the provider. It checks the employee's issued key, swaps in the real provider key, forwards the request, relays the response, and records the exchange into one signed ledger per employee session. The ledgers, their attestations and the signing key stay on the gateway host.
 
-It serves the Anthropic Messages API (`POST /v1/messages`, streamed or not) and OpenAI Chat Completions (`POST /v1/chat/completions`). It also answers the probes Claude Code and Claude Desktop make: `HEAD /api/hello` locally, and `POST /v1/messages/count_tokens` and `GET /v1/models` by forwarding them without recording (to Anthropic when the request is an Anthropic client's: it sends `anthropic-version` or `x-api-key`; otherwise to OpenAI). Design: [ADR 0006](../adr/0006-recording-gateway.md).
+It serves the Anthropic Messages API (`POST /v1/messages`, streamed or not), OpenAI Chat Completions (`POST /v1/chat/completions`) and the OpenAI Responses API (`POST /v1/responses`). It also answers the probes Claude Code and Claude Desktop make: `HEAD /api/hello` locally, and `POST /v1/messages/count_tokens` and `GET /v1/models` by forwarding them without recording (to Anthropic when the request is an Anthropic client's: it sends `anthropic-version` or `x-api-key`; otherwise to OpenAI). Design: [ADR 0006](../adr/0006-recording-gateway.md).
 
 ## Stand one up
 
@@ -59,7 +59,9 @@ The container image runs as uid 1000 and writes ledgers under `/var/lib/seatbelt
    key = "sbk_..."
    ```
 
-   and runs `seatbelt run claude`. Any Anthropic SDK client works with `ANTHROPIC_BASE_URL=https://gw.corp.example` and the key as its API key; an OpenAI Chat Completions client with `OPENAI_BASE_URL=https://gw.corp.example/v1`. Claude Desktop and Cowork: [claude-desktop-gateway.md](claude-desktop-gateway.md).
+   and runs `seatbelt run claude`, or `seatbelt run codex` for Codex. Any Anthropic SDK client works with `ANTHROPIC_BASE_URL=https://gw.corp.example` and the key as its API key; an OpenAI SDK client (Chat Completions or Responses, the OpenAI Agents SDK included) with `OPENAI_BASE_URL=https://gw.corp.example/v1` and the key as `OPENAI_API_KEY`. Claude Desktop and Cowork: [claude-desktop-gateway.md](claude-desktop-gateway.md).
+
+   `seatbelt run codex` gives Codex its own model provider on the command line (`-c model_provider="seatbelt"` and a `model_providers.seatbelt` table): the gateway URL plus `/v1`, the Responses API over HTTP, the key from the environment, and the run name as a header. Pointing Codex's built-in provider at the gateway with `openai_base_url` instead would have it try a WebSocket first, which the gateway does not serve. The OpenAI Agents SDK sends its traces straight to `api.openai.com`, not through `OPENAI_BASE_URL`; set `OPENAI_AGENTS_DISABLE_TRACING=1` where prompts must not leave by that route. Its Conversations API, `/responses/compact` and WebSocket transport are opt-in and not served.
 
 6. Report on what was recorded (with `gateway/keys/seatbelt.pub` readable by uid 1000, see step 4):
 

@@ -19,9 +19,10 @@ from starlette.types import Receive, Scope, Send
 
 from seatbelt import __version__
 from seatbelt.gateway.config import GatewayConfig, Principal
-from seatbelt.gateway.formats import Format, anthropic, openai_chat
+from seatbelt.gateway.formats import Format, anthropic, openai_chat, openai_responses
 from seatbelt.gateway.formats.anthropic import AnthropicFormat
 from seatbelt.gateway.formats.openai_chat import OpenAIChatFormat
+from seatbelt.gateway.formats.openai_responses import OpenAIResponsesFormat
 from seatbelt.gateway.sessions import Session, Sessions
 from seatbelt.ledger.events import Event
 from seatbelt.policy.engine import Policy, denylist, max_output_tokens, models
@@ -51,13 +52,22 @@ _STRIP_REQUEST = _HOP | {
 }
 # the body is relayed decoded, so the upstream's encoding and length no longer describe it
 _STRIP_RESPONSE = _HOP | {"content-encoding", "content-length"}
-_FORMATS: dict[str, tuple[str, str, type[Format]]] = {  # path -> (upstream, auth header, format)
-    "/v1/messages": ("anthropic", "x-api-key", AnthropicFormat),
-    "/v1/chat/completions": ("openai", "authorization", OpenAIChatFormat),
-}
-_ASSEMBLE: dict[str, Callable[[list[dict[str, Any]]], dict[str, Any]]] = {
-    "anthropic": anthropic.assemble_sse,
-    "openai": openai_chat.assemble_sse,
+type Assemble = Callable[[list[dict[str, Any]]], dict[str, Any]]
+# path -> (upstream, auth header, format, stream assembler)
+_FORMATS: dict[str, tuple[str, str, type[Format], Assemble]] = {
+    "/v1/messages": ("anthropic", "x-api-key", AnthropicFormat, anthropic.assemble_sse),
+    "/v1/chat/completions": (
+        "openai",
+        "authorization",
+        OpenAIChatFormat,
+        openai_chat.assemble_sse,
+    ),
+    "/v1/responses": (
+        "openai",
+        "authorization",
+        OpenAIResponsesFormat,
+        openai_responses.assemble_sse,
+    ),
 }
 
 type Finish = Callable[[ModelCall, dict[str, Any] | None, str | None], None]
@@ -153,10 +163,12 @@ def _locked[T](session: Session, fn: Callable[[], T]) -> T:
         return fn()
 
 
-def _format(session: Session, name: str, cls: type[Format]) -> Format:
-    fmt = session.formats.get(name)
+def _format(session: Session, cls: type[Format]) -> Format:
+    """One per format and session: Chat Completions and Responses share an upstream but not
+    their open tool calls."""
+    fmt = session.formats.get(cls.__name__)
     if fmt is None:
-        fmt = session.formats[name] = cls(session.rec)
+        fmt = session.formats[cls.__name__] = cls(session.rec)
     return fmt
 
 
@@ -248,7 +260,7 @@ def _stream(
     resp: httpx2.Response,
     client: httpx2.AsyncClient,
     call: ModelCall,
-    provider: str,
+    assemble: Assemble,
     finish: Finish,
     settle: Callable[[], Awaitable[None]],
 ) -> Response:
@@ -273,7 +285,7 @@ def _stream(
             await resp.aclose()
             await client.aclose()
         finally:
-            assembled = _ASSEMBLE[provider](sse_events(bytes(received)))
+            assembled = assemble(sse_events(bytes(received)))
             await run_in_threadpool(finish, call, assembled, outcome[0])
             await settle()
 
@@ -289,7 +301,7 @@ def create_app(
         principal = _principal(cfg, request)
         if principal is None:
             return _unauthorized()
-        upstream_name, auth_header, format_cls = _FORMATS[request.url.path]
+        upstream_name, auth_header, format_cls, assemble = _FORMATS[request.url.path]
         upstream = cfg.upstreams.get(upstream_name)
         if upstream is None:
             return _error(404, "not_found_error", f"no {upstream_name} upstream")
@@ -308,7 +320,7 @@ def create_app(
         refused = False  # policy answered the request; no model ever saw it
 
         def fmt() -> Format:  # under the session lock, so parallel requests share one
-            return _format(session, upstream_name, format_cls)
+            return _format(session, format_cls)
 
         def finish(call: ModelCall, payload: dict[str, Any] | None, error: str | None) -> None:
             def run() -> None:
@@ -363,7 +375,7 @@ def create_app(
                 return _error(502, "api_error", error)
             if streaming:
                 handed_off = True
-                return _stream(resp, client, call, upstream_name, finish, settle)
+                return _stream(resp, client, call, assemble, finish, settle)
             await client.aclose()
             payload = _json_object(resp.content)
             if resp.status_code >= 400:
@@ -436,6 +448,7 @@ def create_app(
         routes=[
             Route("/v1/messages", relay, methods=["POST"]),
             Route("/v1/chat/completions", relay, methods=["POST"]),
+            Route("/v1/responses", relay, methods=["POST"]),
             Route("/v1/messages/count_tokens", forward, methods=["POST"]),
             Route("/v1/models", forward, methods=["GET"]),
             Route("/v1/models/{id:path}", forward, methods=["GET"]),

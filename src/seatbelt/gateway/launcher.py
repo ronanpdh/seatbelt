@@ -4,6 +4,7 @@ Stdlib only: this runs on employee machines, which need no server dependencies."
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import signal
@@ -18,18 +19,23 @@ from pathlib import Path
 
 DEFAULT_CONFIG = Path.home() / ".config" / "seatbelt" / "gateway.toml"
 
+CODEX_KEY_ENV = "SEATBELT_GATEWAY_KEY"  # the env var the codex preset's provider reads
 PRESETS: dict[str, dict[str, str]] = {  # cli -> env template
     "claude": {
         "ANTHROPIC_BASE_URL": "{url}",
         "ANTHROPIC_AUTH_TOKEN": "{key}",  # sent as Authorization: Bearer
         "ANTHROPIC_CUSTOM_HEADERS": "X-Seatbelt-Run: {run}",
     },
+    "codex": {CODEX_KEY_ENV: "{key}"},  # the rest is on the command line, see `arguments`
 }
-NOT_YET = {  # clients a preset would launch but the gateway cannot record yet
-    "codex": "Codex speaks only the OpenAI Responses API, which the gateway serves from 0.3.0",
-}
+NOT_YET: dict[str, str] = {}  # clients a preset would launch but the gateway cannot record yet
 # real provider credentials never reach the child, so it cannot bypass the gateway by accident
-_PROVIDER_KEYS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY")
+_PROVIDER_KEYS = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "OPENAI_API_KEY",
+    "CODEX_API_KEY",
+)
 
 EndRun = Callable[[str, str, str], None]  # (gateway url, key, run name)
 
@@ -60,6 +66,32 @@ def environment(cli: str, url: str, key: str, run: str, base: Mapping[str, str])
     return env
 
 
+def _toml(value: str) -> str:
+    """A TOML basic string: JSON's string escapes are TOML's too."""
+    return json.dumps(value, ensure_ascii=False)
+
+
+def arguments(cli: str, url: str, run: str) -> list[str]:
+    """Arguments a preset puts before the user's own. Codex takes its provider from `-c`
+    overrides (TOML values; global, so they also apply before a subcommand): the built-in
+    `openai` provider cannot carry the run header, and `model_providers.openai` is reserved.
+    The custom provider speaks Responses over HTTP (no WebSocket), so the gateway sees every
+    turn, and reads the gateway key from the environment. See
+    docs/plans/2026-09-28-responses-format.md for the sources."""
+    if cli != "codex":
+        return []
+    provider = (
+        '{name="seatbelt",'
+        f"base_url={_toml(url + '/v1')},"
+        f"env_key={_toml(CODEX_KEY_ENV)},"
+        'wire_api="responses",'
+        "requires_openai_auth=false,"
+        "supports_websockets=false,"
+        f'http_headers={{"X-Seatbelt-Run"={_toml(run)}}}}}'
+    )
+    return ["-c", 'model_provider="seatbelt"', "-c", f"model_providers.seatbelt={provider}"]
+
+
 def end_run(url: str, key: str, run: str) -> None:
     request = urllib.request.Request(  # noqa: S310 - the org's configured gateway URL
         f"{url}/seatbelt/runs/{run}/end",
@@ -86,7 +118,8 @@ def run_cli(
     run = f"{cli}-{secrets.token_hex(4)}"
     env = environment(cli, url, key, run, os.environ)
     try:
-        child = subprocess.Popen([exe or cli, *args], env=env)  # noqa: S603 - the user's CLI
+        command = [exe or cli, *arguments(cli, url, run), *args]
+        child = subprocess.Popen(command, env=env)  # noqa: S603 - the user's CLI
         # Ctrl-C belongs to the child (Claude Code cancels a response with it); the terminal
         # sends it to both. Ignore it only after the spawn: an ignored signal is inherited.
         previous = signal.signal(signal.SIGINT, signal.SIG_IGN)

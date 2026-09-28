@@ -38,7 +38,7 @@ Signed Ed25519 attestation of each run (`seatbelt.attest`, `keygen`, `attest`, `
 
 ## 0.3.0
 
-- OpenAI Responses format (current Codex, the OpenAI Agents SDK) and a `codex` launcher preset
+- Done: OpenAI Responses format (current Codex, the OpenAI Agents SDK) and a `codex` launcher preset
 - Gemini `generateContent` format (Gemini CLI)
 - Done: config reload when the file changes or on SIGHUP, so a new or revoked key takes effect without a restart
 - Central sink: ship each signed ledger to object storage at run end
