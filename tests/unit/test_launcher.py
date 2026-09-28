@@ -29,7 +29,8 @@ def test_claude_preset_sets_base_url_token_and_run_header() -> None:
     base = {"PATH": "/bin", "ANTHROPIC_API_KEY": "sk-ant-real", "OPENAI_API_KEY": "sk-real"}
     env = environment("claude", "https://gw.corp", "sbk_abc", "run-1", base=base)
     assert env["ANTHROPIC_BASE_URL"] == "https://gw.corp"
-    assert env["ANTHROPIC_AUTH_TOKEN"] == "sbk_abc" and "ANTHROPIC_API_KEY" not in env
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "sbk_abc"  # noqa: S105 - a fake test key
+    assert "ANTHROPIC_API_KEY" not in env
     assert "OPENAI_API_KEY" not in env
     assert env["ANTHROPIC_CUSTOM_HEADERS"] == "X-Seatbelt-Run: run-1"
     assert env["PATH"] == "/bin"
@@ -116,7 +117,7 @@ def test_end_run_posts_to_the_gateway_and_tolerates_it_being_down() -> None:
             self.send_response(404)  # e.g. the run never sent a request
             self.end_headers()
 
-        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+        def log_message(self, format: str, *args: object) -> None:
             pass
 
     server = HTTPServer(("127.0.0.1", 0), Handler)
