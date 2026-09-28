@@ -5,14 +5,17 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 ## [Unreleased]
 
 ### Added
-- The gateway reloads its config without a restart: when the file's content changes (checked every 30 s) or on `SIGHUP`. `principals`, `policy`, `upstreams` and `session_idle` apply from the next request; `listen`, `ledgers` and `signing_key` still need a restart, and a reload that changes them says so and keeps the running values. A file that fails to load is logged once and the running config stays. A deleted or reissued key is refused from the reload on and its open sessions are ended and signed, so a reissued key starts a new ledger. `Sessions.end_principal`; `Sessions.idle` is settable.
+- The gateway reloads its config without a restart: when the file's content changes (checked every 30 s, including a change made while it starts) or on `SIGHUP`. `principals`, `policy` and `upstreams` apply from the next request, `session_idle` from the next idle sweep; `listen`, `ledgers` and `signing_key` still need a restart, and a reload that changes them says so and keeps the running values. A file that fails to load is logged once and the running config stays. A deleted or reissued key is refused from the reload on and its open sessions are ended and signed. `Sessions.end_principal`; `Sessions.idle` is settable. `seatbelt.gateway.config.read_config` returns the config with the bytes it came from.
 
 ### Changed
-- `seatbelt.gateway.serve.serve` takes the config's path as well as the loaded config.
-- The deployment docs mount the config's directory, not the file: `keygen` replaces the file, which a single-file bind mount does not follow.
+- `seatbelt.gateway.serve.serve` takes the config's path and loads it itself, so the reload watcher compares the file with the exact bytes the gateway started on.
+- Gateway sessions are per issued key as well as per principal (`Sessions.get` and `Sessions.end` take the key's hash): a request made with a key just before it was reissued cannot open a ledger that the new key then writes into.
+- A tool result the gateway refused because its call was denied is refused only while `tools_denied` still names that tool, so relaxing the policy by reload takes effect in open sessions too.
+- A config with `principals:` or `tools_denied:` left empty (what deleting the last entry leaves) loads as an empty list.
+- The `docker run` steps in the deployment docs mount the config's directory, not the file: `keygen` replaces the file, which a single-file bind mount does not follow.
 
 ### Fixed
-- `seatbelt gateway serve` stopped by SIGTERM outside a container (systemd, `kill`, `docker run --init`) exited before closing and signing its open sessions, which the next start then recorded as `gateway restarted`: uvicorn raises the signal again after its own graceful stop, and the default handler ended the process. As PID 1 in a container the re-raised SIGTERM was ignored, so the image was not affected.
+- `seatbelt gateway serve` stopped by SIGTERM outside a container (systemd, `kill`, `docker run --init`), or by Ctrl-Break on Windows, exited before closing and signing its open sessions, which the next start then recorded as `gateway restarted`: uvicorn raises the signal again after its own graceful stop, and the default handler ended the process. As PID 1 in a container the re-raised SIGTERM was ignored, so the image was not affected. Shutdown also waits for a sweep in progress, and a start signs any ledger the gateway had closed but was stopped before signing.
 
 ## [0.2.0] - 2026-09-28
 

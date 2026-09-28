@@ -1,8 +1,9 @@
 """Apply a changed config file to a running gateway, without a restart.
 
-Keys, policy, upstreams and `session_idle` take effect for the next request. `listen`,
-`ledgers` and `signing_key` are bound at start: a change to them is logged and waits for a
-restart. A file that fails to load is logged and the running config stays."""
+Keys, policy and upstreams take effect for the next request, and `session_idle` for every
+open session at the next sweep. `listen`, `ledgers` and `signing_key` are bound at start: a
+change to them is logged and waits for a restart. A file that fails to load is logged and the
+running config stays."""
 
 from __future__ import annotations
 
@@ -24,17 +25,13 @@ _log = logging.getLogger(__name__)
 class Reloader:
     """Not thread-safe: one thread calls `check`."""
 
-    def __init__(self, path: Path, app: Starlette, sessions: Sessions) -> None:
+    def __init__(self, path: Path, app: Starlette, sessions: Sessions, loaded: bytes) -> None:
+        """`loaded` is the content the running config came from: an edit made while the
+        gateway started differs from it, and so is applied at the first check."""
         self._path = path
         self._app = app
         self._sessions = sessions
-        self._seen = self._digest()  # the file the gateway started with
-
-    def _digest(self) -> str | None:
-        try:
-            return hashlib.sha256(self._path.read_bytes()).hexdigest()
-        except OSError:
-            return None
+        self._seen: str | None = hashlib.sha256(loaded).hexdigest()
 
     def check(self, force: bool = False) -> bool:
         """Reload if the file's content changed since it was last seen, or when `force`d (a
@@ -65,8 +62,8 @@ class Reloader:
             _log.warning("config: %s changed; restart the gateway to apply", ", ".join(fixed))
         kept = new.model_copy(update={name: getattr(old, name) for name in RESTART_ONLY})
         # swap first, so a withdrawn key is refused before its sessions are ended. A request
-        # it authenticated just before the swap still finishes, and any session that request
-        # opens closes on idle
+        # it authenticated just before the swap still finishes; a session that request opens
+        # belongs to the withdrawn key alone (sessions are per key), so it closes on idle
         self._app.state.live = Live.of(kept)
         self._sessions.idle = new.session_idle
         before = {(p.id, p.key_sha256) for p in old.principals}

@@ -2,7 +2,8 @@
 # builds from git, such as Coolify, can use it directly. See docs/deploy/gateway.md.
 # Build:  docker build -f docker/Dockerfile.gateway -t seatbelt-gateway .
 # Run:    mount the config's directory at /etc/seatbelt (the directory, so a replaced
-#         gateway.yaml is seen and reloaded), give /var/lib/seatbelt a volume, and
+#         gateway.yaml is seen and reloaded; on a PaaS without directory mounts, the file),
+#         give /var/lib/seatbelt a volume, and
 #         pass the provider keys as env. The signing key is a file the config names (readable
 #         by uid 1000) or SEATBELT_SIGNING_KEY in the env. The config must set
 #         `listen: 0.0.0.0:8080` to be reachable from outside the container.

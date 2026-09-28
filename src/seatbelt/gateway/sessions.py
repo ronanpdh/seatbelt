@@ -24,6 +24,7 @@ from seatbelt.record.recorder import Recorder
 from seatbelt.verify.chain import verify_events
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9_-]+")
+_GATEWAY = "gateway"  # the agent id on every ledger the gateway writes
 _log = logging.getLogger(__name__)
 
 
@@ -43,9 +44,16 @@ class Session:
     closing: bool = False
 
 
+type _Key = tuple[str, str, str | None]  # (principal, issued key's hash, run name)
+
+
 class Sessions:
     """Every `get` must be paired with one `release` once the response is recorded. A session
-    is never closed while a request holds it, so no event can land after its `run.end`."""
+    is never closed while a request holds it, so no event can land after its `run.end`.
+
+    A session belongs to one issued key as well as one principal: a reissued key never writes
+    into a ledger the old key opened, so each ledger's `principal.key_id` is the key that
+    wrote all of it."""
 
     def __init__(
         self,
@@ -58,7 +66,7 @@ class Sessions:
         self._signer = signer
         self._idle = idle
         self._clock = clock
-        self._open: dict[tuple[str, str | None], Session] = {}
+        self._open: dict[_Key, Session] = {}
         self._draining: list[Session] = []  # ended while busy; the last release closes them
         self._lock = threading.Lock()
         self._changed = threading.Condition(self._lock)
@@ -72,12 +80,12 @@ class Sessions:
     def idle(self, seconds: float) -> None:  # a config reload; the next sweep uses it
         self._idle = seconds
 
-    def get(self, principal: str, run: str | None, meta: dict[str, Any]) -> Session:
+    def get(self, principal: str, run: str | None, meta: dict[str, Any], key: str = "") -> Session:
         with self._lock:
-            session = self._open.get((principal, run))
+            session = self._open.get((principal, key, run))
             if session is None:
                 session = self._start(principal, run, meta)
-                self._open[(principal, run)] = session
+                self._open[(principal, key, run)] = session
             session.busy += 1
             session.last = self._clock()
             return session
@@ -97,7 +105,7 @@ class Sessions:
         rec = stack.enter_context(
             Recorder.start(
                 self._root,
-                agent_id="gateway",
+                agent_id=_GATEWAY,
                 agent_version=__version__,
                 run_id=run_id,
                 # identity last: client-derived metadata must not overwrite who this is
@@ -107,11 +115,11 @@ class Sessions:
         )
         return Session(rec=rec, stack=stack, last=self._clock())
 
-    def end(self, principal: str, run: str | None) -> bool:
+    def end(self, principal: str, run: str | None, key: str = "") -> bool:
         """Close now, or at the last release if a request is in flight. The next `get` for the
-        same key starts a new ledger either way."""
+        same session starts a new ledger either way."""
         with self._lock:
-            session = self._open.pop((principal, run), None)
+            session = self._open.pop((principal, key, run), None)
             ready = session is not None and self._retire(session)
         if session is None:
             return False
@@ -120,9 +128,8 @@ class Sessions:
         return True
 
     def end_principal(self, principal: str) -> int:
-        """End every session of `principal`, each now or at its last release: its key was
-        revoked or reissued, so its open ledgers must not take requests made with another key.
-        Returns how many were ended."""
+        """End every session of `principal`, under any key, each now or at its last release:
+        its key was revoked or reissued. Returns how many were ended."""
         with self._lock:
             sessions = [self._open.pop(k) for k in [k for k in self._open if k[0] == principal]]
             ready = [s for s in sessions if self._retire(s)]
@@ -174,10 +181,10 @@ class Sessions:
 
 
 def close_open_chains(root: Path, signer: Signer | None) -> list[Path]:
-    """After a crash: append a failed run.end to every open chain and sign it. A ledger that
-    cannot be read or whose chain is broken is left untouched and logged: closing it would
-    put a signature over evidence of tampering, and refusing to start would let one bad file
-    stop all recording."""
+    """After a crash: append a failed run.end to every open chain and sign it, and sign any
+    ledger the gateway closed but was stopped before signing. A ledger that cannot be read or
+    whose chain is broken is left untouched and logged: closing it would put a signature over
+    evidence of tampering, and refusing to start would let one bad file stop all recording."""
     closed: list[Path] = []
     for path in sorted(root.glob("*.jsonl")):
         try:
@@ -185,7 +192,16 @@ def close_open_chains(root: Path, signer: Signer | None) -> list[Path]:
         except (OSError, UnicodeDecodeError, LedgerError) as exc:
             _log.warning("skipping unreadable ledger %s: %s", path, exc)
             continue
-        if not events or events[-1].kind is Kind.RUN_END:
+        if not events:
+            continue
+        ended = events[-1].kind is Kind.RUN_END
+        unsigned = (  # the gateway was stopped between run.end and its signature
+            ended
+            and signer is not None
+            and events[-1].actor.id == _GATEWAY
+            and not sidecar(path).exists()
+        )
+        if ended and not unsigned:
             continue
         verdict = verify_events(events)
         if not verdict.ok:
@@ -196,12 +212,14 @@ def close_open_chains(root: Path, signer: Signer | None) -> list[Path]:
                 verdict.reason,
             )
             continue
-        ledger = Ledger(path, events[0].run_id)
-        ledger.append(
-            Kind.RUN_END,
-            Actor(type=ActorType.AGENT, id="gateway", version=__version__),
-            {"run.ok": False, "run.error": "gateway restarted", "run.events": len(events) + 1},
-        )
+        if not ended:
+            Ledger(path, events[0].run_id).append(
+                Kind.RUN_END,
+                Actor(type=ActorType.AGENT, id=_GATEWAY, version=__version__),
+                {"run.ok": False, "run.error": "gateway restarted", "run.events": len(events) + 1},
+            )
+        else:
+            _log.warning("signing %s: it was closed but not signed", path)
         if signer is not None and not sidecar(path).exists():
             attest(path, signer)
         closed.append(path)

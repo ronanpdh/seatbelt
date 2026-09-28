@@ -185,13 +185,11 @@ def _refusal(
     session after the idle window still carries the old conversation)."""
     if tool_policy is not None:
         for call_id, name in fmt.tool_result_calls(body):
-            denied = session.denied_calls.get(call_id)
-            if (
-                denied is None
-                and name is not None
-                and any(r for _, r in tool_policy.evaluate(name, {}))
-            ):
-                denied = name
+            # a call denied earlier stays denied only while the policy still denies its tool,
+            # which a config reload can change
+            denied = session.denied_calls.get(call_id) or name
+            if denied is not None and not any(r for _, r in tool_policy.evaluate(denied, {})):
+                denied = None
             if denied is not None:
                 reason = f"tool result for denied call {call_id} ({denied})"
                 session.rec.policy_check("denylist", request_id, False, reason)
@@ -302,7 +300,9 @@ def create_app(
         run = request.headers.get(RUN_HEADER) or None
         run_end = request.headers.get(RUN_END_HEADER, "").lower() == "true"
         meta = {**_meta(request), "principal.key_id": principal.key_sha256[:12]}  # which issued key
-        session = await run_in_threadpool(sessions.get, principal.id, run, meta)
+        session = await run_in_threadpool(
+            sessions.get, principal.id, run, meta, principal.key_sha256
+        )
         call: ModelCall | None = None
         handed_off = False  # a stream settles the session itself when it closes
         refused = False  # policy answered the request; no model ever saw it
@@ -330,7 +330,7 @@ def create_app(
             if call is not None and call.response is None and not refused:
                 await run_in_threadpool(finish, call, None, "request did not complete")
             if run_end:
-                await run_in_threadpool(sessions.end, principal.id, run)
+                await run_in_threadpool(sessions.end, principal.id, run, principal.key_sha256)
             await run_in_threadpool(sessions.release, session)
 
         try:
@@ -429,7 +429,7 @@ def create_app(
         if principal is None:
             return _unauthorized()
         name = request.path_params["name"]
-        found = await run_in_threadpool(sessions.end, principal.id, name)
+        found = await run_in_threadpool(sessions.end, principal.id, name, principal.key_sha256)
         return Response(status_code=204 if found else 404)
 
     app = Starlette(

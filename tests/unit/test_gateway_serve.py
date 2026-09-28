@@ -125,7 +125,7 @@ def test_sessions_are_signed_when_uvicorn_re_raises_sigterm(
     monkeypatch.setattr(serve_mod.uvicorn, "run", fake_run)
     previous = signal.signal(signal.SIGTERM, killed)
     try:
-        serve_mod.serve(cfg, path)
+        serve_mod.serve(path)
         assert signal.getsignal(signal.SIGTERM) is killed  # put back after the close
     finally:
         signal.signal(signal.SIGTERM, previous)

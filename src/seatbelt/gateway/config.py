@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 KEY_PREFIX = "sbk_"
 
@@ -24,10 +24,16 @@ class Upstream(_Strict):
     key_env: str  # name of the env var holding the real provider key; never the key itself
 
 
+def _none_is_empty(value: object) -> object:
+    return [] if value is None else value  # `key:` with its entries deleted is null in YAML
+
+
 class PolicyConfig(_Strict):
     models: list[str] | None = None
     tools_denied: list[str] = Field(default_factory=list[str])
     max_output_tokens: int | None = Field(default=None, gt=0)
+
+    _tools_denied = field_validator("tools_denied", mode="before")(_none_is_empty)
 
 
 class Principal(_Strict):
@@ -44,6 +50,8 @@ class GatewayConfig(_Strict):
     upstreams: dict[str, Upstream]
     policy: PolicyConfig = Field(default_factory=PolicyConfig)
     principals: list[Principal] = Field(default_factory=list[Principal])
+
+    _principals = field_validator("principals", mode="before")(_none_is_empty)
 
     def lookup(self, key: str) -> Principal | None:
         if not key:
@@ -82,6 +90,16 @@ def load_config(path: Path, text: str | None = None) -> GatewayConfig:
     return cfg
 
 
+def read_config(path: Path) -> tuple[GatewayConfig, bytes]:
+    """The config and the exact bytes it came from, for a watcher to compare the file with."""
+    try:
+        data = path.read_bytes()
+        text = data.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ValueError(f"{path}: {exc}") from exc
+    return load_config(path, text), data
+
+
 def add_principal(path: Path, principal_id: str) -> str:
     """Append a principal and return its one-time key. Rewrites the file; comments are lost."""
     path = path.resolve()  # rewrite the real file, not a symlink to it
@@ -94,7 +112,9 @@ def add_principal(path: Path, principal_id: str) -> str:
         raise ValueError(f"{path}: {principal_id} already has a key; delete its line to reissue")
     key = KEY_PREFIX + secrets.token_urlsafe(32)
     entry = {"id": principal_id, "key_sha256": key_hash(key), "issued": date.today()}
-    raw.setdefault("principals", []).append(entry)
+    # absent, or `principals:` with every entry deleted (null in YAML)
+    principals: list[Any] = raw.get("principals") or []
+    raw["principals"] = [*principals, entry]
     tmp = path.with_name(path.name + ".tmp")  # concurrent keygen runs unsupported: last writer wins
     try:
         tmp.write_text(yaml.safe_dump(raw, sort_keys=False, allow_unicode=True), encoding="utf-8")

@@ -86,6 +86,38 @@ def test_close_open_chains_on_startup(tmp_path: Path) -> None:
     assert close_open_chains(tmp_path, signer) == []
 
 
+def test_close_open_chains_signs_a_ledger_closed_but_not_signed(tmp_path: Path) -> None:
+    """A gateway stopped between run.end and its signature (a second signal during
+    shutdown) leaves a closed, unsigned ledger; the next start signs it, and only its own."""
+    from seatbelt.record.recorder import Recorder
+
+    sessions = Sessions(tmp_path, None, idle=60)  # no signer: closes without signing
+    s = sessions.get("alice@corp", None, {})
+    sessions.release(s)
+    sessions.close_all()
+    ours = s.rec.ledger.path
+    with Recorder.start(tmp_path, agent_id="someone-else", run_id="foreign"):
+        pass  # closed, unsigned, and not the gateway's
+    signer = Signer.generate()
+    assert close_open_chains(tmp_path, signer) == [ours]
+    assert sidecar(ours).exists() and verify_file(ours).complete
+    assert not sidecar(tmp_path / "foreign.jsonl").exists()
+    assert close_open_chains(tmp_path, signer) == []
+
+
+def test_sessions_are_per_issued_key(tmp_path: Path) -> None:
+    sessions = Sessions(tmp_path, None, idle=60)
+    old = sessions.get("alice@corp", "job", {}, key="k1")
+    new = sessions.get("alice@corp", "job", {}, key="k2")
+    assert old is not new
+    assert sessions.end("alice@corp", "job", key="k1") is True  # busy: closes at release
+    assert not verify_file(old.rec.ledger.path).complete
+    assert sessions.get("alice@corp", "job", {}, key="k2") is new
+    for s in (old, new, new):
+        sessions.release(s)
+    assert sessions.close_all(timeout=1) == 0
+
+
 def _last_kind(path: Path) -> Kind:
     return list(read_events(path))[-1].kind
 
