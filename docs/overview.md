@@ -98,7 +98,7 @@ Which clients it records:
 
 ### Launcher
 
-`seatbelt run claude` (or `codex`, or `gemini`) starts the CLI pointed at the gateway with the employee's key from `~/.config/seatbelt/gateway.toml`, names the run, strips real provider keys from its environment, and ends the run when it exits. Standard library only.
+`seatbelt run claude` (or `codex`, or `gemini`) records the CLI. With no gateway configured it records on the machine: the gateway starts inside the run on localhost, the CLI keeps its own sign-in, and the signed ledger lands in the local data folder ([local-recording.md](local-recording.md)). With `gateway` and `key` in `~/.config/seatbelt/config.toml` it starts the CLI pointed at that gateway with the employee's key, strips real provider keys from its environment, and ends the run when it exits.
 
 ### Fleet report
 

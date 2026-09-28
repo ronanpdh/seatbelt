@@ -15,11 +15,11 @@ Seatbelt is a model-agnostic harness for AI agents. It records what an agent did
 
 ```sh
 uv tool install git+https://github.com/ronanpdh/seatbelt
-seatbelt run claude                  # Claude Code, recorded; or: seatbelt run gemini
+seatbelt run claude                  # Claude Code, recorded; also: seatbelt run codex, gemini
 seatbelt report                      # what your runs did, checked against this machine's key
 ```
 
-`seatbelt run` starts a recorder on localhost for the run, points the CLI at it and passes the CLI's own credentials through, so it keeps signing in as it always does. Each run's ledger lands in `~/.local/share/seatbelt/runs` (macOS: `~/Library/Application Support/seatbelt`, Windows: `%LOCALAPPDATA%\seatbelt`), signed with a key made there on first use. To record through your org's gateway instead, put its URL and your key in `~/.config/seatbelt/config.toml`:
+`seatbelt run` starts a recorder on localhost for the run, points the CLI at it and passes the CLI's own credentials through, so it keeps signing in as it always does: a Claude subscription or API key, ChatGPT or an API key for Codex, a Google account or API key for Gemini CLI. How it works, what is and is not recorded, and the settings: [docs/local-recording.md](docs/local-recording.md). Each run's ledger lands in `~/.local/share/seatbelt/runs` (macOS: `~/Library/Application Support/seatbelt`, Windows: `%LOCALAPPDATA%\seatbelt`), signed with a key made there on first use. To record through your org's gateway instead, put its URL and your key in `~/.config/seatbelt/config.toml`:
 
 ```toml
 gateway = "https://gw.corp.example"

@@ -1,9 +1,11 @@
 """`seatbelt run` recording on this machine: the gateway starts inside the run, the CLI keeps
 its own credentials, and the ledger lands in the local data folder, signed."""
 
+import ast
 import json
 import sys
 import threading
+import tomllib
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -61,18 +63,15 @@ def provider() -> Iterator[Provider]:
     p.server.shutdown()
 
 
-# a CLI that does what Claude Code does with the preset: its own key, the base URL, and the
-# custom headers, one per line
+# a CLI that does what Claude Code does with the preset: its own key, sent to the base URL
 CLAUDE = """
 import json, os, sys, urllib.request
 headers = {"content-type": "application/json", "x-api-key": "sk-ant-USERS-OWN",
            "anthropic-version": "2023-06-01"}
-for line in os.environ["ANTHROPIC_CUSTOM_HEADERS"].splitlines():
-    name, _, value = line.partition(":")
-    headers[name.strip()] = value.strip()
+BASE = os.environ["ANTHROPIC_BASE_URL"]
 body = {"model": "claude-sonnet-5", "max_tokens": 5,
         "messages": [{"role": "user", "content": "hi"}]}
-req = urllib.request.Request(os.environ["ANTHROPIC_BASE_URL"] + "/v1/messages?beta=true",
+req = urllib.request.Request(BASE + "/v1/messages?beta=true",
                              data=json.dumps(body).encode(), headers=headers)
 print(json.load(urllib.request.urlopen(req))["content"][0]["text"])
 sys.exit(7)
@@ -118,16 +117,17 @@ def test_a_local_run_passes_the_clis_own_key_through_and_signs_the_ledger(
 def test_the_local_port_refuses_anyone_without_the_runs_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: Provider
 ) -> None:
-    """Another process on this machine can reach the port, but not write to the ledger."""
+    """Another process on this machine can reach the port, but not write to the ledger: the
+    run's key is in the base URL's path, which it does not have."""
     monkeypatch.setenv("SEATBELT_HOME", str(tmp_path / "home"))
-    intruder = CLAUDE.replace(
-        'for line in os.environ["ANTHROPIC_CUSTOM_HEADERS"].splitlines():', "for line in []:"
-    ).replace('print(json.load(urllib.request.urlopen(req))["content"][0]["text"])', "")
+    bare = 'BASE = os.environ["ANTHROPIC_BASE_URL"].split("/_seatbelt/")[0]'
+    intruder = CLAUDE.replace('BASE = os.environ["ANTHROPIC_BASE_URL"]', bare)
     intruder = intruder.replace(
-        "sys.exit(7)",
+        'print(json.load(urllib.request.urlopen(req))["content"][0]["text"])\nsys.exit(7)',
         "try:\n    urllib.request.urlopen(req)\nexcept urllib.error.HTTPError as e:\n"
         "    sys.exit(3 if e.code == 401 else 4)",
     )
+    assert intruder != CLAUDE
     code = run_cli(
         "claude",
         ["-c", "import urllib.error\n" + intruder],
@@ -160,5 +160,26 @@ def test_with_no_config_a_run_is_recorded_locally(
         "raise SystemExit(0 if url.startswith('http://127.0.0.1:') else 1)"
     )
     assert run_cli("claude", ["-c", probe], exe=sys.executable) == 0
-    with pytest.raises(ValueError, match="no preset to record codex locally"):
-        run_cli("codex", [], exe=sys.executable)
+    with pytest.raises(ValueError, match="no preset to record aider locally"):
+        run_cli("aider", [], exe=sys.executable)
+
+
+def test_codex_keeps_its_own_login_and_names_the_runs_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("SEATBELT_HOME", str(tmp_path / "home"))
+    fake = tmp_path / "codex"
+    fake.write_text(f"#!{sys.executable}\nimport sys; print(repr(sys.argv[1:]))\n")
+    fake.chmod(0o755)
+    empty = tmp_path / "config.toml"
+    empty.write_text("")
+    run_cli("codex", ["exec", "hi"], config=empty, exe=str(fake))
+    argv = ast.literal_eval(capfd.readouterr().out.strip())
+    assert argv[:3] == ["-c", 'model_provider="seatbelt"', "-c"] and argv[-2:] == ["exec", "hi"]
+    provider = tomllib.loads(f"x = {argv[3].partition('=')[2]}")["x"]
+    origin, _, path = provider["base_url"].partition("/_seatbelt/")
+    assert origin.startswith("http://127.0.0.1:")
+    key, run, v1 = path.split("/")
+    assert key.startswith("sbk_") and run.startswith("codex-") and v1 == "v1"
+    assert provider["requires_openai_auth"] is True and "env_key" not in provider
+    assert provider["supports_websockets"] is False and "http_headers" not in provider

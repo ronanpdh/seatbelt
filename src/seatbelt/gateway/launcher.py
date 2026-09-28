@@ -27,7 +27,6 @@ from typing import Any, cast
 CONFIG_DIR = Path.home() / ".config" / "seatbelt"
 DEFAULT_CONFIG = CONFIG_DIR / "config.toml"
 LEGACY_CONFIG = CONFIG_DIR / "gateway.toml"  # 0.2.0: url and key only
-KEY_HEADER = "X-Seatbelt-Key"  # the run's key beside the CLI's own credentials, local mode
 
 CODEX_KEY_ENV = "SEATBELT_GATEWAY_KEY"  # the env var the codex preset's provider reads
 PRESETS: dict[str, dict[str, str]] = {  # cli -> env template
@@ -50,17 +49,25 @@ PRESETS: dict[str, dict[str, str]] = {  # cli -> env template
         "GOOGLE_GENAI_USE_GCA": "false",
     },
 }
-# local mode: the CLI keeps its own credentials and names the run's key in a header
+# local mode: the CLI keeps its own credentials, and its base URL carries the run's key and
+# name in its path (`{url}` here is the recorder's URL with that path; see `local_url`), not
+# custom headers, which some CLIs also send to other hosts
 LOCAL_PRESETS: dict[str, dict[str, str]] = {
-    "claude": {
-        "ANTHROPIC_BASE_URL": "{url}",
-        "ANTHROPIC_CUSTOM_HEADERS": f"X-Seatbelt-Run: {{run}}\n{KEY_HEADER}: {{key}}",
-    },
+    "claude": {"ANTHROPIC_BASE_URL": "{url}"},
+    "codex": {},  # on the command line, see `arguments`
     "gemini": {
-        "GOOGLE_GEMINI_BASE_URL": "{url}",
-        "GEMINI_CLI_CUSTOM_HEADERS": f"X-Seatbelt-Run: {{run}}, {KEY_HEADER}: {{key}}",
+        "GOOGLE_GEMINI_BASE_URL": "{url}",  # signed in with an API key
+        "CODE_ASSIST_ENDPOINT": "{url}",  # signed in with Google
     },
 }
+
+
+def local_url(recorder: str, key: str, run: str) -> str:
+    """The base URL a CLI recording locally is given: the recorder's, with the run's key and
+    name in the path, which the recorder takes off (`seatbelt.gateway.app.PATH_PREFIX`)."""
+    return f"{recorder}/_seatbelt/{key}/{run}"
+
+
 NOT_YET: dict[str, str] = {}  # clients a preset would launch but the gateway cannot record yet
 # real provider credentials never reach the child, so it cannot bypass the gateway by accident
 _PROVIDER_KEYS = (
@@ -184,23 +191,32 @@ def _toml(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def arguments(cli: str, url: str, run: str) -> list[str]:
+def arguments(cli: str, url: str, run: str, local: bool = False) -> list[str]:
     """Arguments a preset puts before the user's own. Codex takes its provider from `-c`
     overrides (TOML values; global, so they also apply before a subcommand): the built-in
     `openai` provider cannot carry the run header, and `model_providers.openai` is reserved.
     The custom provider speaks Responses over HTTP (no WebSocket), so the gateway sees every
     turn, and reads the gateway key from the environment. See
-    docs/plans/2026-09-28-responses-format.md for the sources."""
+    docs/plans/2026-09-28-responses-format.md for the sources.
+
+    Recording locally (`url` from `local_url`, which names the run), the provider signs in
+    with Codex's own stored login instead (`requires_openai_auth`: an API key, or ChatGPT,
+    whose requests the local gateway sends on to ChatGPT's backend)."""
     if cli != "codex":
         return []
+    if local:
+        rest = "requires_openai_auth=true,"
+    else:
+        rest = (
+            f"env_key={_toml(CODEX_KEY_ENV)},requires_openai_auth=false,"
+            f'http_headers={{"X-Seatbelt-Run"={_toml(run)}}},'
+        )
     provider = (
         '{name="seatbelt",'
         f"base_url={_toml(url + '/v1')},"
-        f"env_key={_toml(CODEX_KEY_ENV)},"
+        f"{rest}"
         'wire_api="responses",'
-        "requires_openai_auth=false,"
-        "supports_websockets=false,"
-        f'http_headers={{"X-Seatbelt-Run"={_toml(run)}}}}}'
+        "supports_websockets=false}"
     )
     return ["-c", 'model_provider="seatbelt"', "-c", f"model_providers.seatbelt={provider}"]
 
@@ -233,7 +249,17 @@ def gemini_system_settings(env: Mapping[str, str], platform: str = sys.platform)
     return Path("/etc/gemini-cli/settings.json")
 
 
-def gemini_warnings(home: Path, cwd: Path, system: Path, system_defaults: Path) -> list[str]:
+# Gemini CLI sign-ins each recording mode sees: an org gateway holds an API key; locally,
+# Google sign-ins go through CODE_ASSIST_ENDPOINT too (Vertex AI uses neither)
+_GEMINI_RECORDED = {
+    False: frozenset({"gemini-api-key"}),
+    True: frozenset({"gemini-api-key", "oauth-personal", "compute-default-credentials"}),
+}
+
+
+def gemini_warnings(
+    home: Path, cwd: Path, system: Path, system_defaults: Path, local: bool = False
+) -> list[str]:
     """What in Gemini CLI's settings would take its traffic around the gateway. Gemini CLI
     uses the base URL only in its API-key sign-in, chosen by `security.auth.selectedType`:
     with none set, a base URL in the environment selects a mode it refuses. Its settings merge
@@ -257,11 +283,13 @@ def gemini_warnings(home: Path, cwd: Path, system: Path, system_defaults: Path) 
 
     warnings: list[str] = []
     selected = values("security", "auth", "selectedType")
-    if selected != {"gemini-api-key"}:
+    recorded = _GEMINI_RECORDED[local]
+    if not selected <= recorded:
         now = " or ".join(sorted(str(v or "not set") for v in selected))
+        choices = " or ".join(f'"{t}"' for t in sorted(recorded))
         warnings.append(
-            f"Gemini CLI's sign-in is {now}: only its API key sign-in is recorded. Set "
-            f'"security": {{"auth": {{"selectedType": "gemini-api-key"}}}} in {user}'
+            f"Gemini CLI's sign-in is {now}, which is not recorded. Set "
+            f'"security": {{"auth": {{"selectedType": {choices}}}}} in {user}'
         )
     if values("privacy", "usageStatisticsEnabled") != {False}:
         warnings.append(
@@ -284,13 +312,13 @@ def end_run(url: str, key: str, run: str) -> None:
         pass  # 404 (nothing was sent) or unreachable: the idle sweeper closes it
 
 
-def _gemini_warnings() -> None:
+def _gemini_warnings(local: bool) -> None:
     home = Path(os.environ.get("GEMINI_CLI_HOME") or Path.home())
     system = gemini_system_settings(os.environ)
     defaults = Path(
         os.environ.get("GEMINI_CLI_SYSTEM_DEFAULTS_PATH") or system.parent / "system-defaults.json"
     )
-    for warning in gemini_warnings(home, Path.cwd(), system, defaults):
+    for warning in gemini_warnings(home, Path.cwd(), system, defaults, local):
         print(f"warning: {warning}", file=sys.stderr)
 
 
@@ -316,8 +344,9 @@ def run_cli(
     cfg = load_client_config(config)
     if cfg.path is not None and cfg.key and readable_by_others(cfg.path):
         print(f"warning: {cfg.path} holds your gateway key; chmod 600 it", file=sys.stderr)
+    local = cfg.gateway is None or cfg.key is None
     if cli == "gemini":
-        _gemini_warnings()
+        _gemini_warnings(local)
     run = f"{cli}-{secrets.token_hex(4)}"
     if cfg.gateway is None or cfg.key is None:
         return _run_local(cli, args, cfg, exe, run)
@@ -340,9 +369,11 @@ def _run_local(cli: str, args: list[str], cfg: ClientConfig, exe: str | None, ru
     root = data_dir()
     ledgers = cfg.ledgers or root / "runs"
     with local_recorder(ledgers, root / "keys", cfg.sink, cfg.upstreams) as recorder:
-        env = environment(cli, recorder.url, recorder.key, run, os.environ, local=True)
+        url = local_url(recorder.url, recorder.key, run)
+        env = environment(cli, url, recorder.key, run, os.environ, local=True)
         try:
-            code = _spawn([exe or cli, *args], env)
+            extra = arguments(cli, url, run, local=True)
+            code = _spawn([exe or cli, *extra, *args], env)
         finally:
             recorder.end(run)
     for path in recorder.written:

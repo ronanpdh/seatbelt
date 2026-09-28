@@ -219,3 +219,40 @@ def assemble_sse(chunks: list[dict[str, Any]]) -> dict[str, Any]:
     if candidates:
         out["candidates"] = [candidates[i] for i in sorted(candidates)]
     return out
+
+
+class CodeAssistFormat(GeminiFormat):
+    """Gemini CLI signed in with Google: the same content, wrapped for Google's Code Assist
+    service (`POST /v1internal:generateContent`), as `{model, project, user_prompt_id,
+    request: <GenerateContentRequest>}` in and `{response: <GenerateContentResponse>,
+    traceId}` out (gemini-cli packages/core/src/code_assist/converter.ts)."""
+
+    @staticmethod
+    def inner(body: dict[str, Any]) -> dict[str, Any]:
+        """The GenerateContentRequest inside, with the model as the gateway records it."""
+        return {**as_dict(body.get("request")), "model": body.get("model")}
+
+    def begin(self, body: dict[str, Any]) -> ModelCall:
+        return super().begin(self.inner(body))
+
+    @staticmethod
+    def tool_result_calls(body: dict[str, Any]) -> list[tuple[str, str | None]]:
+        return GeminiFormat.tool_result_calls(CodeAssistFormat.inner(body))
+
+    def finish(
+        self, call: ModelCall, response: dict[str, Any] | None, error: str | None = None
+    ) -> list[Event]:
+        return super().finish(call, None if response is None else unwrap(response), error)
+
+
+def unwrap(response: dict[str, Any]) -> dict[str, Any]:
+    """A Code Assist response as the GenerateContentResponse it carries, with its traceId."""
+    trace = response.get("traceId")
+    return {**as_dict(response.get("response")), **({"traceId": trace} if trace else {})}
+
+
+def assemble_code_assist_sse(chunks: list[dict[str, Any]]) -> dict[str, Any]:
+    """`assemble_sse` over the wrapped chunks; returns the wrapped form `finish` unwraps."""
+    whole = assemble_sse([unwrap(c) for c in chunks])
+    trace = whole.pop("traceId", None)
+    return {"response": whole, **({"traceId": trace} if trace else {})}

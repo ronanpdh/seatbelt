@@ -169,7 +169,12 @@ def test_gemini_settings_that_bypass_the_gateway_are_warned_about(tmp_path: Path
     # the workspace's settings win only in a folder Gemini CLI trusts: either way is warned
     _gemini_settings(cwd, {"security": {"auth": {"selectedType": "oauth-personal"}}})
     (warning,) = warnings()
-    assert "oauth-personal" in warning
+    assert "oauth-personal, which is not recorded" in warning
+    # recording locally, a Google sign-in is recorded through CODE_ASSIST_ENDPOINT
+    assert gemini_warnings(home, cwd, system, defaults, local=True) == []
+    _gemini_settings(cwd, {"security": {"auth": {"selectedType": "vertex-ai"}}})
+    (warning,) = gemini_warnings(home, cwd, system, defaults, local=True)
+    assert "vertex-ai" in warning and '"oauth-personal"' in warning
     _gemini_settings(home, {"privacy": {"usageStatisticsEnabled": False}})
     _gemini_settings(cwd, ready)
     (warning,) = warnings()  # set only in the workspace, which may not be trusted

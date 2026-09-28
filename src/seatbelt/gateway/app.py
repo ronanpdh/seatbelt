@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import zlib
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, cast
@@ -31,7 +32,7 @@ from seatbelt.gateway.formats import (
     openai_responses,
 )
 from seatbelt.gateway.formats.anthropic import AnthropicFormat
-from seatbelt.gateway.formats.gemini import GeminiFormat
+from seatbelt.gateway.formats.gemini import CodeAssistFormat, GeminiFormat
 from seatbelt.gateway.formats.openai_chat import OpenAIChatFormat
 from seatbelt.gateway.formats.openai_responses import OpenAIResponsesFormat
 from seatbelt.gateway.oidc import OidcError, OidcVerifier, looks_like_jwt
@@ -101,6 +102,32 @@ _GEMINI_FORWARDED = frozenset({"countTokens", "embedContent", "batchEmbedContent
 _GEMINI_MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # e.g. gemini-2.5-pro
 # the query parameters Google reads as an API key (cloud.google.com/apis/docs/system-parameters)
 _KEY_PARAMS = frozenset({"key", "$key"})
+# Gemini CLI signed in with Google: POST /v1internal:{method} on Google's Code Assist service
+# (gemini-cli packages/core/src/code_assist/server.ts), reached through CODE_ASSIST_ENDPOINT
+_CODE_ASSIST: Spec = (
+    "codeassist",
+    "authorization",
+    CodeAssistFormat,
+    gemini.assemble_code_assist_sse,
+)
+_CODE_ASSIST_FORWARDED = frozenset(
+    {
+        "loadCodeAssist",
+        "onboardUser",
+        "retrieveUserQuota",
+        "listExperiments",
+        "fetchAdminControls",
+        "getCodeAssistGlobalUserSetting",
+        "setCodeAssistGlobalUserSetting",
+        "countTokens",
+        "recordCodeAssistMetrics",
+    }
+)
+# Codex signed in with ChatGPT sends its account id beside the token; its Responses traffic
+# goes to ChatGPT's backend, not the public API (codex-rs model-provider-info, chatgpt base)
+_CHATGPT_ACCOUNT = "chatgpt-account-id"
+_CHATGPT_PREFIX = "/backend-api/codex"
+_MAX_BODY = 64 * 1024 * 1024  # a decompressed request body larger than this is refused
 # google.rpc.Code names, which Google's clients read beside the HTTP status. 502 has no code
 # of its own; UNAVAILABLE is the nearest
 _GOOGLE_STATUS = {
@@ -181,7 +208,7 @@ def _google_style(request: Request) -> bool:
     """A request from a Google client: a Gemini API path, or its key header or parameter."""
     path = request.url.path
     return (
-        path.startswith(("/v1beta/", "/v1alpha/"))
+        path.startswith(("/v1beta/", "/v1alpha/", "/v1internal"))
         or (path.startswith("/v1/models/") and ":" in path)  # a method: /v1/models/{m}:{method}
         or "x-goog-api-key" in request.headers
         or "key" in request.query_params
@@ -265,6 +292,35 @@ def _upstream_headers(request: Request, upstream: Upstream, auth_header: str) ->
 
 def _relay_headers(resp: httpx2.Response) -> dict[str, str]:
     return {k: v for k, v in resp.headers.items() if k.lower() not in _STRIP_RESPONSE}
+
+
+def _decoded(raw: bytes, encoding: str) -> bytes | None:
+    """A request body as sent before its content-encoding (gzip or deflate), or None for an
+    encoding the gateway cannot read or a body that inflates past `_MAX_BODY`."""
+    encoding = encoding.strip().lower()
+    if encoding in ("", "identity"):
+        return raw
+    wbits = {"gzip": 31, "x-gzip": 31, "deflate": 15}.get(encoding)
+    if wbits is None:
+        return None
+    try:
+        inflater = zlib.decompressobj(wbits)
+        out = inflater.decompress(raw, _MAX_BODY)
+    except zlib.error:
+        return None
+    return out if not inflater.unconsumed_tail else None
+
+
+def _route(cfg: GatewayConfig, request: Request, name: str) -> tuple[str, str]:
+    """(upstream name, path prefix to put in place of /v1) for a request meant for `name`: a
+    Codex signed in with ChatGPT goes to ChatGPT's backend when a `chatgpt` upstream is set."""
+    if name == "openai" and "chatgpt" in cfg.upstreams and request.headers.get(_CHATGPT_ACCOUNT):
+        return "chatgpt", _CHATGPT_PREFIX
+    return name, ""
+
+
+def _routed(path: str, prefix: str) -> str:
+    return prefix + path.removeprefix("/v1") if prefix else path
 
 
 def _json(raw: bytes) -> Any:
@@ -386,6 +442,39 @@ def sse_events(raw: bytes) -> list[dict[str, Any]]:
     return out
 
 
+PATH_PREFIX = "/_seatbelt/"
+
+
+class _PathCredentials:
+    """`/_seatbelt/{key}/{run}/...`: the run's key and name in the base URL's path rather
+    than in headers, for `seatbelt run` recording locally. A CLI sends its custom headers to
+    other hosts too (Claude Code sends them to api.anthropic.com's bootstrap endpoint); only
+    the requests it points at the base URL carry the path. The prefix is taken off and the two
+    become the `x-seatbelt-key` and `x-seatbelt-run` headers, replacing any sent."""
+
+    def __init__(self, app: Callable[[Scope, Receive, Send], Awaitable[None]]) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        path = str(scope.get("path", ""))
+        if scope["type"] == "http" and path.startswith(PATH_PREFIX):
+            key, _, rest = path[len(PATH_PREFIX) :].partition("/")
+            run, _, rest = rest.partition("/")
+            headers = [
+                (k, v)
+                for k, v in scope["headers"]
+                if k.lower() not in (b"x-seatbelt-key", b"x-seatbelt-run")
+            ]
+            headers += [(b"x-seatbelt-key", key.encode()), (b"x-seatbelt-run", run.encode())]
+            scope = {
+                **scope,
+                "path": "/" + rest,
+                "raw_path": ("/" + rest).encode(),
+                "headers": headers,
+            }
+        await self.app(scope, receive, send)
+
+
 class _RelayStream(StreamingResponse):
     """Runs `on_close` however the response ends: finished, upstream broke, or client left.
     Starlette skips `background` on a disconnect and an abandoned generator's `finally` runs
@@ -472,11 +561,18 @@ def create_app(
         if isinstance(principal, Response):
             return principal
         upstream_name, auth_header, format_cls, assemble = spec
+        upstream_name, prefix = _route(cfg, request, upstream_name)
         upstream = cfg.upstreams.get(upstream_name)
         if upstream is None:
             return _error(request, 404, "not_found_error", f"no {upstream_name} upstream")
-        raw = await request.body()
-        body = _json_object(raw)
+        raw = await request.body()  # sent on as it came, encoding and all
+        encoding = request.headers.get("content-encoding", "")
+        plain = _decoded(raw, encoding)
+        if plain is None:
+            return _error(
+                request, 415, "invalid_request_error", f"a body encoded {encoding} is not recorded"
+            )
+        body = _json_object(plain)
         if body is None:
             return _error(request, 400, "invalid_request_error", "body must be a JSON object")
         if path_model is not None:
@@ -532,7 +628,8 @@ def create_app(
             )
             outgoing = client.build_request(
                 "POST",
-                _with_query(request, upstream),  # Claude Code posts /v1/messages?beta=true
+                # Claude Code posts /v1/messages?beta=true
+                _routed(_with_query(request, upstream), prefix),
                 content=raw,
                 headers=_upstream_headers(request, upstream, auth_header),
             )
@@ -553,7 +650,7 @@ def create_app(
                 return _stream(resp, client, call, assemble, finish, settle)
             await client.aclose()
             value = _json(resp.content)
-            if isinstance(value, list) and format_cls is GeminiFormat:
+            if isinstance(value, list) and issubclass(format_cls, GeminiFormat):
                 # streamGenerateContent without alt=sse answers with a JSON array of chunks
                 value = assemble(as_dicts(value))
             payload = cast(dict[str, Any], value) if isinstance(value, dict) else None
@@ -573,9 +670,10 @@ def create_app(
                 with anyio.CancelScope(shield=True):
                     await settle()
 
-    async def forward(request: Request) -> Response:
+    async def forward(request: Request, to: str | None = None) -> Response:
         """Probes a client makes besides inference: authenticated and forwarded, not recorded.
-        A token count or a model list is nothing an auditor needs."""
+        A token count or a model list is nothing an auditor needs. `to` names the upstream;
+        by default the request's style picks it."""
         live = _live(request)
         cfg = live.cfg
         principal = await _identify(live, request)
@@ -588,16 +686,19 @@ def create_app(
             or "anthropic-version" in request.headers
             or "x-api-key" in request.headers
         )
-        if _google_style(request):
+        if to is not None:
+            name, auth_header = to, "authorization"
+        elif _google_style(request):
             name, auth_header = "gemini", "x-goog-api-key"
         elif anthropic_style:
             name, auth_header = "anthropic", "x-api-key"
         else:
             name, auth_header = "openai", "authorization"
+        name, prefix = _route(cfg, request, name)
         upstream = cfg.upstreams.get(name)
         if upstream is None:
             return _error(request, 404, "not_found_error", f"no {name} upstream")
-        path = _with_query(request, upstream)
+        path = _routed(_with_query(request, upstream), prefix)
         async with httpx2.AsyncClient(
             base_url=upstream.url, transport=request.app.state.transport, timeout=60
         ) as client:
@@ -613,6 +714,20 @@ def create_app(
                     request, 502, "api_error", f"upstream unreachable: {type(exc).__name__}: {exc}"
                 )
         return Response(resp.content, status_code=resp.status_code, headers=_relay_headers(resp))
+
+    async def code_assist(request: Request) -> Response:
+        """/v1internal:{method}: the two inference methods recorded, the account and quota
+        calls Gemini CLI makes forwarded, any other refused rather than let through
+        unrecorded."""
+        method = str(request.path_params["method"])
+        if method in _GEMINI_RECORDED and request.method == "POST":
+            return await record(request, _CODE_ASSIST)
+        if method in _CODE_ASSIST_FORWARDED:
+            return await forward(request, "codeassist")
+        return _error(request, 400, "invalid_request_error", f"{method} is not recorded")
+
+    async def code_assist_operation(request: Request) -> Response:
+        return await forward(request, "codeassist")  # GET /v1internal/{operation}: onboarding
 
     async def hello(_: Request) -> Response:
         return Response(status_code=200)
@@ -641,10 +756,13 @@ def create_app(
             Route("/v1beta/models/{id:path}", forward, methods=["GET"]),
             Route("/v1alpha/models", forward, methods=["GET"]),
             Route("/v1alpha/models/{id:path}", forward, methods=["GET"]),
+            Route("/v1internal:{method}", code_assist, methods=["GET", "POST"]),
+            Route("/v1internal/{name:path}", code_assist_operation, methods=["GET"]),
             Route("/api/hello", hello, methods=["GET", "HEAD"]),
             Route("/seatbelt/runs/{name}/end", end_run, methods=["POST"]),
         ]
     )
+    app.add_middleware(_PathCredentials)
     app.state.live = Live.of(cfg)  # replaced by a config reload
     app.state.transport = transport  # read per request so tests can swap upstreams
     return app

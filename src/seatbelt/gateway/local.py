@@ -39,7 +39,9 @@ _log = logging.getLogger(__name__)
 UPSTREAMS = {
     "anthropic": "https://api.anthropic.com",
     "openai": "https://api.openai.com",
+    "chatgpt": "https://chatgpt.com",  # Codex signed in with ChatGPT
     "gemini": "https://generativelanguage.googleapis.com",
+    "codeassist": "https://cloudcode-pa.googleapis.com",  # Gemini CLI signed in with Google
 }
 IDLE = 7 * 24 * 3600.0  # nothing sweeps local sessions; the run's end closes its ledger
 SHIP_WAIT = 30.0  # seconds to wait at exit for the sink; what is left ships next run
