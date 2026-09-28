@@ -1,5 +1,9 @@
+import json
+import logging
 import threading
 from pathlib import Path
+
+import pytest
 
 from seatbelt.attest.manifest import sidecar
 from seatbelt.attest.sign import Signer
@@ -131,3 +135,28 @@ def test_close_all_gives_up_after_timeout_and_restart_recovers(tmp_path: Path) -
     s = sessions.get("alice@corp", None, {})
     assert sessions.close_all(timeout=0.01) == 1
     assert close_open_chains(tmp_path, None) == [s.rec.ledger.path]
+
+
+def test_close_open_chains_skips_and_logs_bad_ledgers(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    sessions = Sessions(tmp_path, None, idle=60)
+    good = sessions.get("alice@corp", None, {}).rec.ledger.path
+    tampered = sessions.get("bob@corp", None, {})
+    tampered.rec.user_message("u", "hello")
+    lines = tampered.rec.ledger.path.read_text().splitlines()
+    edited = json.loads(lines[1])
+    edited["attrs"]["gen_ai.input.messages"][0]["content"] = "goodbye"
+    tampered.rec.ledger.path.write_text("\n".join([lines[0], json.dumps(edited)]) + "\n")
+    before = tampered.rec.ledger.path.read_bytes()
+    garbage = tmp_path / "garbage.jsonl"
+    garbage.write_text("not json\n")
+    signer = Signer.generate()
+    with caplog.at_level(logging.WARNING, logger="seatbelt.gateway.sessions"):
+        assert close_open_chains(tmp_path, signer) == [good]
+    assert tampered.rec.ledger.path.read_bytes() == before  # not appended to
+    assert not sidecar(tampered.rec.ledger.path).exists()  # and never signed
+    assert not sidecar(garbage).exists()
+    logged = caplog.text
+    assert "broken ledger" in logged and tampered.rec.ledger.path.name in logged
+    assert "unreadable ledger" in logged and "garbage.jsonl" in logged
