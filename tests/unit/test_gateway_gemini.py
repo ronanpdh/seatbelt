@@ -177,6 +177,8 @@ def test_errors_are_shaped_as_google_clients_read_them(gw: Gw) -> None:
     assert r.json() == {
         "error": {"code": 401, "message": "unknown seatbelt key", "status": "UNAUTHENTICATED"}
     }
+    v1 = gw.client.post(f"/v1/models/{MODEL}:generateContent", json=_body())  # no key at all
+    assert v1.json()["error"]["status"] == "UNAUTHENTICATED"
     batch = gw.post({"requests": []}, path=f"/v1beta/models/{MODEL}:batchGenerateContent")
     assert batch.status_code == 400 and batch.json()["error"]["status"] == "INVALID_ARGUMENT"
     for sneaky in (  # names Google might read as generateContent, sent as token counts

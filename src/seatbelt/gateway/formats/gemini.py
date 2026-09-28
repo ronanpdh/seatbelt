@@ -77,12 +77,13 @@ class GeminiFormat:
         return str(body.get("model") or "unknown")
 
     def _match(self, fr: dict[str, Any], history: dict[str, dict[str, Any]]) -> Event | None:
-        """The open call a result answers. By id; Gemini CLI's source answers call `abc` as
-        `<name>__abc`. With no id to go by (the API gave the call none and the client made one
-        up, as Gemini CLI does), the oldest open call to the same tool with the arguments the
-        history's call of that id has, so an old result resent from before this session does
-        not claim a new call. `history` is the arguments of the request's function calls, by
-        id."""
+        """The open call a result answers: by id, or by the id less a `<name>__` prefix
+        (Gemini CLI prefixes ids internally and strips the prefix before it sends; a request
+        that skipped that would carry it). Failing that (the API gave the call no id and the
+        client made one up, as Gemini CLI does), the oldest open call to the same tool, with
+        the arguments of the request's own call of that id when it has one, so an old result
+        resent from before this session does not claim a new call. `history` is the
+        arguments of the request's function calls, by id."""
         name = str(fr.get("name") or "")
         rid = str(fr.get("id") or "")
         for key in (rid, rid.removeprefix(f"{name}__") if name else ""):

@@ -55,8 +55,8 @@ def _events(root: Path) -> list[Event]:
 @pytest.mark.parametrize(
     "cli_id",
     [
-        "lookup_order_1789400000_0",  # Gemini CLI 0.61.0, seen end to end
-        "lookup_order__lookup_order_1789400000_0",  # its source at 2fe7c2d
+        "lookup_order_1789400000_0",  # as Gemini CLI sends it (seen from 0.61.0)
+        "lookup_order__lookup_order_1789400000_0",  # its internal form, prefix not stripped
     ],
 )
 def test_a_call_gemini_cli_names_itself_is_linked_to_its_result_once(

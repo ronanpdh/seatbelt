@@ -35,6 +35,11 @@ PRESETS: dict[str, dict[str, str]] = {  # cli -> env template
         "GEMINI_API_KEY": "{key}",
         "GOOGLE_GEMINI_BASE_URL": "{url}",
         "GEMINI_CLI_CUSTOM_HEADERS": "X-Seatbelt-Run: {run}",
+        # set, not only stripped: Gemini CLI loads a .env file's value for any variable the
+        # environment lacks, and these would switch it away from the gateway
+        "GOOGLE_API_KEY": "",
+        "GOOGLE_GENAI_USE_VERTEXAI": "false",
+        "GOOGLE_GENAI_USE_GCA": "false",
     },
 }
 NOT_YET: dict[str, str] = {}  # clients a preset would launch but the gateway cannot record yet
@@ -124,33 +129,51 @@ def _setting(settings: dict[str, Any], *keys: str) -> Any:
     return value
 
 
-def gemini_warnings(home: Path, cwd: Path) -> list[str]:
-    """What in the user's and the workspace's Gemini CLI settings (the workspace's win) would
-    take its traffic around the gateway. Gemini CLI reads the base URL only in its API-key
-    mode, and picks that mode from `security.auth.selectedType`: with none set, a base URL
-    in the environment selects a mode it then refuses."""
-    files = [home / ".gemini" / "settings.json", cwd / ".gemini" / "settings.json"]
+def gemini_system_settings(env: Mapping[str, str], platform: str = sys.platform) -> Path:
+    """Where Gemini CLI reads its system settings, which override every other file."""
+    if env.get("GEMINI_CLI_SYSTEM_SETTINGS_PATH"):
+        return Path(env["GEMINI_CLI_SYSTEM_SETTINGS_PATH"])
+    if platform == "darwin":
+        return Path("/Library/Application Support/GeminiCli/settings.json")
+    if platform == "win32":
+        return Path("C:\\ProgramData\\gemini-cli\\settings.json")
+    return Path("/etc/gemini-cli/settings.json")
+
+
+def gemini_warnings(home: Path, cwd: Path, system: Path, system_defaults: Path) -> list[str]:
+    """What in Gemini CLI's settings would take its traffic around the gateway. Gemini CLI
+    uses the base URL only in its API-key sign-in, chosen by `security.auth.selectedType`:
+    with none set, a base URL in the environment selects a mode it refuses. Its settings merge
+    system defaults, the user's, the workspace's (only in a folder it trusts, which is not
+    known here, so both ways are checked) and the system's, last winning."""
+    user = home / ".gemini" / "settings.json"
+    files = [system_defaults, user, cwd / ".gemini" / "settings.json", system]
     loaded = [_settings(f) for f in files]
     if any(s is None for s in loaded):
         return []
-    merged = [s for s in loaded if s is not None]
+    defaults, mine, workspace, overrides = (cast(dict[str, Any], s) for s in loaded)
 
-    def last(*keys: str) -> Any:
-        values = [v for s in merged if (v := _setting(s, *keys)) is not None]
-        return values[-1] if values else None
+    def values(*keys: str) -> set[Any]:
+        """The value in effect, with the workspace trusted and without."""
+        out: set[Any] = set()
+        for layers in ([defaults, mine, workspace, overrides], [defaults, mine, overrides]):
+            found = [v for s in layers if (v := _setting(s, *keys)) is not None]
+            value = found[-1] if found else None
+            out.add(value if isinstance(value, str | bool) else None)
+        return out
 
     warnings: list[str] = []
-    selected = last("security", "auth", "selectedType")
-    if selected != "gemini-api-key":
+    selected = values("security", "auth", "selectedType")
+    if selected != {"gemini-api-key"}:
+        now = " or ".join(sorted(str(v or "not set") for v in selected))
         warnings.append(
-            f"Gemini CLI's sign-in is {selected or 'not set'}: only its API key sign-in goes "
-            f'through the gateway. Set "security": {{"auth": {{"selectedType": '
-            f'"gemini-api-key"}}}} in {files[0]}'
+            f"Gemini CLI's sign-in is {now}: only its API key sign-in goes through the "
+            f'gateway. Set "security": {{"auth": {{"selectedType": "gemini-api-key"}}}} in {user}'
         )
-    if last("privacy", "usageStatisticsEnabled") is not False:
+    if values("privacy", "usageStatisticsEnabled") != {False}:
         warnings.append(
-            "Gemini CLI sends usage statistics to Google directly, not through the gateway. "
-            f'To stop it, set "privacy": {{"usageStatisticsEnabled": false}} in {files[0]}'
+            "Gemini CLI may send usage statistics to Google directly, not through the gateway. "
+            f'To stop it, set "privacy": {{"usageStatisticsEnabled": false}} in {user}'
         )
     return warnings
 
@@ -180,7 +203,12 @@ def run_cli(
         print(f"warning: {config} holds your gateway key; chmod 600 it", file=sys.stderr)
     if cli == "gemini":
         home = Path(os.environ.get("GEMINI_CLI_HOME") or Path.home())
-        for warning in gemini_warnings(home, Path.cwd()):
+        system = gemini_system_settings(os.environ)
+        defaults = Path(
+            os.environ.get("GEMINI_CLI_SYSTEM_DEFAULTS_PATH")
+            or system.parent / "system-defaults.json"
+        )
+        for warning in gemini_warnings(home, Path.cwd(), system, defaults):
             print(f"warning: {warning}", file=sys.stderr)
     run = f"{cli}-{secrets.token_hex(4)}"
     env = environment(cli, url, key, run, os.environ)

@@ -88,13 +88,14 @@ _GEMINI: Spec = ("gemini", "x-goog-api-key", GeminiFormat, gemini.assemble_sse)
 _GEMINI_VERSIONS = ("v1beta", "v1", "v1alpha")
 _GEMINI_RECORDED = frozenset({"generateContent", "streamGenerateContent"})
 # forwarded unrecorded, like Anthropic's count_tokens: nothing a model acts on comes back.
-# Gemini CLI counts tokens for files and embeds with batchEmbedContents. Any other method is
-# refused rather than let through unrecorded
+# Gemini CLI counts tokens for images and files; Google's SDKs embed with batchEmbedContents.
+# Any other method is refused rather than let through unrecorded
 _GEMINI_FORWARDED = frozenset({"countTokens", "embedContent", "batchEmbedContents"})
 _GEMINI_MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # e.g. gemini-2.5-pro
 # the query parameters Google reads as an API key (cloud.google.com/apis/docs/system-parameters)
 _KEY_PARAMS = frozenset({"key", "$key"})
-# google.rpc.Code names, which Google's clients read beside the HTTP status
+# google.rpc.Code names, which Google's clients read beside the HTTP status. 502 has no code
+# of its own; UNAVAILABLE is the nearest
 _GOOGLE_STATUS = {
     400: "INVALID_ARGUMENT",
     401: "UNAUTHENTICATED",
@@ -169,8 +170,10 @@ async def _identify(live: Live, request: Request) -> Identity | Response:
 
 def _google_style(request: Request) -> bool:
     """A request from a Google client: a Gemini API path, or its key header or parameter."""
+    path = request.url.path
     return (
-        request.url.path.startswith(("/v1beta/", "/v1alpha/"))
+        path.startswith(("/v1beta/", "/v1alpha/"))
+        or (path.startswith("/v1/models/") and ":" in path)  # a method: /v1/models/{m}:{method}
         or "x-goog-api-key" in request.headers
         or "key" in request.query_params
     )

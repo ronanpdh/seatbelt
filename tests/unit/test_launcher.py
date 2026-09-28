@@ -15,6 +15,7 @@ from seatbelt.gateway.launcher import (
     PRESETS,
     arguments,
     environment,
+    gemini_system_settings,
     gemini_warnings,
     load_client_config,
     run_cli,
@@ -111,7 +112,9 @@ def test_gemini_preset_points_its_api_key_mode_at_the_gateway() -> None:
     assert env["GEMINI_API_KEY"] == "sbk_abc"
     assert env["GOOGLE_GEMINI_BASE_URL"] == "https://gw.corp"
     assert env["GEMINI_CLI_CUSTOM_HEADERS"] == "X-Team: a, X-Seatbelt-Run: run-1"
-    assert "GOOGLE_API_KEY" not in env and "GOOGLE_GENAI_USE_GCA" not in env
+    # set empty or false rather than left unset, so a .env file cannot put them back
+    assert env["GOOGLE_API_KEY"] == ""
+    assert env["GOOGLE_GENAI_USE_GCA"] == env["GOOGLE_GENAI_USE_VERTEXAI"] == "false"
     assert env["PATH"] == "/bin"
 
 
@@ -122,9 +125,14 @@ def _gemini_settings(root: Path, settings: dict[str, Any] | str) -> None:
 
 
 def test_gemini_settings_that_bypass_the_gateway_are_warned_about(tmp_path: Path) -> None:
-    home, cwd = tmp_path / "home", tmp_path / "work"
+    home, cwd, etc = tmp_path / "home", tmp_path / "work", tmp_path / "etc"
     cwd.mkdir()
-    sign_in, usage = gemini_warnings(home, cwd)  # no settings at all
+    system, defaults = etc / ".gemini" / "settings.json", etc / "system-defaults.json"
+
+    def warnings() -> list[str]:
+        return gemini_warnings(home, cwd, system, defaults)
+
+    sign_in, usage = warnings()  # no settings at all
     assert "not set" in sign_in and "selectedType" in sign_in
     assert "usageStatisticsEnabled" in usage
     ready = {
@@ -132,12 +140,28 @@ def test_gemini_settings_that_bypass_the_gateway_are_warned_about(tmp_path: Path
         "privacy": {"usageStatisticsEnabled": False},
     }
     _gemini_settings(home, ready)
-    assert gemini_warnings(home, cwd) == []
+    assert warnings() == []
+    # the workspace's settings win only in a folder Gemini CLI trusts: either way is warned
     _gemini_settings(cwd, {"security": {"auth": {"selectedType": "oauth-personal"}}})
-    (warning,) = gemini_warnings(home, cwd)  # the workspace's settings win
+    (warning,) = warnings()
     assert "oauth-personal" in warning
+    _gemini_settings(home, {"privacy": {"usageStatisticsEnabled": False}})
+    _gemini_settings(cwd, ready)
+    (warning,) = warnings()  # set only in the workspace, which may not be trusted
+    assert "gemini-api-key or not set" in warning
+    _gemini_settings(etc, {"security": {"auth": {"selectedType": "gemini-api-key"}}})
+    assert warnings() == []  # the system settings override every other file
+    defaults.write_text(json.dumps({"privacy": {"usageStatisticsEnabled": True}}))
+    assert warnings() == []  # system defaults are overridden by the user's
     _gemini_settings(cwd, "// a comment\n{}")
-    assert gemini_warnings(home, cwd) == []  # JSON with comments: no guessing
+    assert warnings() == []  # JSON with comments: no guessing
+
+
+def test_gemini_system_settings_path_follows_gemini_cli() -> None:
+    assert gemini_system_settings({}, "linux") == Path("/etc/gemini-cli/settings.json")
+    assert gemini_system_settings({}, "darwin").parts[1] == "Library"
+    custom = {"GEMINI_CLI_SYSTEM_SETTINGS_PATH": "/opt/g.json"}
+    assert gemini_system_settings(custom, "linux") == Path("/opt/g.json")
 
 
 def test_unknown_cli_is_refused() -> None:
