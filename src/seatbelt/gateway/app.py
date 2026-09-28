@@ -351,6 +351,43 @@ def create_app(
                 with anyio.CancelScope(shield=True):
                     await settle()
 
+    async def forward(request: Request) -> Response:
+        """Probes a client makes besides inference: authenticated and forwarded, not recorded.
+        A token count or a model list is nothing an auditor needs."""
+        principal = _principal(cfg, request)
+        if principal is None:
+            return _unauthorized()
+        anthropic_style = request.url.path.startswith("/v1/messages") or (
+            "x-api-key" in request.headers
+        )
+        name, auth_header = (
+            ("anthropic", "x-api-key") if anthropic_style else ("openai", "authorization")
+        )
+        upstream = cfg.upstreams.get(name)
+        if upstream is None:
+            return _error(404, "not_found_error", f"no {name} upstream")
+        path = request.url.path + (f"?{request.url.query}" if request.url.query else "")
+        async with httpx2.AsyncClient(
+            base_url=upstream.url, transport=request.app.state.transport, timeout=60
+        ) as client:
+            try:
+                resp = await client.request(
+                    request.method,
+                    path,
+                    content=await request.body(),
+                    headers=_upstream_headers(
+                        request, auth_header, os.environ.get(upstream.key_env, "")
+                    ),
+                )
+            except httpx2.HTTPError as exc:
+                return _error(
+                    502, "api_error", f"upstream unreachable: {type(exc).__name__}: {exc}"
+                )
+        return Response(resp.content, status_code=resp.status_code, headers=_relay_headers(resp))
+
+    async def hello(_: Request) -> Response:
+        return Response(status_code=200)
+
     async def end_run(request: Request) -> Response:
         principal = _principal(cfg, request)
         if principal is None:
@@ -363,6 +400,10 @@ def create_app(
         routes=[
             Route("/v1/messages", relay, methods=["POST"]),
             Route("/v1/chat/completions", relay, methods=["POST"]),
+            Route("/v1/messages/count_tokens", forward, methods=["POST"]),
+            Route("/v1/models", forward, methods=["GET"]),
+            Route("/v1/models/{id:path}", forward, methods=["GET"]),
+            Route("/api/hello", hello, methods=["GET", "HEAD"]),
             Route("/seatbelt/runs/{name}/end", end_run, methods=["POST"]),
         ]
     )
