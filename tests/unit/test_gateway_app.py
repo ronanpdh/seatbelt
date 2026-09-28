@@ -535,3 +535,39 @@ def test_denied_tool_in_a_stream_is_recorded(gwp: Gateway) -> None:
     )
     last = gwp.events()[-1]
     assert last.kind == Kind.POLICY_CHECK and last.attrs["policy.allowed"] is False
+
+
+# -- probes --------------------------------------------------------------------
+
+
+def test_hello_probe_is_answered_locally(gw: Gateway) -> None:
+    assert gw.client.head("/api/hello").status_code == 200 and gw.seen == []
+    assert gw.client.get("/api/hello").status_code == 200
+
+
+def test_count_tokens_and_models_are_forwarded_not_recorded(gw: Gateway) -> None:
+    gw.upstream(
+        lambda r: httpx2.Response(
+            200, json={"input_tokens": 5} if "count" in r.url.path else {"data": []}
+        )
+    )
+    r = gw.client.post(
+        "/v1/messages/count_tokens",
+        json={"model": "m", "messages": []},
+        headers={"x-api-key": gw.key},
+    )
+    assert r.json() == {"input_tokens": 5}
+    assert gw.client.get("/v1/models?limit=5", headers={"x-api-key": gw.key}).status_code == 200
+    assert (
+        gw.client.get("/v1/models/gpt-5", headers={"authorization": f"Bearer {gw.key}"}).status_code
+        == 200
+    )
+    assert [(r.url.host, r.url.path, r.url.query) for r in gw.seen] == [
+        ("api.anthropic.com", "/v1/messages/count_tokens", b""),
+        ("api.anthropic.com", "/v1/models", b"limit=5"),
+        ("api.openai.com", "/v1/models/gpt-5", b""),
+    ]
+    assert gw.seen[0].headers["x-api-key"].startswith("sk-ant-REAL")
+    assert gw.seen[2].headers["authorization"] == "Bearer sk-REAL00000000000000000000000"
+    assert not list(gw.ledgers.glob("*.jsonl"))
+    assert gw.client.get("/v1/models").status_code == 401
