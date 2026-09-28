@@ -18,6 +18,10 @@ jobs:
           enable-cache: true
           python-version: ${{ matrix.python }}  # sets UV_PYTHON, overriding .python-version
       - run: uv sync --locked
+      - name: Gateway image requirements match uv.lock
+        run: |
+          uv export --locked --no-dev --extra gateway --no-emit-project -o docker/requirements-gateway.txt
+          git diff --exit-code docker/requirements-gateway.txt
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run pyright
@@ -33,3 +37,15 @@ jobs:
       - run: uv run pytest -m integration
       - run: docker build -f docker/Dockerfile.gateway -t seatbelt-gateway .
       - run: docker run --rm --entrypoint seatbelt seatbelt-gateway gateway serve --help
+  hadolint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+      - uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387  # v3.5.0
+        with:
+          dockerfile: docker/Dockerfile
+      - uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387  # v3.5.0
+        with:
+          dockerfile: docker/Dockerfile.gateway

@@ -105,7 +105,7 @@ Which clients it records:
 
 ### Supply chain
 
-Tagged releases attach the wheel, sdist and a CycloneDX SBOM with Sigstore-signed SLSA build provenance. CI runs ruff, pyright strict and pytest on Python 3.12 and 3.13. OpenSSF Scorecard and Best Practices evidence are in the repository.
+Tagged releases attach the wheel, sdist, a CycloneDX SBOM and the Sigstore-signed SLSA build provenance (`seatbelt-<version>.intoto.jsonl`). CI runs ruff, pyright strict and pytest on Python 3.12 and 3.13, CodeQL and Hadolint; Docker base images are pinned by digest and the gateway image's dependencies by hash. OpenSSF Scorecard and Best Practices evidence are in the repository.
 
 ## How to use it
 
