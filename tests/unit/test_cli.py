@@ -116,3 +116,70 @@ def test_reconstruct_shows_a_failed_run_without_a_recorded_reason(tmp_path: Path
     line = next(ln for ln in console.export_text().splitlines() if "run.end" in ln)
     assert "FAILED" in line
     assert "None" not in line
+
+
+GATEWAY_YAML = (
+    "signing_key: k\nledgers: runs\nupstreams:\n  anthropic: {url: https://x, key_env: K}\n"
+)
+
+
+def test_gateway_keygen_appends_a_principal(tmp_path: Path) -> None:
+    cfg = tmp_path / "gateway.yaml"
+    cfg.write_text(GATEWAY_YAML)
+    r = runner.invoke(app, ["gateway", "keygen", "--user", "alice@corp", "--config", str(cfg)])
+    assert r.exit_code == 0 and "sbk_" in r.output and "alice@corp" in cfg.read_text()
+    key = next(w for w in r.output.split() if w.startswith("sbk_"))
+    assert key not in cfg.read_text()
+    r = runner.invoke(app, ["gateway", "keygen", "--user", "alice@corp", "--config", str(cfg)])
+    assert r.exit_code == 1 and "already" in r.output
+
+
+def test_gateway_serve_refuses_bad_config(tmp_path: Path) -> None:
+    r = runner.invoke(app, ["gateway", "serve", "--config", str(tmp_path / "missing.yaml")])
+    assert r.exit_code == 1 and "missing.yaml" in r.output
+
+
+def test_gateway_serve_refuses_a_missing_signing_key(tmp_path: Path) -> None:
+    cfg = tmp_path / "gateway.yaml"
+    cfg.write_text(GATEWAY_YAML)
+    r = runner.invoke(app, ["gateway", "serve", "--config", str(cfg)])
+    assert r.exit_code == 1 and "not a PEM private key" in r.output
+
+
+def test_gateway_serve_recovers_then_serves_then_closes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import httpx2
+    from starlette.applications import Starlette
+    from starlette.testclient import TestClient
+
+    from seatbelt.attest.manifest import sidecar
+    from seatbelt.attest.sign import keygen
+    from seatbelt.gateway import serve as serve_mod
+    from seatbelt.gateway.config import add_principal, load_config
+    from seatbelt.verify.chain import verify_file
+
+    keygen(tmp_path / "keys")
+    cfg_path = tmp_path / "gateway.yaml"
+    cfg_path.write_text(
+        GATEWAY_YAML.replace("signing_key: k", "signing_key: keys/seatbelt.key")
+        + "listen: '[::1]:9999'\n"
+    )
+    key = add_principal(cfg_path, "alice@corp")
+    cfg = load_config(cfg_path)
+    crashed = Recorder.start(cfg.ledgers, agent_id="gateway", run_id="crashed")
+    crashed.__enter__().user_message("u", "hi")  # never exited: a crash
+    bound: list[tuple[str, int]] = []
+
+    def fake_run(app: Starlette, host: str, port: int, **_: object) -> None:
+        bound.append((host, port))
+        app.state.transport = httpx2.MockTransport(lambda _: httpx2.Response(200, json={}))
+        with TestClient(app) as client:
+            client.post("/v1/messages", json={"model": "m"}, headers={"x-api-key": key})
+
+    monkeypatch.setattr(serve_mod.uvicorn, "run", fake_run)
+    serve_mod.serve(cfg)
+    assert bound == [("::1", 9999)]
+    ledgers = sorted(cfg.ledgers.glob("*.jsonl"))
+    assert len(ledgers) == 2  # the recovered crash and the session served
+    assert all(verify_file(p).complete and sidecar(p).exists() for p in ledgers)

@@ -1245,6 +1245,12 @@ dependencies = [
 anthropic = [
     { name = "anthropic" },
 ]
+gateway = [
+    { name = "anyio" },
+    { name = "httpx2" },
+    { name = "starlette" },
+    { name = "uvicorn" },
+]
 openai-agents = [
     { name = "openai-agents" },
 ]
@@ -1252,37 +1258,49 @@ openai-agents = [
 [package.dev-dependencies]
 dev = [
     { name = "anthropic" },
+    { name = "anyio" },
+    { name = "httpx2" },
     { name = "hypothesis" },
     { name = "openai-agents" },
     { name = "pre-commit" },
     { name = "pyright" },
     { name = "pytest" },
     { name = "ruff" },
+    { name = "starlette" },
     { name = "types-pyyaml" },
+    { name = "uvicorn" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=1.5.0" },
+    { name = "anyio", marker = "extra == 'gateway'", specifier = ">=4.15" },
     { name = "cryptography", specifier = ">=50.0.1" },
+    { name = "httpx2", marker = "extra == 'gateway'", specifier = ">=2.13" },
     { name = "openai-agents", marker = "extra == 'openai-agents'", specifier = ">=0.22.2" },
     { name = "pydantic", specifier = ">=2.13.5" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "rich", specifier = ">=15.0.0" },
+    { name = "starlette", marker = "extra == 'gateway'", specifier = ">=1.6" },
     { name = "typer", specifier = ">=0.27.2" },
+    { name = "uvicorn", marker = "extra == 'gateway'", specifier = ">=0.53" },
 ]
-provides-extras = ["anthropic", "openai-agents"]
+provides-extras = ["anthropic", "openai-agents", "gateway"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "anthropic", specifier = ">=1.5.0" },
+    { name = "anyio", specifier = ">=4.15" },
+    { name = "httpx2", specifier = ">=2.13" },
     { name = "hypothesis", specifier = ">=6.168.0" },
     { name = "openai-agents", specifier = ">=0.22.2" },
     { name = "pre-commit", specifier = ">=4.6.2" },
     { name = "pyright", specifier = ">=1.1.414" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "ruff", specifier = ">=0.16.7" },
+    { name = "starlette", specifier = ">=1.6" },
     { name = "types-pyyaml", specifier = ">=6.0.12.20260906" },
+    { name = "uvicorn", specifier = ">=0.53" },
 ]
 
 [[package]]

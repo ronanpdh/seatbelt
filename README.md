@@ -58,6 +58,24 @@ uv run seatbelt verify-pack audit.seatbelt.zip --pubkey keys/seatbelt.pub
 
 The pack carries every ledger, its attestation, the findings and the corpus, bound by a signed manifest. Format: [`docs/spec/evidence-pack-v1.md`](docs/spec/evidence-pack-v1.md).
 
+**Run it for a team.** A gateway records every employee's model traffic from the clients they already use, one signed ledger per session.
+
+```sh
+uv sync --extra gateway
+uv run seatbelt keygen keys                                     # the gateway's signing key
+cat > gateway.yaml <<'YAML'
+signing_key: keys/seatbelt.key
+ledgers: runs
+upstreams:
+  anthropic: {url: https://api.anthropic.com, key_env: ANTHROPIC_API_KEY}
+  openai: {url: https://api.openai.com, key_env: OPENAI_API_KEY}
+YAML
+uv run seatbelt gateway keygen --user alice@corp                # prints alice's key once
+uv run seatbelt gateway serve                                   # listens on 127.0.0.1:8080
+```
+
+Point a client at it with the issued key: `ANTHROPIC_BASE_URL=http://127.0.0.1:8080 ANTHROPIC_API_KEY=sbk_... claude`, or an OpenAI client with `OPENAI_BASE_URL=http://127.0.0.1:8080/v1`. The real provider keys stay in the gateway's environment. A session closes and is signed after `session_idle` seconds of quiet (default 900); `policy:` in the config restricts models, output tokens and tools.
+
 ## Recording your own agent
 
 ```python
@@ -87,6 +105,8 @@ Using the OpenAI Agents SDK? Register `agents.add_trace_processor(SeatbeltProces
 | `seatbelt scenarios <corpus> --target m:f [--out] [--key] [--list] [--image] [--target-dir] [--timeout]` | runs the adversarial corpus | any finding (2: bad target) |
 | `seatbelt pack <runs> --out <zip> [--key] [--corpus]` | bundles a runs directory into an evidence pack | broken ledger, output exists |
 | `seatbelt verify-pack <zip> [--pubkey]` | re-checks a pack offline | forged, or a broken ledger inside |
+| `seatbelt gateway keygen --user <id> [--config]` | issues a gateway key; stores only its hash | the user already has a key |
+| `seatbelt gateway serve [--config]` | runs the recording gateway | bad config or signing key |
 
 Every command has `--help`. Formats: ledger and attestation in [ADR 0001](docs/adr/0001-hash-chained-jsonl-ledger.md) and [ADR 0002](docs/adr/0002-signed-run-manifest.md), scenario and findings schemas in [`docs/schema/`](docs/schema/), evidence pack in [`docs/spec/evidence-pack-v1.md`](docs/spec/evidence-pack-v1.md).
 

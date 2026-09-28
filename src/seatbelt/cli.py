@@ -14,6 +14,7 @@ from seatbelt.attest.manifest import AttestError, sidecar
 from seatbelt.attest.sign import Signer
 from seatbelt.attest.sign import attest as sign_ledger
 from seatbelt.attest.sign import keygen as make_keys
+from seatbelt.gateway.config import add_principal, load_config
 from seatbelt.ledger.store import LedgerError
 from seatbelt.record.recorder import Recorder
 from seatbelt.report.pack import PackError, PackStatus
@@ -265,3 +266,43 @@ def scenarios(
     console.print(f"wrote {escape(str(out / 'findings.json'))}")
     if report.findings:
         raise typer.Exit(code=1)
+
+
+gateway = typer.Typer(help="Recording gateway: every employee's model traffic, signed.")
+app.add_typer(gateway, name="gateway")
+
+ConfigOpt = Annotated[Path, typer.Option(help="gateway YAML config")]
+
+
+@gateway.command(name="keygen")
+def gateway_keygen(
+    user: Annotated[str, typer.Option(help="principal id recorded in every ledger, e.g. email")],
+    config: ConfigOpt = Path("gateway.yaml"),
+) -> None:
+    """Issue a gateway key for a user. Prints it once; the config keeps only its hash."""
+    try:
+        key = add_principal(config, user)
+    except ValueError as exc:
+        console.print(f"[red]{escape(str(exc))}[/]")
+        raise typer.Exit(code=1) from exc
+    console.print(f"key for {escape(user)} (shown once, not stored):")
+    console.print(key, highlight=False)
+
+
+@gateway.command(name="serve")
+def gateway_serve(config: ConfigOpt = Path("gateway.yaml")) -> None:
+    """Run the gateway. Closes chains a crash left open, then records until stopped."""
+    try:
+        cfg = load_config(config)
+        from seatbelt.gateway.serve import serve  # server deps load only here
+    except ValueError as exc:
+        console.print(f"[red]{escape(str(exc))}[/]")
+        raise typer.Exit(code=1) from exc
+    except ImportError as exc:
+        console.print(f"[red]{escape(str(exc))}[/]; install with: uv sync --extra gateway")
+        raise typer.Exit(code=1) from exc
+    try:
+        serve(cfg)
+    except (AttestError, ValueError) as exc:  # ValueError: a bad `listen`
+        console.print(f"[red]{escape(str(exc))}[/]")
+        raise typer.Exit(code=1) from exc

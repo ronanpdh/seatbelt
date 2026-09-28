@@ -27,6 +27,12 @@ anthropic = [
 openai-agents = [
     "openai-agents>=0.22.2",
 ]
+gateway = [
+    "anyio>=4.15",
+    "httpx2>=2.13",
+    "starlette>=1.6",
+    "uvicorn>=0.53",
+]
 
 [build-system]
 requires = ["uv_build>=0.12.13,<0.13.0"]
@@ -35,12 +41,16 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "anthropic>=1.5.0",  # adapter tests and pyright need the optional SDK
+    "anyio>=4.15",  # gateway extra
+    "httpx2>=2.13",
     "hypothesis>=6.168.0",
     "openai-agents>=0.22.2",
     "pre-commit>=4.6.2",
     "pyright>=1.1.414",
     "pytest>=9.1.1",
     "ruff>=0.16.7",
+    "starlette>=1.6",
+    "uvicorn>=0.53",
     "types-pyyaml>=6.0.12.20260906",
 ]
 
