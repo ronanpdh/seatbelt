@@ -17,6 +17,7 @@ from typing import Any
 from seatbelt import __version__
 from seatbelt.attest.manifest import sidecar
 from seatbelt.attest.sign import Signer, attest
+from seatbelt.gateway.formats import Format
 from seatbelt.ledger.events import Actor, ActorType, Kind
 from seatbelt.ledger.store import Ledger, LedgerError, read_events
 from seatbelt.record.recorder import Recorder
@@ -36,7 +37,7 @@ class Session:
     stack: ExitStack
     lock: threading.Lock = field(default_factory=threading.Lock)
     last: float = 0.0
-    formats: dict[str, Any] = field(default_factory=dict[str, Any])  # per-format state, see app.py
+    formats: dict[str, Format] = field(default_factory=dict[str, Format])  # open tool calls
     denied_calls: set[str] = field(default_factory=set[str])  # tool call ids policy refused
     busy: int = 0  # requests between Sessions.get and Sessions.release
     closing: bool = False

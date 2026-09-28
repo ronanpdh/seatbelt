@@ -2,7 +2,25 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
+
+if TYPE_CHECKING:
+    from seatbelt.ledger.events import Event
+    from seatbelt.record.recorder import ModelCall, Recorder
+
+
+class Format(Protocol):
+    """One wire format's recorder: requests in, responses and tool calls out."""
+
+    provider: str
+
+    def __init__(self, rec: Recorder) -> None: ...
+
+    def begin(self, body: dict[str, Any]) -> ModelCall: ...
+
+    def finish(
+        self, call: ModelCall, response: dict[str, Any] | None, error: str | None = None
+    ) -> list[Event]: ...
 
 
 def as_dict(value: Any) -> dict[str, Any]:
