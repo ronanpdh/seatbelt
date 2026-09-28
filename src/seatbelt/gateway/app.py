@@ -209,7 +209,9 @@ def _google_style(request: Request) -> bool:
     path = request.url.path
     return (
         path.startswith(("/v1beta/", "/v1alpha/", "/v1internal"))
-        or (path.startswith("/v1/models/") and ":" in path)  # a method: /v1/models/{m}:{method}
+        # a method, POST /v1/models/{m}:{method}; a GET is a model lookup, and an OpenAI
+        # fine-tuned model's id has colons in it (ft:gpt-4o-mini:org::id)
+        or (request.method == "POST" and path.startswith("/v1/models/") and ":" in path)
         or "x-goog-api-key" in request.headers
         or "key" in request.query_params
     )
@@ -273,6 +275,15 @@ def _live(request: Request) -> Live:
     return cast(Live, request.app.state.live)
 
 
+def _is_seatbelt_key(value: str) -> bool:
+    """A credential that is an issued seatbelt key, bare or as a Bearer token. By prefix: a
+    provider's own token can contain the same characters anywhere else."""
+    value = value.strip()
+    if value[:7].lower() == "bearer ":
+        value = value[7:].strip()
+    return value.startswith(KEY_PREFIX)
+
+
 def _upstream_headers(request: Request, upstream: Upstream, auth_header: str) -> dict[str, str]:
     """The request's headers for the upstream: with the gateway's provider key in place of the
     client's, or for a pass-through upstream with the client's own credentials. A seatbelt
@@ -282,7 +293,7 @@ def _upstream_headers(request: Request, upstream: Upstream, auth_header: str) ->
             k: v
             for k, v in request.headers.items()
             if k.lower() not in _STRIP_PASSTHROUGH
-            and not (k.lower() in _AUTH_HEADERS and KEY_PREFIX in v)
+            and not (k.lower() in _AUTH_HEADERS and _is_seatbelt_key(v))
         }
     headers = {k: v for k, v in request.headers.items() if k.lower() not in _STRIP_REQUEST}
     real_key = os.environ.get(upstream.key_env, "")
@@ -344,7 +355,7 @@ def _with_query(request: Request, upstream: Upstream) -> str:
         name, _, value = param.partition("=")
         if unquote_plus(name) not in _KEY_PARAMS:
             return True
-        return upstream.key_env is None and KEY_PREFIX not in unquote_plus(value)
+        return upstream.key_env is None and not _is_seatbelt_key(unquote_plus(value))
 
     query = "&".join(p for p in request.url.query.split("&") if p and kept(p))
     return request.url.path + (f"?{query}" if query else "")
@@ -418,7 +429,9 @@ def _refusal(
     if request_policy is None:
         return None
     first: str | None = None
-    for rule, reason in request_policy.evaluate(fmt.model(body), body):
+    # a format that wraps the request (Code Assist) gives the policy what is inside
+    view: Callable[[dict[str, Any]], dict[str, Any]] | None = getattr(fmt, "policy_view", None)
+    for rule, reason in request_policy.evaluate(fmt.model(body), view(body) if view else body):
         session.rec.policy_check(rule, request_id, reason is None, reason or "allowed")
         first = first or reason
     return first

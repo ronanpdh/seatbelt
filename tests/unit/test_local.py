@@ -203,3 +203,84 @@ def test_a_base_url_the_cli_already_has_is_where_the_recorder_forwards(
     assert run_cli("claude", ["-c", CLAUDE], config=empty, exe=sys.executable) == 7
     (sent,) = provider.seen
     assert sent["path"] == "/v1/messages?beta=true"
+
+
+def _open_ledger(ledgers: Path, run: str) -> Path:
+    """A ledger a run opened and never closed, as a killed run leaves it."""
+    from seatbelt.ledger.events import Actor, ActorType
+    from seatbelt.ledger.store import Ledger
+
+    path = ledgers / f"me-{run}.jsonl"
+    ledger = Ledger(path, f"me-{run}")
+    ledger.append(Kind.RUN_START, Actor(type=ActorType.AGENT, id="gw"), {"run.name": run})
+    ledger.append(Kind.USER_MESSAGE, Actor(type=ActorType.USER, id="u"), {"text": "hi"})
+    return path
+
+
+def test_a_killed_runs_ledger_is_closed_by_the_next_run_and_a_live_ones_is_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+    import signal
+    import subprocess
+    import time
+
+    from seatbelt.gateway.local import RUNNING, close_dead_runs, local_signer
+
+    home = tmp_path / "home"
+    ledgers, keys = home / "runs", home / "keys"
+    monkeypatch.setenv("SEATBELT_HOME", str(home))
+    ledgers.mkdir(parents=True)
+    # a live run in another process: holds its lock, then waits to be killed
+    holder = (
+        "import fcntl, sys, time; f = open(sys.argv[1], 'wb'); "
+        "fcntl.flock(f, fcntl.LOCK_EX); print('locked', flush=True); time.sleep(60)"
+    )
+    (ledgers / RUNNING).mkdir()
+    lock = ledgers / RUNNING / "claude-live.lock"
+    child = subprocess.Popen(  # noqa: S603 - this interpreter
+        [sys.executable, "-c", holder, str(lock)], stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert child.stdout is not None and child.stdout.readline().strip() == "locked"
+        live = _open_ledger(ledgers, "claude-live")
+        dead = _open_ledger(ledgers, "claude-dead")  # no lock at all: its run is gone
+        signer = local_signer(keys)
+        assert close_dead_runs(ledgers, signer) == [dead]
+        assert [e.kind for e in read_events(live)][-1] is Kind.USER_MESSAGE  # left alone
+        end = list(read_events(dead))[-1]
+        assert end.kind is Kind.RUN_END and "killed" in end.attrs["run.error"]
+        assert sidecar(dead).exists()
+    finally:
+        os.kill(child.pid, signal.SIGKILL)
+        child.wait()
+    time.sleep(0.1)
+    assert close_dead_runs(ledgers, signer) == [live]  # its process is dead now
+    assert not lock.exists()  # a dead run's lock file is removed
+
+
+def test_a_run_closes_what_a_killed_run_left_open_in_the_background(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    monkeypatch.setenv("SEATBELT_HOME", str(home))
+    (home / "runs").mkdir(parents=True)
+    dead = _open_ledger(home / "runs", "claude-dead")
+    empty = tmp_path / "config.toml"
+    empty.write_text("")
+    assert run_cli("claude", ["-c", "pass"], config=empty, exe=sys.executable) == 0
+    assert list(read_events(dead))[-1].kind is Kind.RUN_END
+    assert list((home / "runs" / ".running").iterdir()) == []  # this run's lock is gone too
+
+
+def test_a_user_with_no_login_name_is_named_by_uid(monkeypatch: pytest.MonkeyPatch) -> None:
+    import getpass
+    import os
+
+    from seatbelt.gateway import local
+
+    def nobody() -> str:
+        raise OSError("no username")
+
+    monkeypatch.setattr(getpass, "getuser", nobody)
+    assert local._user() == f"uid-{os.getuid()}"  # pyright: ignore[reportPrivateUsage]

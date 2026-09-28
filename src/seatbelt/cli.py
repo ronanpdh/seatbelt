@@ -356,7 +356,11 @@ def report(
     unsigned runs. Exit 1 if any ledger is broken or, with --pubkey, forged. With no
     directory: the runs `seatbelt run` recorded here, checked against this machine's key."""
     if runs is None:
-        runs, pubkey = _local_runs(pubkey)
+        try:
+            runs, pubkey = _local_runs(pubkey)
+        except ValueError as exc:  # a bad client config
+            console.print(f"[red]{escape(str(exc))}[/]")
+            raise typer.Exit(code=1) from exc
         if not any(runs.glob("*.jsonl")):
             console.print(f"No runs recorded yet in {runs}. Start one with: seatbelt run claude")
             return

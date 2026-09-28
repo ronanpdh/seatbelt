@@ -70,13 +70,16 @@ class GeminiFormat:
         self._rec = rec
         self._open: dict[str, Event] = {}  # call id -> tool.call event, oldest first
         self._answered: set[str] = set()  # results already recorded, by `_result_key`
+        self._unmatched: set[str] = set()  # results seen that answered no open call
         self._minted = 0
 
     @staticmethod
     def model(body: dict[str, Any]) -> str:
         return str(body.get("model") or "unknown")
 
-    def _match(self, fr: dict[str, Any], history: dict[str, dict[str, Any]]) -> Event | None:
+    def _match(
+        self, fr: dict[str, Any], history: dict[str, dict[str, Any]], loose: bool = True
+    ) -> Event | None:
         """The open call a result answers: by id, or by the id less a `<name>__` prefix
         (Gemini CLI prefixes ids internally and strips the prefix before it sends; a request
         that skipped that would carry it). Failing that (the API gave the call no id and the
@@ -89,6 +92,8 @@ class GeminiFormat:
         for key in (rid, rid.removeprefix(f"{name}__") if name else ""):
             if key and key in self._open:
                 return self._open.pop(key)
+        if not loose:
+            return None
         args = history.get(rid) if rid else None
         for key, call in self._open.items():
             if call.attrs.get("gen_ai.tool.name") != name:
@@ -111,8 +116,12 @@ class GeminiFormat:
             key = _result_key(fr, seen)
             if key in self._answered:
                 continue
-            call = self._match(fr, history)
+            # a result that answered no call when first seen is an old one (a history resent
+            # from before this session): only its exact id may match later, never a new
+            # call to the same tool by name
+            call = self._match(fr, history, loose=key not in self._unmatched)
             if call is None:
+                self._unmatched.add(key)
                 continue
             self._answered.add(key)
             response = as_dict(fr.get("response"))
@@ -231,6 +240,8 @@ class CodeAssistFormat(GeminiFormat):
     def inner(body: dict[str, Any]) -> dict[str, Any]:
         """The GenerateContentRequest inside, with the model as the gateway records it."""
         return {**as_dict(body.get("request")), "model": body.get("model")}
+
+    policy_view = inner  # the request policy reads, as for any Gemini request
 
     def begin(self, body: dict[str, Any]) -> ModelCall:
         return super().begin(self.inner(body))

@@ -227,3 +227,24 @@ def test_a_stream_is_rebuilt_as_gemini_cli_reads_it() -> None:
     assert out["usageMetadata"] == {"promptTokenCount": 120, "candidatesTokenCount": 21}
     assert out["modelVersion"] == "gemini-2.5-pro" and out["responseId"] == "resp-01"
     assert assemble_sse([]) == {} and assemble_sse([{"candidates": "junk"}]) == {}
+
+
+def test_an_old_result_that_matched_nothing_never_claims_a_later_call(tmp_path: Path) -> None:
+    """History resent to a new session: an old result whose call is not in the history
+    matches nothing. When the model later calls the same tool, the old result, still in the
+    history, must not answer the new call; the new result must."""
+    first, second = _replies()
+    old = {"role": "user", "parts": [{"functionResponse": _fr("lookup_order", "old", "cli-1")}]}
+    with Recorder.start(tmp_path, agent_id="gw", run_id="s") as rec:
+        fmt = GeminiFormat(rec)
+        fmt.finish(fmt.begin(_body(old)), second)  # nothing open: the old result is unmatched
+        (call,) = fmt.finish(fmt.begin(_body(old)), first)  # the model calls lookup_order
+        new = {"role": "user", "parts": [{"functionResponse": _fr("lookup_order", "new")}]}
+        fmt.finish(fmt.begin(_body(old, new)), second)
+    (result,) = [e for e in _events(tmp_path) if e.kind is Kind.TOOL_RESULT]
+    assert result.parent_id == call.id
+    assert result.attrs["gen_ai.tool.call.result"] == {"output": "new"}
+
+
+def _fr(name: str, output: str, call_id: str | None = None) -> dict[str, Any]:
+    return {"name": name, "response": {"output": output}, **({"id": call_id} if call_id else {})}

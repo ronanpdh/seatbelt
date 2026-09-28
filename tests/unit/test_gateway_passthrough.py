@@ -213,7 +213,7 @@ def test_the_output_cap_reaches_inside_a_code_assist_request(capped: Gw) -> None
     body = _code_assist([{"text": "hi"}], generationConfig={"maxOutputTokens": 5000})
     r = capped.client.post("/v1internal:generateContent", json=body, headers=GOOGLE)
     assert r.status_code == 403
-    assert "request.generationConfig.maxOutputTokens 5000 exceeds 100" in r.text
+    assert "generationConfig.maxOutputTokens 5000 exceeds 100" in r.text
 
 
 def test_a_compressed_body_is_recorded_and_sent_on_as_it_came(gw: Gw) -> None:
@@ -256,3 +256,27 @@ def test_the_runs_key_and_name_can_come_in_the_path_and_go_no_further(gw: Gw) ->
     assert gw.events()[0].attrs["run.name"] == "claude-1a2b"  # the path's, not the header's
     wrong = gw.client.post("/_seatbelt/sbk_wrong/claude-1a2b/v1/messages", json=MESSAGE)
     assert wrong.status_code == 401 and len(gw.seen) == 1
+
+
+def test_an_openai_fine_tuned_model_lookup_goes_to_openai(gw: Gw) -> None:
+    gw.upstream(httpx2.Response(200, json={"id": "ft"}))
+    model = "ft:gpt-4o-mini-2024-07-18:acme::abc123"
+    headers = {"authorization": "Bearer sk-proj-OWN", "x-seatbelt-key": KEY}
+    r = gw.client.get(f"/v1/models/{model}", headers=headers)
+    assert r.status_code == 200
+    (sent,) = gw.seen
+    assert str(sent.url).startswith("https://api.openai.com/v1/models/ft:gpt-4o-mini")
+
+
+def test_a_provider_credential_with_sbk_inside_it_is_passed_on(gw: Gw) -> None:
+    gw.upstream(*(httpx2.Response(200, json={"type": "message", "content": []}),) * 2)
+    token = "Bearer ya29.a0Af-sbk_looks-like-a-prefix-but-is-not"  # noqa: S105 - fake
+    headers = {"authorization": token, "x-seatbelt-key": KEY}
+    gw.client.post("/v1/messages", json=MESSAGE, headers=headers)
+    assert gw.seen[-1].headers["authorization"] == token
+    gw.client.post(
+        "/v1beta/models/gemini-2.5-pro:generateContent?key=AIza-xsbk_y&alt=sse",
+        json={"contents": []},
+        headers={"x-seatbelt-key": KEY},
+    )
+    assert gw.seen[-1].url.params["key"] == "AIza-xsbk_y"

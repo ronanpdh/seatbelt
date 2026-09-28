@@ -19,7 +19,7 @@ from seatbelt import __version__
 from seatbelt.attest.manifest import sidecar
 from seatbelt.attest.sign import Signer, attest
 from seatbelt.gateway.formats import Format
-from seatbelt.ledger.events import Actor, ActorType, Kind
+from seatbelt.ledger.events import Actor, ActorType, Event, Kind
 from seatbelt.ledger.store import Ledger, LedgerError, read_events
 from seatbelt.record.recorder import Recorder
 from seatbelt.verify.chain import verify_events
@@ -214,8 +214,15 @@ class Sessions:
                 self._changed.notify_all()
 
 
-def close_open_chains(root: Path, signer: Signer | None) -> list[Path]:
-    """After a crash: append a failed run.end to every open chain and sign it. A ledger that
+def close_open_chains(
+    root: Path,
+    signer: Signer | None,
+    only: Callable[[list[Event]], bool] | None = None,
+    reason: str = "gateway restarted",
+) -> list[Path]:
+    """After a crash: append a failed run.end to every open chain and sign it. `only`, given
+    the chain's events, picks which open chains to close: those of runs no longer alive,
+    where several processes record into the same folder (`seatbelt run`). A ledger that
     cannot be read or whose chain is broken is left untouched and logged: closing it would
     put a signature over evidence of tampering, and refusing to start would let one bad file
     stop all recording. A closed ledger is never signed here, even one of the gateway's with
@@ -240,6 +247,8 @@ def close_open_chains(root: Path, signer: Signer | None) -> list[Path]:
                     path,
                 )
             continue
+        if only is not None and not only(events):
+            continue
         verdict = verify_events(events)
         if not verdict.ok:
             _log.warning(
@@ -252,7 +261,7 @@ def close_open_chains(root: Path, signer: Signer | None) -> list[Path]:
         Ledger(path, events[0].run_id).append(
             Kind.RUN_END,
             Actor(type=ActorType.AGENT, id=_GATEWAY, version=__version__),
-            {"run.ok": False, "run.error": "gateway restarted", "run.events": len(events) + 1},
+            {"run.ok": False, "run.error": reason, "run.events": len(events) + 1},
         )
         if signer is not None and not sidecar(path).exists():
             attest(path, signer)

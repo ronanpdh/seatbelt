@@ -12,12 +12,14 @@ import getpass
 import logging
 import os
 import secrets
+import sys
 import threading
 from collections.abc import Generator, Mapping
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
+from typing import IO
 
 import uvicorn
 from pydantic import ValidationError
@@ -33,7 +35,7 @@ from seatbelt.gateway.config import (
     key_hash,
 )
 from seatbelt.gateway.serve import make_sink
-from seatbelt.gateway.sessions import Sessions
+from seatbelt.gateway.sessions import Sessions, close_open_chains
 
 _log = logging.getLogger(__name__)
 
@@ -46,6 +48,58 @@ UPSTREAMS = {
 }
 IDLE = 7 * 24 * 3600.0  # nothing sweeps local sessions; the run's end closes its ledger
 SHIP_WAIT = 30.0  # seconds to wait at exit for the sink; what is left ships next run
+TIDY_WAIT = 60.0  # seconds to wait at exit for the start-up tidy (below) to finish
+RUNNING = ".running"  # in the ledgers folder: one lock file per live run
+DEAD_RUN = "run ended without closing its ledger (the process was killed)"
+
+
+def _try_lock(handle: IO[bytes]) -> bool:
+    """Take the OS's exclusive lock on an open file without waiting; False if it is held.
+    Held until the handle is closed, and released by the OS when the process dies."""
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    return True
+
+
+def _lock_file(ledgers: Path, run: str) -> Path:
+    return ledgers / RUNNING / f"{run}.lock"
+
+
+def _alive(ledgers: Path, run: object) -> bool:
+    """Whether the run that opened a ledger is still running: its lock file is locked. A run
+    takes its lock before it opens any ledger, so a ledger without one is a dead run's."""
+    if not isinstance(run, str) or not run:
+        return False
+    path = _lock_file(ledgers, run)
+    try:
+        handle = path.open("rb")
+    except OSError:
+        return False
+    with handle:
+        if not _try_lock(handle):
+            return True
+    path.unlink(missing_ok=True)  # stale: its run died
+    return False
+
+
+def close_dead_runs(ledgers: Path, signer: Signer) -> list[Path]:
+    """Close and sign the open ledgers of runs that died (killed, or crashed) and leave every
+    live run's alone: several runs can record into the same folder at once."""
+    return close_open_chains(
+        ledgers,
+        signer,
+        only=lambda events: not _alive(ledgers, events[0].attrs.get("run.name")),
+        reason=DEAD_RUN,
+    )
 
 
 def local_signer(keys: Path) -> Signer:
@@ -54,6 +108,14 @@ def local_signer(keys: Path) -> Signer:
         keygen(keys)
         _log.info("made a signing key for local runs in %s", keys)
     return Signer.from_file(keys / KEY_FILE)
+
+
+def _user() -> str:
+    """Who is running: the login name, or in a container with none, the numeric user id."""
+    try:
+        return getpass.getuser()
+    except (KeyError, OSError):  # no USER/LOGNAME and no passwd entry
+        return f"uid-{os.getuid()}" if hasattr(os, "getuid") else "unknown"
 
 
 @dataclass
@@ -72,17 +134,34 @@ class LocalRecorder:
 
 
 @contextmanager
+def _run_lock(ledgers: Path, run: str) -> Generator[None]:
+    path = _lock_file(ledgers, run)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as handle:
+        if not _try_lock(handle):
+            raise ValueError(f"run {run} is already recording")
+        try:
+            yield
+        finally:
+            path.unlink(missing_ok=True)
+
+
+@contextmanager
 def local_recorder(
     ledgers: Path,
     keys: Path,
+    run: str,
     sink: Mapping[str, object] | None = None,
     upstreams: Mapping[str, str] | None = None,
     env: Mapping[str, str] = os.environ,
 ) -> Generator[LocalRecorder]:
     """Serve on 127.0.0.1 in a background thread until the block exits, then close and sign
-    every ledger this run opened, and ship them when a sink is configured. `upstreams`
-    replaces the providers' URLs by name (a corporate proxy, say). Raises ValueError for a
-    bad sink or upstream."""
+    every ledger this run opened, and ship them when a sink is configured. `run` is the run's
+    name, which its lock is known by. `upstreams` replaces the providers' URLs by name (a
+    corporate proxy, say). Raises ValueError for a bad sink or upstream.
+
+    Meanwhile, in the background: ledgers dead runs left open are closed and signed, and a
+    sink ships what earlier runs did not."""
     signer = local_signer(keys)
     urls = {**UPSTREAMS, **(upstreams or {})}
     try:
@@ -90,7 +169,7 @@ def local_recorder(
     except ValidationError as exc:
         raise ValueError(f"sink: {exc}") from exc
     key = KEY_PREFIX + secrets.token_urlsafe(32)
-    principal = getpass.getuser()
+    principal = _user()
     cfg = GatewayConfig(
         listen="127.0.0.1:0",
         ledgers=ledgers,
@@ -101,8 +180,15 @@ def local_recorder(
     )
     shipper = make_sink(cfg, env)
     if shipper is not None:
-        shipper.catch_up()  # earlier runs a sink missed
         shipper.start()
+
+    def tidy() -> None:  # reads every open ledger: off the path of the CLI's start
+        closed = close_dead_runs(ledgers, signer)
+        if closed:
+            _log.warning("closed %d ledgers that runs left open when they were killed", len(closed))
+        if shipper is not None:
+            shipper.catch_up()  # earlier runs' ledgers a sink missed, and those just closed
+
     written: list[Path] = []
 
     def closed(path: Path) -> None:
@@ -117,11 +203,15 @@ def local_recorder(
         )
     )
     thread = threading.Thread(target=server.run, name="seatbelt-local", daemon=True)
+    tidier = threading.Thread(target=tidy, name="seatbelt-tidy", daemon=True)
+    stack = ExitStack()
+    stack.enter_context(_run_lock(ledgers, run))  # before any ledger of this run exists
     thread.start()
+    tidier.start()
     try:
         while not server.started:
             if not thread.is_alive():
-                raise RuntimeError("the local recorder did not start")
+                raise ValueError("the local recorder did not start; see the log above")
             thread.join(0.02)
         port = server.servers[0].sockets[0].getsockname()[1]
         yield LocalRecorder(f"http://127.0.0.1:{port}", key, principal, ledgers, sessions, written)
@@ -130,7 +220,9 @@ def local_recorder(
         thread.join(30)
         left = sessions.close_all()
         if left:
-            _log.warning("%d ledgers were still busy and are left open", left)
+            _log.warning("%d ledgers were still busy; the next run closes them", left)
+        tidier.join(TIDY_WAIT)  # a daemon killed mid-append would break a chain
+        stack.close()  # this run's ledgers are closed, or now a dead run's for the next one
         if shipper is not None:
             unshipped = shipper.stop(SHIP_WAIT)
             if unshipped:

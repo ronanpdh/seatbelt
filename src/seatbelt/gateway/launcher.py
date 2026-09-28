@@ -370,13 +370,13 @@ def run_cli(
     cfg = load_client_config(config)
     if cfg.path is not None and cfg.key and readable_by_others(cfg.path):
         print(f"warning: {cfg.path} holds your gateway key; chmod 600 it", file=sys.stderr)
-    local = cfg.gateway is None or cfg.key is None
+    gateway = (cfg.gateway, cfg.key) if cfg.gateway and cfg.key else None
     if cli == "gemini":
-        _gemini_warnings(local)
+        _gemini_warnings(local=gateway is None)
     run = f"{cli}-{secrets.token_hex(4)}"
-    if cfg.gateway is None or cfg.key is None:
+    if gateway is None:
         return _run_local(cli, args, cfg, exe, run)
-    url, key = cfg.gateway, cfg.key
+    url, key = gateway
     env = environment(cli, url, key, run, os.environ)
     try:
         return _spawn([exe or cli, *arguments(cli, url, run), *args], env)
@@ -393,7 +393,7 @@ def _run_local(cli: str, args: list[str], cfg: ClientConfig, exe: str | None, ru
     root = data_dir()
     ledgers = cfg.ledgers or root / "runs"
     upstreams = {**chained_upstreams(os.environ), **cfg.upstreams}
-    with local_recorder(ledgers, root / "keys", cfg.sink, upstreams) as recorder:
+    with local_recorder(ledgers, root / "keys", run, cfg.sink, upstreams) as recorder:
         url = local_url(recorder.url, recorder.key, run)
         env = environment(cli, url, recorder.key, run, os.environ, local=True)
         try:
