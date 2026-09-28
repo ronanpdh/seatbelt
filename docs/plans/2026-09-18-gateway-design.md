@@ -38,7 +38,7 @@ Rejected: a local per-machine proxy (record on the employee's disk; identity fro
 listen: 0.0.0.0:8080
 signing_key: /etc/seatbelt/gateway.key
 ledgers: /var/lib/seatbelt/runs
-session_idle: 15m
+session_idle: 900
 upstreams:
   anthropic: { url: https://api.anthropic.com, key_env: ANTHROPIC_API_KEY }
   openai:    { url: https://api.openai.com,    key_env: OPENAI_API_KEY }
@@ -49,6 +49,8 @@ policy:
 principals:
   - { id: alice@corp, key_sha256: "9f2c...", issued: 2026-09-18 }
 ```
+
+`session_idle` is in seconds (900 is 15 minutes). Relative paths resolve against the config file.
 
 ## CLI
 

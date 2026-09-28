@@ -10,6 +10,7 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 - `examples/anthropic_scenario_target.py`: Claude as the support agent for the scenario corpus, recorded through the adapter, with a `refund-limit` policy check in the tool executor.
 - `seatbelt.gateway.formats.anthropic`: the Anthropic Messages wire format on plain JSON (request, response, SSE reassembly), shared by the SDK adapter and the gateway.
 - `seatbelt.gateway.formats.openai_chat`: the OpenAI Chat Completions wire format on plain JSON, including SSE reassembly, for the gateway.
+- `seatbelt.gateway.config`: the gateway's YAML configuration (upstreams, policy, session idle, signing key) and issued employee keys stored as SHA-256 hashes; `add_principal` returns a key once and refuses a duplicate id.
 
 ### Changed
 - The Anthropic adapter records every integer `usage` field the provider returns (cache tokens included), not only input and output tokens.
