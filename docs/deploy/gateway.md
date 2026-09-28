@@ -41,7 +41,7 @@ The container image runs as uid 1000 and writes ledgers under `/var/lib/seatbelt
 4. Build the image and run it, with the config and key mounted read-only and the provider keys passed as environment:
 
    ```sh
-   rm -rf dist && uv build && docker build -f docker/Dockerfile.gateway -t seatbelt-gateway .
+   docker build -f docker/Dockerfile.gateway -t seatbelt-gateway .   # builds the wheel itself
    docker volume create seatbelt-runs
    docker run -d --name seatbelt-gateway -p 8080:8080 --stop-timeout 70 \
      -v "$PWD/gateway.yaml:/etc/seatbelt/gateway.yaml:ro" \
@@ -69,6 +69,14 @@ The container image runs as uid 1000 and writes ledgers under `/var/lib/seatbelt
      -v seatbelt-runs:/var/lib/seatbelt:ro -v "$PWD/keys/seatbelt.pub:/seatbelt.pub:ro" \
      seatbelt-gateway report /var/lib/seatbelt/runs --pubkey /seatbelt.pub
    ```
+
+### On a PaaS (Coolify and similar)
+
+A host that builds from git can use `docker/Dockerfile.gateway` as is: it builds seatbelt from the repository, no `uv build` first. Mount `gateway.yaml` as a file at `/etc/seatbelt/gateway.yaml`, give `/var/lib/seatbelt` a persistent volume, expose port 8080 and put the host's HTTPS domain in front.
+
+Where you cannot control a mounted file's owner or mode, leave `signing_key` out of the config and pass the key in the environment instead, as `SEATBELT_SIGNING_KEY`: the PEM itself, or its base64 so it survives any env var editor (`base64 < keys/seatbelt.key | tr -d '\n'`). Setting both is refused. Treat the variable like the key file: anyone who can read the service's environment can sign ledgers.
+
+Because the service is reachable only through the host's proxy, `FORWARDED_ALLOW_IPS=*` is safe there and makes `client.ip` the real client. Issue employee keys with `seatbelt gateway keygen` against a local copy of the config, then paste the new `principals` entry into the mounted file and restart.
 
 ## Sessions and runs
 

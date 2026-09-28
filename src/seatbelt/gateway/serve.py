@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
+import os
 import threading
+from collections.abc import Mapping
 
 import uvicorn
 
+from seatbelt.attest.manifest import AttestError
 from seatbelt.attest.sign import Signer
 from seatbelt.gateway.app import create_app
 from seatbelt.gateway.config import GatewayConfig
@@ -23,9 +28,33 @@ def _host_port(listen: str) -> tuple[str, int]:
     return host.strip("[]") or "127.0.0.1", int(port)  # "[::]:8080" is IPv6
 
 
+KEY_ENV = "SEATBELT_SIGNING_KEY"
+
+
+def load_signer(cfg: GatewayConfig, env: Mapping[str, str]) -> Signer:
+    """The signing key from `signing_key` in the config, or from SEATBELT_SIGNING_KEY: the PEM
+    itself or its base64 (which survives any env var UI). For hosts that inject secrets as
+    environment, where a mounted key file's owner and mode are not under your control."""
+    value = env.get(KEY_ENV, "").strip()
+    if value and cfg.signing_key is not None:
+        raise AttestError(f"both signing_key and {KEY_ENV} are set; set one")
+    if cfg.signing_key is not None:
+        return Signer.from_file(cfg.signing_key)
+    if not value:
+        raise AttestError(f"no signing key: set signing_key in the config or {KEY_ENV}")
+    if value.startswith("-----BEGIN"):
+        # some env var UIs flatten a multi-line value into backslash-n sequences
+        return Signer.from_pem(value.replace("\\n", "\n").encode(), KEY_ENV)
+    try:
+        pem = base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise AttestError(f"{KEY_ENV}: neither a PEM key nor base64 of one") from exc
+    return Signer.from_pem(pem, KEY_ENV)
+
+
 def serve(cfg: GatewayConfig) -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(name)s: %(message)s")
-    signer = Signer.from_file(cfg.signing_key)
+    signer = load_signer(cfg, os.environ)
     host, port = _host_port(cfg.listen)
     closed = close_open_chains(cfg.ledgers, signer)
     if closed:

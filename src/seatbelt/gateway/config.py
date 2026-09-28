@@ -38,7 +38,7 @@ class Principal(_Strict):
 
 class GatewayConfig(_Strict):
     listen: str = "127.0.0.1:8080"
-    signing_key: Path
+    signing_key: Path | None = None  # or SEATBELT_SIGNING_KEY in the environment
     ledgers: Path
     session_idle: int = Field(default=900, gt=0)  # seconds
     upstreams: dict[str, Upstream]
@@ -74,7 +74,8 @@ def load_config(path: Path) -> GatewayConfig:
     except ValidationError as exc:
         raise ValueError(f"{path}: {exc}") from exc
     base = path.resolve().parent  # paths in the file are relative to the file
-    cfg.signing_key = base / cfg.signing_key.expanduser()
+    if cfg.signing_key is not None:
+        cfg.signing_key = base / cfg.signing_key.expanduser()
     cfg.ledgers = base / cfg.ledgers.expanduser()
     return cfg
 

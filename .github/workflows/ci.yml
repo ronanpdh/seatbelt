@@ -31,6 +31,5 @@ jobs:
           enable-cache: true
       - run: uv sync --locked
       - run: uv run pytest -m integration
-      - run: uv build
       - run: docker build -f docker/Dockerfile.gateway -t seatbelt-gateway .
       - run: docker run --rm --entrypoint seatbelt seatbelt-gateway gateway serve --help

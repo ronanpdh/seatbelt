@@ -28,11 +28,19 @@ class Signer:
     @classmethod
     def from_file(cls, path: Path) -> Signer:
         try:
-            key = serialization.load_pem_private_key(path.read_bytes(), password=None)
-        except (OSError, ValueError, TypeError, UnsupportedAlgorithm) as exc:
+            data = path.read_bytes()
+        except OSError as exc:
             raise AttestError(f"{path}: not a PEM private key: {exc}") from exc
+        return cls.from_pem(data, str(path))
+
+    @classmethod
+    def from_pem(cls, data: bytes, source: str = "key") -> Signer:
+        try:
+            key = serialization.load_pem_private_key(data, password=None)
+        except (ValueError, TypeError, UnsupportedAlgorithm) as exc:
+            raise AttestError(f"{source}: not a PEM private key: {exc}") from exc
         if not isinstance(key, Ed25519PrivateKey):
-            raise AttestError(f"{path}: not an Ed25519 key")
+            raise AttestError(f"{source}: not an Ed25519 key")
         return cls(key)
 
     def sign[M: Signed](self, manifest: M) -> M:

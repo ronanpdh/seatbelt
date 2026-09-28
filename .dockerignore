@@ -1,2 +1,7 @@
 *
 !dist/*.whl
+!pyproject.toml
+!README.md
+!LICENSE
+!src
+src/**/__pycache__
