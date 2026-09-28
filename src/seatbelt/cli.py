@@ -15,6 +15,8 @@ from seatbelt.attest.sign import Signer
 from seatbelt.attest.sign import attest as sign_ledger
 from seatbelt.attest.sign import keygen as make_keys
 from seatbelt.gateway.config import add_principal, load_config
+from seatbelt.gateway.launcher import DEFAULT_CONFIG as DEFAULT_CLIENT_CONFIG
+from seatbelt.gateway.launcher import run_cli
 from seatbelt.ledger.store import LedgerError
 from seatbelt.record.recorder import Recorder
 from seatbelt.report.pack import PackError, PackStatus
@@ -306,3 +308,24 @@ def gateway_serve(config: ConfigOpt = Path("gateway.yaml")) -> None:
     except (AttestError, ValueError) as exc:  # ValueError: a bad `listen`
         console.print(f"[red]{escape(str(exc))}[/]")
         raise typer.Exit(code=1) from exc
+
+
+@app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+def run(
+    ctx: typer.Context,
+    cli: Annotated[str, typer.Argument(help="client to launch: claude or codex")],
+    config: Annotated[
+        Path, typer.Option(help="gateway url and your key (TOML)")
+    ] = DEFAULT_CLIENT_CONFIG,
+    exe: Annotated[str | None, typer.Option(help="executable, if not the preset's name")] = None,
+) -> None:
+    """Launch a CLI through the recording gateway. Arguments after -- go to the CLI."""
+    try:
+        code = run_cli(cli, list(ctx.args), config=config, exe=exe)
+    except ValueError as exc:
+        console.print(f"[red]{escape(str(exc))}[/]")
+        raise typer.Exit(code=1) from exc
+    except FileNotFoundError as exc:
+        console.print(f"[red]{escape(str(exc))}[/]")
+        raise typer.Exit(code=127) from exc
+    raise typer.Exit(code=code)

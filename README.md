@@ -74,7 +74,7 @@ uv run seatbelt gateway keygen --user alice@corp                # prints alice's
 uv run seatbelt gateway serve                                   # listens on 127.0.0.1:8080
 ```
 
-Point a client at it with the issued key: `ANTHROPIC_BASE_URL=http://127.0.0.1:8080 ANTHROPIC_API_KEY=sbk_... claude`, or an OpenAI client with `OPENAI_BASE_URL=http://127.0.0.1:8080/v1`. The real provider keys stay in the gateway's environment. A session closes and is signed after `session_idle` seconds of quiet (default 900); `policy:` in the config restricts models, output tokens and tools.
+Each employee puts the gateway URL and their key in `~/.config/seatbelt/gateway.toml` (`url = "http://127.0.0.1:8080"`, `key = "sbk_..."`, mode 0600) and runs `seatbelt run claude` (or `codex`): it launches the CLI pointed at the gateway, names the run, removes real provider keys from its environment, and ends the run when the CLI exits. By hand: `ANTHROPIC_BASE_URL=http://127.0.0.1:8080 ANTHROPIC_API_KEY=sbk_... claude`, or an OpenAI client with `OPENAI_BASE_URL=http://127.0.0.1:8080/v1`. The real provider keys stay in the gateway's environment. A session closes and is signed after `session_idle` seconds of quiet (default 900); `policy:` in the config restricts models, output tokens and tools.
 
 ## Recording your own agent
 
@@ -107,6 +107,7 @@ Using the OpenAI Agents SDK? Register `agents.add_trace_processor(SeatbeltProces
 | `seatbelt verify-pack <zip> [--pubkey]` | re-checks a pack offline | forged, or a broken ledger inside |
 | `seatbelt gateway keygen --user <id> [--config]` | issues a gateway key; stores only its hash | the user already has a key |
 | `seatbelt gateway serve [--config]` | runs the recording gateway | bad config or signing key |
+| `seatbelt run <cli> [--config] [--exe] [-- args]` | launches `claude` or `codex` through the gateway | bad config or unknown CLI; otherwise the CLI's own exit code |
 
 Every command has `--help`. Formats: ledger and attestation in [ADR 0001](docs/adr/0001-hash-chained-jsonl-ledger.md) and [ADR 0002](docs/adr/0002-signed-run-manifest.md), scenario and findings schemas in [`docs/schema/`](docs/schema/), evidence pack in [`docs/spec/evidence-pack-v1.md`](docs/spec/evidence-pack-v1.md).
 
