@@ -63,9 +63,16 @@ type Finish = Callable[[ModelCall, dict[str, Any] | None, str | None], None]
 
 
 def _principal(cfg: GatewayConfig, request: Request) -> Principal | None:
-    raw = request.headers.get("x-api-key") or request.headers.get("authorization", "")
-    key = raw[7:] if raw[:7].lower() == "bearer " else raw
-    return cfg.lookup(key.strip()) if key.strip() else None
+    """Claude Code can send both headers, one of them another credential (an `apiKeyHelper`
+    key in `x-api-key`, say), so each is tried."""
+    bearer = request.headers.get("authorization", "")
+    for raw in (
+        request.headers.get("x-api-key", ""),
+        bearer[7:] if bearer[:7].lower() == "bearer " else "",
+    ):
+        if raw.strip() and (principal := cfg.lookup(raw.strip())) is not None:
+            return principal
+    return None
 
 
 def _error(status: int, kind: str, message: str) -> Response:

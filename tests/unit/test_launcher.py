@@ -41,15 +41,15 @@ def test_claude_preset_keeps_the_users_own_custom_headers() -> None:
     assert env["ANTHROPIC_CUSTOM_HEADERS"] == "X-Team: a\nX-Seatbelt-Run: r"
 
 
-def test_codex_preset() -> None:
-    env = environment("codex", "https://gw.corp", "sbk_abc", "run-1", base={})
-    assert env["OPENAI_BASE_URL"] == "https://gw.corp/v1" and env["OPENAI_API_KEY"] == "sbk_abc"
+def test_codex_is_refused_until_the_gateway_serves_responses() -> None:
+    with pytest.raises(ValueError, match="Responses API"):
+        environment("codex", "https://gw.corp", "sbk_abc", "run-1", base={})
 
 
 def test_unknown_cli_is_refused() -> None:
     with pytest.raises(ValueError):
         environment("vim", "u", "k", "r", base={})
-    assert set(PRESETS) >= {"claude", "codex"}
+    assert set(PRESETS) >= {"claude"}
 
 
 PROBE = (

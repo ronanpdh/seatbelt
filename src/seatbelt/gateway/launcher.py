@@ -24,7 +24,9 @@ PRESETS: dict[str, dict[str, str]] = {  # cli -> env template
         "ANTHROPIC_AUTH_TOKEN": "{key}",  # sent as Authorization: Bearer
         "ANTHROPIC_CUSTOM_HEADERS": "X-Seatbelt-Run: {run}",
     },
-    "codex": {"OPENAI_BASE_URL": "{url}/v1", "OPENAI_API_KEY": "{key}"},
+}
+NOT_YET = {  # clients a preset would launch but the gateway cannot record yet
+    "codex": "Codex speaks only the OpenAI Responses API, which the gateway serves from 0.3.0",
 }
 # real provider credentials never reach the child, so it cannot bypass the gateway by accident
 _PROVIDER_KEYS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY")
@@ -45,6 +47,8 @@ def readable_by_others(path: Path) -> bool:
 
 
 def environment(cli: str, url: str, key: str, run: str, base: Mapping[str, str]) -> dict[str, str]:
+    if cli in NOT_YET:
+        raise ValueError(f"{cli} is not supported yet: {NOT_YET[cli]}")
     if cli not in PRESETS:
         raise ValueError(f"no preset for {cli}; known: {', '.join(PRESETS)}")
     env = {k: v for k, v in base.items() if k not in _PROVIDER_KEYS}
