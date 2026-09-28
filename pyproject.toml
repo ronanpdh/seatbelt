@@ -22,25 +22,25 @@ seatbelt = "seatbelt.cli:app"
 
 [project.optional-dependencies]
 anthropic = [
-    "anthropic>=1.5.0",
+    "anthropic>=1.8.0",
 ]
 openai-agents = [
-    "openai-agents>=0.22.2",
+    "openai-agents>=0.22.3",
 ]
 
 [build-system]
-requires = ["uv_build>=0.12.13,<0.13.0"]
+requires = ["uv_build>=0.12.18,<0.13.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
-    "anthropic>=1.5.0",  # adapter tests and pyright need the optional SDK
-    "hypothesis>=6.168.0",
-    "openai-agents>=0.22.2",
+    "anthropic>=1.8.0",  # adapter tests and pyright need the optional SDK
+    "hypothesis>=6.168.1",
+    "openai-agents>=0.22.3",
     "pre-commit>=4.6.2",
     "pyright>=1.1.414",
     "pytest>=9.1.1",
-    "ruff>=0.16.7",
+    "ruff>=0.16.9",
     "types-pyyaml>=6.0.12.20260906",
 ]
 
