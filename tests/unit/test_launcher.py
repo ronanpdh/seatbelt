@@ -30,12 +30,37 @@ def _config(tmp_path: Path, mode: int = 0o600) -> Path:
 
 
 def test_client_config_is_read_from_toml(tmp_path: Path) -> None:
-    assert load_client_config(_config(tmp_path)) == ("https://gw.corp", "sbk_abc")
+    legacy = load_client_config(_config(tmp_path))  # 0.2.0's url and key
+    assert (legacy.gateway, legacy.key) == ("https://gw.corp", "sbk_abc")
     with pytest.raises(ValueError):
         load_client_config(tmp_path / "missing.toml")
-    (tmp_path / "bad.toml").write_text('url = "x"\n')
+    (tmp_path / "bad.toml").write_text('gateway = "x"\n')
     with pytest.raises(ValueError, match="key"):
         load_client_config(tmp_path / "bad.toml")
+    (tmp_path / "typo.toml").write_text('gatway = "x"\n')
+    with pytest.raises(ValueError, match="unknown keys gatway"):
+        load_client_config(tmp_path / "typo.toml")
+    local = tmp_path / "config.toml"
+    local.write_text(
+        'ledgers = "runs"\n[upstreams]\nanthropic = "https://proxy.corp"\n'
+        '[sink]\nurl = "https://fsn1.your-objectstorage.com"\nbucket = "b"\nregion = "fsn1"\n'
+    )
+    cfg = load_client_config(local)
+    assert cfg.gateway is None and cfg.ledgers == tmp_path / "runs"
+    assert cfg.upstreams == {"anthropic": "https://proxy.corp"}
+    assert cfg.sink is not None and cfg.sink["bucket"] == "b"
+
+
+def test_no_client_config_at_all_means_record_locally(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from seatbelt.gateway import launcher
+
+    monkeypatch.setattr(launcher, "DEFAULT_CONFIG", tmp_path / "config.toml")
+    monkeypatch.setattr(launcher, "LEGACY_CONFIG", tmp_path / "gateway.toml")
+    assert load_client_config() == launcher.ClientConfig()
+    _config(tmp_path)  # a 0.2.0 gateway.toml is still found
+    assert load_client_config().gateway == "https://gw.corp"
 
 
 def test_claude_preset_sets_base_url_token_and_run_header() -> None:

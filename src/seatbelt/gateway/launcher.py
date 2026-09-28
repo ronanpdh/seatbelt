@@ -1,7 +1,11 @@
 """`seatbelt run <cli>`: preset the environment (and, for Codex, a model provider on its
-command line) so an existing CLI talks to the gateway.
+command line) so an existing CLI is recorded.
 
-Stdlib only: this runs on employee machines, which need no server dependencies."""
+With no gateway in the client config, the run is recorded on this machine: a gateway starts
+inside this process for the run (`seatbelt.gateway.local`) and the CLI keeps its own
+credentials. With `gateway = <url>` and `key`, it goes through the org's gateway instead.
+
+Stdlib only at import: the local recorder's server code is imported when a run needs it."""
 
 from __future__ import annotations
 
@@ -16,10 +20,14 @@ import tomllib
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
-DEFAULT_CONFIG = Path.home() / ".config" / "seatbelt" / "gateway.toml"
+CONFIG_DIR = Path.home() / ".config" / "seatbelt"
+DEFAULT_CONFIG = CONFIG_DIR / "config.toml"
+LEGACY_CONFIG = CONFIG_DIR / "gateway.toml"  # 0.2.0: url and key only
+KEY_HEADER = "X-Seatbelt-Key"  # the run's key beside the CLI's own credentials, local mode
 
 CODEX_KEY_ENV = "SEATBELT_GATEWAY_KEY"  # the env var the codex preset's provider reads
 PRESETS: dict[str, dict[str, str]] = {  # cli -> env template
@@ -42,6 +50,17 @@ PRESETS: dict[str, dict[str, str]] = {  # cli -> env template
         "GOOGLE_GENAI_USE_GCA": "false",
     },
 }
+# local mode: the CLI keeps its own credentials and names the run's key in a header
+LOCAL_PRESETS: dict[str, dict[str, str]] = {
+    "claude": {
+        "ANTHROPIC_BASE_URL": "{url}",
+        "ANTHROPIC_CUSTOM_HEADERS": f"X-Seatbelt-Run: {{run}}\n{KEY_HEADER}: {{key}}",
+    },
+    "gemini": {
+        "GOOGLE_GEMINI_BASE_URL": "{url}",
+        "GEMINI_CLI_CUSTOM_HEADERS": f"X-Seatbelt-Run: {{run}}, {KEY_HEADER}: {{key}}",
+    },
+}
 NOT_YET: dict[str, str] = {}  # clients a preset would launch but the gateway cannot record yet
 # real provider credentials never reach the child, so it cannot bypass the gateway by accident
 _PROVIDER_KEYS = (
@@ -60,25 +79,99 @@ _HEADER_SEPARATOR = {"ANTHROPIC_CUSTOM_HEADERS": "\n", "GEMINI_CLI_CUSTOM_HEADER
 EndRun = Callable[[str, str, str], None]  # (gateway url, key, run name)
 
 
-def load_client_config(path: Path = DEFAULT_CONFIG) -> tuple[str, str]:
+def data_dir(env: Mapping[str, str] = os.environ, platform: str = sys.platform) -> Path:
+    """Where local runs live: `$SEATBELT_HOME`, else the platform's per-user data folder:
+    `runs/` for the ledgers and `keys/` for this machine's signing key."""
+    if env.get("SEATBELT_HOME"):
+        return Path(env["SEATBELT_HOME"]).expanduser()
+    home = Path.home()
+    if platform == "darwin":
+        return home / "Library" / "Application Support" / "seatbelt"
+    if platform == "win32":
+        return Path(env.get("LOCALAPPDATA") or home / "AppData" / "Local") / "seatbelt"
+    return Path(env.get("XDG_DATA_HOME") or home / ".local" / "share") / "seatbelt"
+
+
+@dataclass(frozen=True)
+class ClientConfig:
+    """`~/.config/seatbelt/config.toml`. Every key is optional::
+
+    gateway = "https://gw.corp.example"  # record through the org's gateway, with
+    key = "sbk_..."                      # your issued key; unset: record locally
+    ledgers = "~/seatbelt/runs"          # local: where ledgers go
+    [upstreams]                          # local: providers' URLs, e.g. a proxy
+    anthropic = "https://llm-proxy.corp.example"
+    [sink]                               # local: also ship ledgers to object storage
+    url = "https://fsn1.your-objectstorage.com"
+    bucket = "ledgers"
+    region = "fsn1"
+    """
+
+    gateway: str | None = None
+    key: str | None = None
+    ledgers: Path | None = None
+    upstreams: dict[str, str] = field(default_factory=dict[str, str])
+    sink: dict[str, Any] | None = None
+    path: Path | None = None  # the file it came from, if any
+
+
+_CLIENT_KEYS = {"gateway", "url", "key", "ledgers", "upstreams", "sink"}
+
+
+def load_client_config(path: Path | None = None) -> ClientConfig:
+    """The config at `path`; with none given, `config.toml`, else 0.2.0's `gateway.toml`
+    (`url` is read as `gateway`), else none: record locally."""
+    if path is None:
+        path = next((p for p in (DEFAULT_CONFIG, LEGACY_CONFIG) if p.exists()), None)
+        if path is None:
+            return ClientConfig()
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
-        return str(data["url"]).rstrip("/"), str(data["key"])
-    except (OSError, KeyError, tomllib.TOMLDecodeError) as exc:
-        raise ValueError(f"{path}: {exc}; expected url = ... and key = ...") from exc
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise ValueError(f"{path}: {exc}") from exc
+    unknown = sorted(set(data) - _CLIENT_KEYS)
+    if unknown:
+        raise ValueError(f"{path}: unknown keys {', '.join(unknown)}")
+    gateway = data.get("gateway") or data.get("url")
+    key = data.get("key")
+    if gateway is not None and not (isinstance(gateway, str) and isinstance(key, str) and key):
+        raise ValueError(f'{path}: a gateway needs your key: key = "sbk_..."')
+    upstreams = data.get("upstreams", {})
+    if not isinstance(upstreams, dict) or not all(
+        isinstance(v, str) for v in cast(dict[str, Any], upstreams).values()
+    ):
+        raise ValueError(f"{path}: [upstreams] maps a provider to its URL")
+    sink = data.get("sink")
+    if sink is not None and not isinstance(sink, dict):
+        raise ValueError(f"{path}: [sink] is a table")
+    ledgers = data.get("ledgers")
+    return ClientConfig(
+        gateway=gateway.rstrip("/") if isinstance(gateway, str) else None,
+        key=key if isinstance(key, str) else None,
+        ledgers=path.parent / Path(ledgers).expanduser() if isinstance(ledgers, str) else None,
+        upstreams=cast(dict[str, str], upstreams),
+        sink=cast(dict[str, Any], sink) if sink is not None else None,
+        path=path,
+    )
 
 
 def readable_by_others(path: Path) -> bool:
     return bool(path.stat().st_mode & (stat.S_IRWXG | stat.S_IRWXO))
 
 
-def environment(cli: str, url: str, key: str, run: str, base: Mapping[str, str]) -> dict[str, str]:
+def environment(
+    cli: str, url: str, key: str, run: str, base: Mapping[str, str], local: bool = False
+) -> dict[str, str]:
+    """The CLI's environment. Through a gateway, its own provider credentials are removed,
+    so it cannot go around the gateway by accident; locally they are what it signs in with."""
+    presets = LOCAL_PRESETS if local else PRESETS
     if cli in NOT_YET:
         raise ValueError(f"{cli} is not supported yet: {NOT_YET[cli]}")
-    if cli not in PRESETS:
-        raise ValueError(f"no preset for {cli}; known: {', '.join(PRESETS)}")
-    env = {k: v for k, v in base.items() if k not in _PROVIDER_KEYS}
-    for name, template in PRESETS[cli].items():
+    if cli not in presets:
+        where = "locally" if local else "through a gateway"
+        raise ValueError(f"no preset to record {cli} {where}; known: {', '.join(presets)}")
+    env = dict(base) if local else {k: v for k, v in base.items() if k not in _PROVIDER_KEYS}
+    for name, template in presets[cli].items():
         value = template.format(url=url, key=key, run=run)
         if name in _HEADER_SEPARATOR and base.get(name):
             value = f"{base[name]}{_HEADER_SEPARATOR[name]}{value}"  # keep the user's own
@@ -167,12 +260,12 @@ def gemini_warnings(home: Path, cwd: Path, system: Path, system_defaults: Path) 
     if selected != {"gemini-api-key"}:
         now = " or ".join(sorted(str(v or "not set") for v in selected))
         warnings.append(
-            f"Gemini CLI's sign-in is {now}: only its API key sign-in goes through the "
-            f'gateway. Set "security": {{"auth": {{"selectedType": "gemini-api-key"}}}} in {user}'
+            f"Gemini CLI's sign-in is {now}: only its API key sign-in is recorded. Set "
+            f'"security": {{"auth": {{"selectedType": "gemini-api-key"}}}} in {user}'
         )
     if values("privacy", "usageStatisticsEnabled") != {False}:
         warnings.append(
-            "Gemini CLI may send usage statistics to Google directly, not through the gateway. "
+            "Gemini CLI may send usage statistics to Google directly, unrecorded. "
             f'To stop it, set "privacy": {{"usageStatisticsEnabled": false}} in {user}'
         )
     return warnings
@@ -191,36 +284,69 @@ def end_run(url: str, key: str, run: str) -> None:
         pass  # 404 (nothing was sent) or unreachable: the idle sweeper closes it
 
 
+def _gemini_warnings() -> None:
+    home = Path(os.environ.get("GEMINI_CLI_HOME") or Path.home())
+    system = gemini_system_settings(os.environ)
+    defaults = Path(
+        os.environ.get("GEMINI_CLI_SYSTEM_DEFAULTS_PATH") or system.parent / "system-defaults.json"
+    )
+    for warning in gemini_warnings(home, Path.cwd(), system, defaults):
+        print(f"warning: {warning}", file=sys.stderr)
+
+
+def _spawn(command: list[str], env: dict[str, str]) -> int:
+    child = subprocess.Popen(command, env=env)  # noqa: S603 - the user's CLI
+    # Ctrl-C belongs to the child (Claude Code cancels a response with it); the terminal
+    # sends it to both. Ignore it only after the spawn: an ignored signal is inherited.
+    previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        return child.wait()
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
 def run_cli(
     cli: str,
     args: list[str],
-    config: Path = DEFAULT_CONFIG,
+    config: Path | None = None,
     exe: str | None = None,
     end: EndRun = end_run,
 ) -> int:
-    url, key = load_client_config(config)
-    if readable_by_others(config):
-        print(f"warning: {config} holds your gateway key; chmod 600 it", file=sys.stderr)
+    """Launch `cli` recorded: through the configured gateway, else on this machine."""
+    cfg = load_client_config(config)
+    if cfg.path is not None and cfg.key and readable_by_others(cfg.path):
+        print(f"warning: {cfg.path} holds your gateway key; chmod 600 it", file=sys.stderr)
     if cli == "gemini":
-        home = Path(os.environ.get("GEMINI_CLI_HOME") or Path.home())
-        system = gemini_system_settings(os.environ)
-        defaults = Path(
-            os.environ.get("GEMINI_CLI_SYSTEM_DEFAULTS_PATH")
-            or system.parent / "system-defaults.json"
-        )
-        for warning in gemini_warnings(home, Path.cwd(), system, defaults):
-            print(f"warning: {warning}", file=sys.stderr)
+        _gemini_warnings()
     run = f"{cli}-{secrets.token_hex(4)}"
+    if cfg.gateway is None or cfg.key is None:
+        return _run_local(cli, args, cfg, exe, run)
+    url, key = cfg.gateway, cfg.key
     env = environment(cli, url, key, run, os.environ)
     try:
-        command = [exe or cli, *arguments(cli, url, run), *args]
-        child = subprocess.Popen(command, env=env)  # noqa: S603 - the user's CLI
-        # Ctrl-C belongs to the child (Claude Code cancels a response with it); the terminal
-        # sends it to both. Ignore it only after the spawn: an ignored signal is inherited.
-        previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
-        try:
-            return child.wait()
-        finally:
-            signal.signal(signal.SIGINT, previous)
+        return _spawn([exe or cli, *arguments(cli, url, run), *args], env)
     finally:
         end(url, key, run)
+
+
+def _run_local(cli: str, args: list[str], cfg: ClientConfig, exe: str | None, run: str) -> int:
+    environment(cli, "", "", run, {}, local=True)  # an unsupported CLI fails before any start
+    try:
+        from seatbelt.gateway.local import local_recorder
+    except ImportError as exc:  # the server code is an optional install
+        raise ValueError(
+            f"recording locally needs the gateway extra: pip install 'seatbelt[gateway]' ({exc})"
+        ) from exc
+    root = data_dir()
+    ledgers = cfg.ledgers or root / "runs"
+    with local_recorder(ledgers, root / "keys", cfg.sink, cfg.upstreams) as recorder:
+        env = environment(cli, recorder.url, recorder.key, run, os.environ, local=True)
+        try:
+            code = _spawn([exe or cli, *args], env)
+        finally:
+            recorder.end(run)
+    for path in recorder.written:
+        print(f"seatbelt: recorded {path}", file=sys.stderr)
+    if not recorder.written:
+        print(f"seatbelt: nothing recorded ({cli} sent no model requests)", file=sys.stderr)
+    return code

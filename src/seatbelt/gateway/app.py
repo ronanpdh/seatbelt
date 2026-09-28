@@ -21,7 +21,7 @@ from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
 from seatbelt import __version__
-from seatbelt.gateway.config import GatewayConfig, Principal
+from seatbelt.gateway.config import KEY_PREFIX, GatewayConfig, Principal, Upstream
 from seatbelt.gateway.formats import (
     Format,
     anthropic,
@@ -42,6 +42,9 @@ from seatbelt.record.recorder import ModelCall
 
 RUN_HEADER = "x-seatbelt-run"
 RUN_END_HEADER = "x-seatbelt-run-end"
+# the issued key, for a client whose own auth headers carry its provider credentials to a
+# pass-through upstream (`key_env` unset): `seatbelt run` in local mode
+KEY_HEADER = "x-seatbelt-key"
 _HOP = {
     "connection",
     "keep-alive",
@@ -62,7 +65,11 @@ _STRIP_REQUEST = _HOP | {
     "x-goog-api-key",
     RUN_HEADER,
     RUN_END_HEADER,
+    KEY_HEADER,
 }
+_AUTH_HEADERS = frozenset({"authorization", "x-api-key", "x-goog-api-key"})
+# to a pass-through upstream the client's own credentials go on as sent
+_STRIP_PASSTHROUGH = _STRIP_REQUEST - _AUTH_HEADERS
 # the body is relayed decoded, so the upstream's encoding and length no longer describe it
 _STRIP_RESPONSE = _HOP | {"content-encoding", "content-length"}
 type Assemble = Callable[[list[dict[str, Any]]], dict[str, Any]]
@@ -150,11 +157,13 @@ def _oidc_identity(request: Request, verifier: OidcVerifier, token: str) -> Iden
 async def _identify(live: Live, request: Request) -> Identity | Response:
     """An issued key in any header a client puts its key in (Claude Code can send two, one of
     them another credential, e.g. an `apiKeyHelper` key in `x-api-key`; Google's clients send
-    `x-goog-api-key`, or `?key=` by hand), else a provider's sign-in token as the Bearer
-    (Claude Desktop with `inferenceGatewayOidc`). An error response otherwise."""
+    `x-goog-api-key`, or `?key=` by hand; beside provider credentials, `x-seatbelt-key`),
+    else a provider's sign-in token as the Bearer (Claude Desktop with
+    `inferenceGatewayOidc`). An error response otherwise."""
     bearer = request.headers.get("authorization", "")
     token = bearer[7:].strip() if bearer[:7].lower() == "bearer " else ""
     for raw in (
+        request.headers.get(KEY_HEADER, "").strip(),
         request.headers.get("x-api-key", "").strip(),
         request.headers.get("x-goog-api-key", "").strip(),
         request.query_params.get("key", "").strip(),
@@ -237,8 +246,19 @@ def _live(request: Request) -> Live:
     return cast(Live, request.app.state.live)
 
 
-def _upstream_headers(request: Request, auth_header: str, real_key: str) -> dict[str, str]:
+def _upstream_headers(request: Request, upstream: Upstream, auth_header: str) -> dict[str, str]:
+    """The request's headers for the upstream: with the gateway's provider key in place of the
+    client's, or for a pass-through upstream with the client's own credentials. A seatbelt
+    key is never sent on, whatever header it came in."""
+    if upstream.key_env is None:
+        return {
+            k: v
+            for k, v in request.headers.items()
+            if k.lower() not in _STRIP_PASSTHROUGH
+            and not (k.lower() in _AUTH_HEADERS and KEY_PREFIX in v)
+        }
     headers = {k: v for k, v in request.headers.items() if k.lower() not in _STRIP_REQUEST}
+    real_key = os.environ.get(upstream.key_env, "")
     headers[auth_header] = f"Bearer {real_key}" if auth_header == "authorization" else real_key
     return headers
 
@@ -259,14 +279,18 @@ def _json_object(raw: bytes) -> dict[str, Any] | None:
     return cast(dict[str, Any], value) if isinstance(value, dict) else None
 
 
-def _with_query(request: Request) -> str:
+def _with_query(request: Request, upstream: Upstream) -> str:
     """The path and query to send upstream, less any key parameter: a seatbelt key given as
-    `?key=` goes no further than the gateway, and a client's own provider key is not used."""
-    query = "&".join(
-        p
-        for p in request.url.query.split("&")
-        if p and unquote_plus(p.partition("=")[0]) not in _KEY_PARAMS
-    )
+    `?key=` goes no further than the gateway, and a client's own provider key is not used
+    unless the upstream passes the client's credentials through (a seatbelt key never is)."""
+
+    def kept(param: str) -> bool:
+        name, _, value = param.partition("=")
+        if unquote_plus(name) not in _KEY_PARAMS:
+            return True
+        return upstream.key_env is None and KEY_PREFIX not in unquote_plus(value)
+
+    query = "&".join(p for p in request.url.query.split("&") if p and kept(p))
     return request.url.path + (f"?{query}" if query else "")
 
 
@@ -508,11 +532,9 @@ def create_app(
             )
             outgoing = client.build_request(
                 "POST",
-                _with_query(request),  # Claude Code posts /v1/messages?beta=true
+                _with_query(request, upstream),  # Claude Code posts /v1/messages?beta=true
                 content=raw,
-                headers=_upstream_headers(
-                    request, auth_header, os.environ.get(upstream.key_env, "")
-                ),
+                headers=_upstream_headers(request, upstream, auth_header),
             )
             try:
                 resp = await client.send(outgoing, stream=True)
@@ -575,7 +597,7 @@ def create_app(
         upstream = cfg.upstreams.get(name)
         if upstream is None:
             return _error(request, 404, "not_found_error", f"no {name} upstream")
-        path = _with_query(request)
+        path = _with_query(request, upstream)
         async with httpx2.AsyncClient(
             base_url=upstream.url, transport=request.app.state.transport, timeout=60
         ) as client:
@@ -584,9 +606,7 @@ def create_app(
                     request.method,
                     path,
                     content=await request.body(),
-                    headers=_upstream_headers(
-                        request, auth_header, os.environ.get(upstream.key_env, "")
-                    ),
+                    headers=_upstream_headers(request, upstream, auth_header),
                 )
             except httpx2.HTTPError as exc:
                 return _error(

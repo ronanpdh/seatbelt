@@ -11,6 +11,23 @@ Seatbelt is a model-agnostic harness for AI agents. It records what an agent did
 
 **What it produces.** One JSONL file per run. Each event is SHA-256 hash-chained to the one before it, and secrets are redacted before anything is hashed or written. Any edit, reorder or deletion inside the chain makes `seatbelt verify` fail and name the first bad event. A signed manifest beside it pins the final hash, so a rewritten tail fails too.
 
+**Record your coding agent.** One command, nothing to set up: the run is recorded on your machine and signed.
+
+```sh
+uv tool install git+https://github.com/ronanpdh/seatbelt
+seatbelt run claude                  # Claude Code, recorded; or: seatbelt run gemini
+seatbelt report                      # what your runs did, checked against this machine's key
+```
+
+`seatbelt run` starts a recorder on localhost for the run, points the CLI at it and passes the CLI's own credentials through, so it keeps signing in as it always does. Each run's ledger lands in `~/.local/share/seatbelt/runs` (macOS: `~/Library/Application Support/seatbelt`, Windows: `%LOCALAPPDATA%\seatbelt`), signed with a key made there on first use. To record through your org's gateway instead, put its URL and your key in `~/.config/seatbelt/config.toml`:
+
+```toml
+gateway = "https://gw.corp.example"
+key = "sbk_..."
+```
+
+Other settings there, all optional: `ledgers` (where local runs go), `[upstreams]` (a provider's URL, e.g. a corporate proxy) and `[sink]` (also ship each signed ledger to object storage, as the gateway does; see [deploy/gateway.md](docs/deploy/gateway.md#shipping-ledgers-to-object-storage)).
+
 **Try it in five minutes.**
 
 ```sh
@@ -61,7 +78,7 @@ The pack carries every ledger, its attestation, the findings and the corpus, bou
 **Run it for a team.** A gateway records every employee's model traffic from the clients they already use, one signed ledger per session.
 
 ```sh
-uv sync --extra gateway
+uv sync
 uv run seatbelt keygen keys                                     # the gateway's signing key
 cat > gateway.yaml <<'YAML'
 signing_key: keys/seatbelt.key
@@ -74,7 +91,7 @@ uv run seatbelt gateway keygen --user alice@corp                # prints alice's
 uv run seatbelt gateway serve                                   # listens on 127.0.0.1:8080
 ```
 
-Each employee puts the gateway URL and their key in `~/.config/seatbelt/gateway.toml` (`url = "http://127.0.0.1:8080"`, `key = "sbk_..."`, mode 0600) and runs `seatbelt run claude` (or `seatbelt run codex`, or `seatbelt run gemini`): it launches the CLI pointed at the gateway, names the run, removes real provider keys from its environment, and ends the run when the CLI exits. By hand: `ANTHROPIC_BASE_URL=http://127.0.0.1:8080 ANTHROPIC_API_KEY=sbk_... claude`, an OpenAI client (Chat Completions or Responses) with `OPENAI_BASE_URL=http://127.0.0.1:8080/v1`, or a Gemini API client with `GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:8080`. The real provider keys stay in the gateway's environment. A session closes and is signed after `session_idle` seconds of quiet (default 900); `policy:` in the config restricts models, output tokens and tools. `seatbelt report runs --pubkey keys/seatbelt.pub` summarises who used what and flags anything refused, failed, unsigned or altered.
+Each employee puts the gateway URL and their key in `~/.config/seatbelt/config.toml` (`gateway = "http://127.0.0.1:8080"`, `key = "sbk_..."`, mode 0600; a 0.2.0 `gateway.toml` with `url` still works) and runs `seatbelt run claude` (or `seatbelt run codex`, or `seatbelt run gemini`): it launches the CLI pointed at the gateway, names the run, removes real provider keys from its environment, and ends the run when the CLI exits. By hand: `ANTHROPIC_BASE_URL=http://127.0.0.1:8080 ANTHROPIC_API_KEY=sbk_... claude`, an OpenAI client (Chat Completions or Responses) with `OPENAI_BASE_URL=http://127.0.0.1:8080/v1`, or a Gemini API client with `GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:8080`. The real provider keys stay in the gateway's environment. A session closes and is signed after `session_idle` seconds of quiet (default 900); `policy:` in the config restricts models, output tokens and tools. `seatbelt report runs --pubkey keys/seatbelt.pub` summarises who used what and flags anything refused, failed, unsigned or altered.
 
 ## Recording your own agent
 
