@@ -62,7 +62,7 @@ def _gateway(tmp_path: Path, policy: PolicyConfig | None = None) -> Iterator[Gw]
         policy=policy or PolicyConfig(),
     )
     sessions = Sessions(cfg.ledgers, Signer.generate(), idle=900)
-    app = create_app(cfg, sessions)
+    app = create_app(cfg, sessions, path_credentials=True)  # as the local recorder runs it
     with TestClient(app) as client:
         yield Gw(client, app, cfg.ledgers)
     assert sessions.close_all(timeout=1) == 0

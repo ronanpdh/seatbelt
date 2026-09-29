@@ -14,6 +14,7 @@ from typing import Any
 from seatbelt.gateway.formats import as_dict, as_dicts, integer
 from seatbelt.ledger.events import Event
 from seatbelt.ledger.redact import redact
+from seatbelt.ledger.store import writable
 from seatbelt.record.recorder import ModelCall, Recorder
 
 KEEP = (
@@ -128,8 +129,8 @@ class GeminiFormat:
         """Record tool results carried in the contents, then the request. Clients resend the
         whole history each turn; each result is recorded once."""
         seen: dict[str, int] = {}
-        history = {  # redacted, as the recorded arguments `_match` compares them with are
-            str(fc["id"]): redact(as_dict(fc.get("args")))
+        history = {  # as the recorded arguments `_match` compares them with are written
+            str(fc["id"]): writable(redact(as_dict(fc.get("args"))))
             for content in as_dicts(body.get("contents"))
             for part in _parts(content)
             if (fc := as_dict(part.get("functionCall"))).get("id")

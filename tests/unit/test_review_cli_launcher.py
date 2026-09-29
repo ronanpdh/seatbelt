@@ -304,7 +304,7 @@ def test_run_cli_warns_about_removed_variables_and_says_what_was_recorded(
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-SECRET")
     for status, said in (
         (204, "recorded run claude-"),
-        (404, "nothing recorded"),
+        (404, "no open run claude-"),
         (None, "could not end run"),
     ):
         code = run_cli(

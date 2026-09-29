@@ -49,7 +49,7 @@ def _visible(text: str) -> str:
     return _SURROGATE.sub(lambda m: f"\\u{ord(m.group()):04x}", text)
 
 
-def _writable(value: Any) -> Any:
+def writable(value: Any) -> Any:
     """`value` with every lone surrogate, in strings and dict keys, spelled as its escape
     (the text `\\ud800`), so an event that can be hashed can also be written."""
     if isinstance(value, str):
@@ -57,10 +57,10 @@ def _writable(value: Any) -> Any:
     if isinstance(value, dict):
         out: dict[Any, Any] = {}
         for k, v in cast("dict[Any, Any]", value).items():
-            out[unique_key(_visible(k), out) if isinstance(k, str) else k] = _writable(v)
+            out[unique_key(_visible(k), out) if isinstance(k, str) else k] = writable(v)
         return out
     if isinstance(value, list | tuple):
-        return [_writable(v) for v in value]  # pyright: ignore[reportUnknownVariableType]
+        return [writable(v) for v in value]  # pyright: ignore[reportUnknownVariableType]
     return value
 
 
@@ -107,7 +107,7 @@ class Ledger:
                 kind=kind,
                 actor=actor,
                 parent_id=None if parent_id is None else _clean(parent_id),
-                attrs=_writable(attrs or {}),
+                attrs=writable(attrs or {}),
                 prev_hash=self._last_hash,
             ).sealed()
             line = (event.model_dump_json() + "\n").encode()  # before the file is touched

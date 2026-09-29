@@ -97,7 +97,7 @@ def gw(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Gw]:
         monkeypatch.setenv(name, value)
     cfg = _cfg(tmp_path)
     sessions = Sessions(cfg.ledgers, Signer.generate(), idle=900)
-    app = create_app(cfg, sessions)
+    app = create_app(cfg, sessions, path_credentials=True)  # as the local recorder runs it
     with TestClient(app) as client:
         gw = Gw(client, app, cfg.ledgers)
         gw.upstream(lambda _: httpx2.Response(200, json={"ok": 1}))

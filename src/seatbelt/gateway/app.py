@@ -138,7 +138,8 @@ _CODE_ASSIST_FORWARDED = frozenset(
     }
 )
 # GET /v1internal/{name}: the long-running operation Gemini CLI polls while onboarding
-_CODE_ASSIST_OPERATION = re.compile(r"operations/[A-Za-z0-9][A-Za-z0-9._-]*")
+# (a name of one or more segments, none of them `.` or `..`)
+_CODE_ASSIST_OPERATION = re.compile(r"operations(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+")
 # Codex signed in with ChatGPT sends its account id beside the token; its Responses traffic
 # goes to ChatGPT's backend, not the public API (codex-rs model-provider-info, chatgpt base)
 _CHATGPT_ACCOUNT = "chatgpt-account-id"
@@ -632,7 +633,7 @@ def create_app(
     cfg: GatewayConfig,
     sessions: Sessions,
     transport: httpx2.AsyncBaseTransport | None = None,
-    path_credentials: bool = True,
+    path_credentials: bool = False,
 ) -> Starlette:
     """`path_credentials` takes a run's key and name from `/_seatbelt/{key}/{run}/`, for the
     local recorder; `gateway serve` turns it off, as a key in a path ends up in access logs."""

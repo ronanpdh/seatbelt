@@ -500,8 +500,12 @@ def run_cli(
         status = end(url, key, run)
     if status == 204:
         print(f"seatbelt: recorded run {run} at {url}", file=sys.stderr)
-    elif status == 404:
-        print(f"seatbelt: nothing recorded ({cli} sent no model requests)", file=sys.stderr)
+    elif status == 404:  # no open run by that name
+        print(
+            f"seatbelt: no open run {run} at {url}: {cli} sent no model requests, or the "
+            "gateway already closed the run after it went idle",
+            file=sys.stderr,
+        )
     else:
         print(
             f"seatbelt: could not end run {run} at {url} (status {status or 'none'}); the "

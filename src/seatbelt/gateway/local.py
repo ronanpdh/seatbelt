@@ -11,6 +11,7 @@ from __future__ import annotations
 import getpass
 import logging
 import os
+import re
 import secrets
 import threading
 import time
@@ -56,6 +57,9 @@ DEAD_RUN = "run ended without closing its ledger (the process was killed)"
 KEY_WAIT = 1.0  # seconds to wait for a key another run's first start is still writing
 
 
+_PLAIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # a run name local runs give; no path in it
+
+
 def _lock_file(ledgers: Path, run: str) -> Path:
     return ledgers / RUNNING / f"{run}.lock"
 
@@ -63,7 +67,7 @@ def _lock_file(ledgers: Path, run: str) -> Path:
 def _alive(ledgers: Path, run: object) -> bool:
     """Whether the run that opened a ledger is still running: its lock file is locked. A run
     takes its lock before it opens any ledger, so a ledger without one is a dead run's."""
-    if not isinstance(run, str) or not run:
+    if not isinstance(run, str) or not _PLAIN.fullmatch(run):
         return False
     path = _lock_file(ledgers, run)
     try:
@@ -81,7 +85,7 @@ def _dead_run(ledgers: Path, events: list[Event]) -> bool:
     """A ledger a local run opened (they all name their run) and whose run is gone. Any other
     writer's, such as an erasure record or an import, is left to that writer."""
     name = events[0].attrs.get("run.name")
-    if not isinstance(name, str) or not name or is_record(events):
+    if not isinstance(name, str) or not _PLAIN.fullmatch(name) or is_record(events):
         return False
     return not _alive(ledgers, name)
 
@@ -213,7 +217,11 @@ def local_recorder(
     sessions = Sessions(ledgers, signer, idle=IDLE, on_close=closed)
     server = uvicorn.Server(
         uvicorn.Config(
-            create_app(cfg, sessions), host="127.0.0.1", port=0, log_level="warning", lifespan="off"
+            create_app(cfg, sessions, path_credentials=True),  # the key in the base URL's path
+            host="127.0.0.1",
+            port=0,
+            log_level="warning",
+            lifespan="off",
         )
     )
     thread = threading.Thread(target=server.run, name="seatbelt-local", daemon=True)

@@ -114,7 +114,7 @@ def _resolved(ref: str | None, pubkey: Path | None) -> tuple[Path, Path | None]:
     try:
         return _resolve(ref, pubkey)
     except ValueError as exc:  # also a bad client config
-        console.print(f"[red]{escape(str(exc))}[/]")
+        console.print(f"[red]{escape(printable(str(exc)))}[/]")
         raise typer.Exit(code=1) from exc
 
 
@@ -559,7 +559,7 @@ def erase(
                     )
                 )
     except (AttestError, OSError, ValueError) as exc:
-        console.print(f"[red]{escape(str(exc))}[/]")
+        console.print(f"[red]{escape(printable(str(exc)))}[/]")
         raise typer.Exit(code=1) from exc
     if to_check:
         console.print(

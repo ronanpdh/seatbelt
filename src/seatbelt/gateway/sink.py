@@ -282,10 +282,12 @@ class Sink:
                         _log.warning(
                             "could not ship %s (retry in %.0fs): %s", path.name, delay, exc
                         )
+                    if requeued:  # the next ledger goes now; this one waits its turn
+                        if self._stop.is_set():
+                            return
+                        break
                     if self._stop.wait(delay):
                         return  # stopping: this ledger and the queue are left for catch_up
-                    if requeued:
-                        break
             self._current = None
 
     def _upload(self, path: Path) -> None:
