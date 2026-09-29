@@ -7,7 +7,7 @@ One entry per release. Each entry has four parts:
 - what is worth studying in it;
 - a reflection prompt.
 
-The facts in each entry come from this repository, and each entry lists its sources. **The reflection is yours to write**, and is left blank on purpose. How each release was built is in [docs/BUILD.md](../docs/BUILD.md).
+The facts in each entry come from this repository and from the original build and setup guides, and each entry lists its sources. **The reflection is yours to write**, and is left blank on purpose. How each release was built is in [docs/BUILD.md](../docs/BUILD.md).
 
 | Entry | Release | Reflection |
 |---|---|---|

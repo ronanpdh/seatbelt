@@ -2,7 +2,7 @@
 
 How seatbelt was built, one release at a time, and where the build went differently from the plan.
 
-The build guide was written on 2026-09-14, at 0.0.2. It covered 0.0.1 and 0.0.2 step by step, with every file. It covered 0.0.3 to 0.1.0 as short guided plans, and had nothing after 0.1.0. This file keeps those plans and sets beside them what actually shipped, through 0.5.0. Each release has:
+The build guide was written on 2026-09-14, the day 0.0.1 was released. It gave 0.0.1 step by step, with every file, and 0.0.2 to 0.1.0 as short guided plans. A separate adapters guide, written the same day, gave 0.0.2's Anthropic adapter in full. Neither covered anything after 0.1.0. This file keeps those plans and sets beside them what actually shipped, through 0.5.0. Each release has:
 
 - **Planned**: what the guide said to build (0.0.1 to 0.1.0), or the design note it was built from (0.2.0 on).
 - **Shipped**: what the release contains. The full list is in [CHANGELOG.md](../CHANGELOG.md).
@@ -61,10 +61,10 @@ Every package in the guide's 0.0.1 layout (`adapters`, `ledger`, `record`, `repo
 
 The guide also listed six ADRs to write before coding, numbered 0002 to 0007: append-only event sourcing, a hash chain per run, redact before hash, OpenTelemetry GenAI attribute names, kinds from the scope chain, and JSONL with one file per run.
 
-**Shipped.** All of the above.
+**Shipped.** All of the code above.
 
 **Plan vs repo.**
-- The six planned ADRs became one. [ADR 0001](adr/0001-hash-chained-jsonl-ledger.md) covers the chain, the genesis hash, redaction before hashing, and verification. The OpenTelemetry naming rule lives in the `Event` docstring (`src/seatbelt/ledger/events.py`), not in an ADR.
+- Four of the six planned ADRs became one. [ADR 0001](adr/0001-hash-chained-jsonl-ledger.md) covers the append-only JSONL file per run, the hash chain, redaction before hashing, and verification. The other two rules live in docstrings in `src/seatbelt/ledger/events.py`, not in ADRs: OpenTelemetry attribute names in `Event`, and kinds from the scope chain in `Kind`.
 - The 0.0.1 code has changed since:
   - 0.0.2: every event carries a required `schema_version`.
   - 0.0.3: `Event` and `Actor` forbid unknown keys. Ledgers are created mode 0600 and fsynced. `Ledger.read` became `read_events(path)`.
@@ -166,7 +166,7 @@ uv run pytest tests/unit/test_policy.py -q
 
 **Plan vs repo.**
 - Ed25519 with a local key, not Sigstore. [ADR 0002](adr/0002-signed-run-manifest.md) rejected Sigstore keyless for now, because it needs the network at sign time and a heavy dependency. It names Sigstore as the right next step for cross-organisation trust. HMAC was rejected too, because whoever can verify can forge.
-- No in-toto Statement around run manifests. In-toto did arrive, for release provenance instead (the `.intoto.jsonl` release asset, from 0.3.0).
+- No in-toto Statement around run manifests. In-toto is used for release provenance instead: SLSA build provenance attestations from 0.0.2, also attached as the `.intoto.jsonl` release asset from 0.3.0.
 - The flag is `--pubkey`, not `--signed`. The reviewer supplies the public key; the one embedded in the manifest is never trusted.
 - The evidence pack moved to 0.1.0, as a signed zip rather than an HTML report.
 - The ADR is 0002, not 0010.
@@ -195,7 +195,7 @@ uv run seatbelt verify /tmp/runs/<run id>.jsonl --pubkey /tmp/keys/seatbelt.pub 
 - A launch post, and submissions to the OWASP Agentic Security Initiative and the Inspect community.
 
 **Shipped.**
-- Scenario pack, `seatbelt.scenarios` ([ADR 0003](adr/0003-scenario-pack.md)). 8 YAML scenarios under `scenarios/`, each mapped to the OWASP Top 10 for Agentic Applications and, where one exists, a MITRE ATLAS technique. They run against a `target(rec, inputs)` callable. A closed vocabulary of checks is evaluated over the ledger, and every finding cites the event ids that prove it.
+- Scenario pack, `seatbelt.scenarios` ([ADR 0003](adr/0003-scenario-pack.md)). 8 YAML scenarios under `scenarios/`: 7 adversarial ones, each mapped to the OWASP Top 10 for Agentic Applications and, where one exists, a MITRE ATLAS technique, and a benign control. They run against a `target(rec, inputs)` callable. A closed vocabulary of checks is evaluated over the ledger, and every finding cites the event ids that prove it.
 - Docker sandbox ([ADR 0005](adr/0005-docker-sandbox.md)): one hardened container per scenario, with no network unless the scenario sets `egress: true`, and the image digest recorded in `run.start`.
 - Evidence pack ([ADR 0004](adr/0004-evidence-pack.md)): `seatbelt pack` and `seatbelt verify-pack`, a zip bound by a signed `pack.json`, specified in [evidence-pack-v1](spec/evidence-pack-v1.md).
 - `docs/overview.md`, and OpenSSF Best Practices evidence in `docs/openssf-best-practices.md`.
@@ -297,8 +297,8 @@ uv run seatbelt reconstruct /tmp/gw/runs/<run id>.jsonl --pubkey /tmp/gw/keys/se
 ```sh
 uv run pytest tests/unit/test_format_openai_responses.py tests/unit/test_format_gemini.py tests/unit/test_local.py tests/unit/test_compliance.py -q
 uv run seatbelt run claude   # needs Claude Code installed; prints the run's name on exit; not run for this guide
-uv run seatbelt runs
-uv run seatbelt reconstruct  # the latest local run
+uv run seatbelt runs         # lists the runs above; not run for this guide
+uv run seatbelt reconstruct  # the latest local run; not run for this guide
 ```
 
 **Log.** [log/2026-09-29-v0.3.0.md](../log/2026-09-29-v0.3.0.md).
@@ -314,7 +314,7 @@ uv run seatbelt reconstruct  # the latest local run
 **Shipped.**
 - `seatbelt report --people people.yaml`: one row per person across their principal ids. Ids are listed explicitly and never matched by e-mail, and an id listed for two people is refused. `report` also takes several folders.
 - `seatbelt reconstruct` shows an imported answer's text, and marks imported messages `[unverified]`, `[marker]` or `[unavailable: <reason>]`.
-- `seatbelt erase`, which removes whole ledgers recorded under a person's principal ids, inside a signed `erasure-…` record that holds only hashes. It is a dry run by default, and refuses while anything is writing. The importer never brings an erased conversation back. The sink's copies are listed, not deleted.
+- `seatbelt erase`, which removes whole ledgers recorded under a person's principal ids, inside a signed `erasure-…` record that holds only hashes, the `--case` reference, who ran it and counts. It is a dry run by default, and refuses while anything is writing. The importer never brings an erased conversation back. The sink's copies are listed, not deleted.
 - `gateway serve` holds `<ledgers>/.lock` while it runs.
 
 **Plan vs repo.** Whole ledgers, never events. Removing one person's events would break the hash chain and the manifest's file hash, and what remained would look the same as a tampered ledger. `erase` also does not decide whether a request must be honoured. The design leaves that to the organisation, citing GDPR Article 17's exceptions.
@@ -372,16 +372,16 @@ Items from the build guide and the learning pathway that have nothing in the rep
 
 ## Source map
 
-The original build guide and the learning pathway are the maintainer's learning notes, dated 2026-09-14 and 2026-09-10. They are not in this repository. Everything else is.
+Four sources are the maintainer's learning notes and are not in this repository: the build guide and the adapters milestone guide (both 2026-09-14), and the repo setup guide and the learning pathway (both 2026-09-10). Everything else is.
 
 | Section | Claim | Source |
 |---|---|---|
-| Intro | guide written 2026-09-14 at 0.0.2; 0.0.1 and 0.0.2 step by step, 0.0.3 to 0.1.0 guided, nothing after | build guide, header and contents |
+| Intro | build guide written 2026-09-14; 0.0.1 step by step, 0.0.2 to 0.1.0 guided; adapters guide gives 0.0.2's Anthropic adapter in full | build guide, header, intro and contents; adapters milestone guide, header; `CHANGELOG.md` 0.0.1 date |
 | At a glance | release dates and headlines | `CHANGELOG.md` release headings; `ROADMAP.md` |
 | Modules by release | files added and removed per tag; no `v0.0.1` tag | `git ls-tree -r --name-only <tag> -- src/seatbelt`; `git tag` |
 | 0.0.1 planned | event model, ledger, redaction, Recorder, verify, timeline, CLI, 11 tests, six ADRs | build guide, "Milestone v0.0.1", steps 2 to 9 and "Decisions to record as ADRs" |
 | 0.0.1 shipped | the list | `CHANGELOG.md` 0.0.1 |
-| 0.0.1 vs repo | one ADR; OTel rule in the docstring | `docs/adr/0001-hash-chained-jsonl-ledger.md`; `src/seatbelt/ledger/events.py` |
+| 0.0.1 vs repo | four of six rules in ADR 0001; OTel names and scope-chain kinds in docstrings | `docs/adr/0001-hash-chained-jsonl-ledger.md`; `src/seatbelt/ledger/events.py` (`Event`, `Kind`) |
 | 0.0.1 vs repo | `schema_version`; unknown keys, 0600, fsync; `read_events` | `CHANGELOG.md` 0.0.2 Changed; 0.0.3 Security and Removed |
 | 0.0.1 check | outputs `ok 11 events, chain intact, unattested` and `BROKEN at seq 9` | run 2026-09-29 |
 | 0.0.2 planned | Adapter protocol, Anthropic adapter, primitives, fixture, example, OpenAI Agents processor, ADR-0008 | build guide, "Milestone v0.0.2"; adapters milestone guide, steps 1 to 8 |
@@ -396,10 +396,10 @@ The original build guide and the learning pathway are the maintainer's learning 
 | 0.0.4 planned | manifest fields, Sigstore, in-toto, `--signed`, Jinja2 report, ADR-0010 | build guide, "Milestone v0.0.4" |
 | 0.0.4 shipped | Ed25519 sidecar, fields, commands, statuses | `CHANGELOG.md` 0.0.4; `src/seatbelt/attest/manifest.py` |
 | 0.0.4 vs repo | Sigstore and HMAC rejected, and why; embedded key never trusted | `docs/adr/0002-signed-run-manifest.md` |
-| 0.0.4 vs repo | `.intoto.jsonl` release asset from 0.3.0 | `CHANGELOG.md` 0.3.0 Added |
+| 0.0.4 vs repo | SLSA provenance attestations from 0.0.2; `.intoto.jsonl` release asset from 0.3.0 | `CHANGELOG.md` 0.0.2 and 0.3.0 Added; `.github/workflows/release.yml` |
 | 0.1.0 planned | OTel export, framework references, scenario pack, release engineering, launch and submissions | build guide, "Milestone v0.1.0" |
 | 0.1.0 shipped | scenario pack, sandbox, evidence pack, overview, Best Practices evidence | `CHANGELOG.md` 0.1.0; ADRs 0003 to 0005 |
-| 0.1.0 shipped | 8 scenarios; OWASP and ATLAS ids only | `scenarios/*.yaml` |
+| 0.1.0 shipped | 8 scenarios: 7 with OWASP ids (3 also with ATLAS ids), 1 benign control with none; no other framework ids | `scenarios/*.yaml` |
 | 0.1.0 vs repo | the Anthropic scenario target records through the adapter | `CHANGELOG.md` 0.2.0 Added |
 | 0.1.0 vs repo | rendered output "a later layer over the same pack" | `docs/adr/0004-evidence-pack.md` |
 | 0.1.0 vs repo | badge in the README from 0.4.0 | `CHANGELOG.md` 0.4.0 Added |
@@ -414,7 +414,7 @@ The original build guide and the learning pathway are the maintainer's learning 
 | 0.3.0 vs repo | Enterprise only | `docs/plans/2026-09-29-compliance-importer-design.md`, Scope |
 | 0.3.0 vs repo | server packages became core | `CHANGELOG.md` 0.3.0 Changed |
 | 0.4.0 | Decided 1 and 4 | `docs/plans/2026-09-29-compliance-importer-design.md`, Decided |
-| 0.4.0 shipped | the list | `CHANGELOG.md` 0.4.0 |
+| 0.4.0 shipped | the list, including what the erasure record holds | `CHANGELOG.md` 0.4.0 |
 | 0.4.0 vs repo | whole ledgers and why; GDPR Article 17 | `docs/plans/2026-09-29-erasure-design.md`, intro and "The constraint" |
 | 0.4.0 check | one row for Alice; dry run; signed erasure record | run 2026-09-29 |
 | 0.5.0 | goal, shipped, name clash, upload date | `docs/plans/2026-09-29-pypi-design.md`; `CHANGELOG.md` 0.5.0 |
