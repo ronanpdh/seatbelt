@@ -4,6 +4,8 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-29
+
 A review of the whole project, with every finding checked by a second reader. Upgrade gateways promptly.
 
 ### Security
@@ -222,7 +224,8 @@ A review of the whole project, with every finding checked by a second reader. Up
 - Tests: hash determinism, chain link and resume, property test that any edit breaks the chain, deletion detection, redaction, recorder lineage and failure path, CLI round trip and tamper detection.
 - Project scaffolding: uv, ruff, pyright strict, pytest, Hypothesis, pre-commit, CI, Dependabot, Scorecard, SECURITY.md, CONTRIBUTING.md, STANDARDS.md, ROADMAP.md.
 
-[Unreleased]: https://github.com/ronanpdh/seatbelt/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/ronanpdh/seatbelt/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.5.1
 [0.5.0]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.5.0
 [0.4.0]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.4.0
 [0.3.0]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.3.0
