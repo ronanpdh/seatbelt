@@ -2,13 +2,13 @@
 
 How seatbelt was built, one release at a time, and where the build went differently from the plan.
 
-The build guide was written on 2026-09-14, the day 0.0.1 was released. It gave 0.0.1 step by step, with every file, and 0.0.2 to 0.1.0 as short guided plans. A separate adapters guide, written the same day, gave 0.0.2's Anthropic adapter in full. Neither covered anything after 0.1.0. This file keeps those plans and sets beside them what actually shipped, through 0.5.0. Each release has:
+The build guide was written on 2026-09-14, the day 0.0.1 was released. It gave 0.0.1 step by step, with every file, and 0.0.2 to 0.1.0 as short guided plans. A separate adapters guide, written the same day, gave 0.0.2's Anthropic adapter in full. Neither covered anything after 0.1.0. This file keeps those plans and sets beside them what actually shipped, through 0.5.1. Each release has:
 
 - **Planned**: what the guide said to build (0.0.1 to 0.1.0), or the design note it was built from (0.2.0 on).
 - **Shipped**: what the release contains. The full list is in [CHANGELOG.md](../CHANGELOG.md).
 - **Plan vs repo**: where the two differ.
 - **Read**: the ADRs and design notes behind it.
-- **Check**: commands that show it working. Run from a checkout after `uv sync --all-extras`. Every check was run against 0.5.0 on 2026-09-29, except where a line says it was not.
+- **Check**: commands that show it working. Run from a checkout after `uv sync --all-extras`. Every check was run against 0.5.1 on 2026-09-29, except where a line says it was not.
 - **Log**: its entry in the [learning log](../log/).
 
 The sources for every statement are listed in the [source map](#source-map) at the end.
@@ -26,6 +26,7 @@ The sources for every statement are listed in the [source map](#source-map) at t
 | [0.3.0](#030-every-major-client-and-recording-with-no-gateway) | 2026-09-29 | Responses and Gemini formats, local recording, OIDC, config reload, sink, Compliance API importer |
 | [0.4.0](#040-one-row-per-person-and-erasure) | 2026-09-29 | one row per person in `report`, `seatbelt erase` |
 | [0.5.0](#050-on-pypi) | 2026-09-29 | published to PyPI as `seatbelt-ai` |
+| [0.5.1](#051-a-review-of-the-whole-project) | 2026-09-29 | fixes from a review of the whole project: gateway, redaction, tamper evidence, release workflow |
 
 ## Modules by release
 
@@ -41,6 +42,7 @@ What each release tag added under `src/seatbelt/` (`__init__.py` files left out)
 | `v0.3.0` | `gateway/formats/{openai_responses,gemini}.py`, `gateway/{local,oidc,reload,sink}.py`, `compliance/{client,importer,mapping}.py` | |
 | `v0.4.0` | `erase.py`, `locks.py` | |
 | `v0.5.0` | | |
+| `v0.5.1` | `terminal.py` | |
 
 Every package in the guide's 0.0.1 layout (`adapters`, `ledger`, `record`, `report`, `verify`) is still there.
 
@@ -68,13 +70,14 @@ The guide also listed six ADRs to write before coding, numbered 0002 to 0007: ap
 - The 0.0.1 code has changed since:
   - 0.0.2: every event carries a required `schema_version`.
   - 0.0.3: `Event` and `Actor` forbid unknown keys. Ledgers are created mode 0600 and fsynced. `Ledger.read` became `read_events(path)`.
+  - 0.5.1: `Ledger.append` redacts every event's actor ids and `parent_id` itself, so no caller can skip it. A failed write is rolled back to the last whole line, and a new ledger's folder entry is fsynced.
 
 **Read.** [ADR 0001](adr/0001-hash-chained-jsonl-ledger.md).
 
 **Check.**
 
 ```sh
-uv run seatbelt demo --out /tmp/runs
+uv run seatbelt demo --out /tmp/runs                  # from 0.5.1 it also prints the two commands below
 uv run seatbelt verify /tmp/runs/<run id>.jsonl       # ok 11 events, chain intact, unattested
 uv run seatbelt reconstruct /tmp/runs/<run id>.jsonl
 sed -i 's/refund issued/refund denied/' /tmp/runs/<run id>.jsonl   # macOS: sed -i ''
@@ -162,7 +165,7 @@ uv run pytest tests/unit/test_policy.py -q
 **Shipped.**
 - `seatbelt.attest`: an Ed25519-signed manifest in `<run id>.attest.json`, written at run end, failed runs included. It holds the final hash, event count, schema version, run id and the ledger file's SHA-256.
 - `seatbelt keygen`, and `seatbelt attest <ledger> --key` to sign after the fact.
-- `seatbelt verify --pubkey`, which reports ATTESTED, FORGED (exit 1), UNCHECKED (a sidecar but no key) or UNATTESTED.
+- `seatbelt verify --pubkey`, which reports ATTESTED, FORGED (exit 1), UNCHECKED (a sidecar but no key) or UNATTESTED. From 0.5.1, `verify` without a key still compares the sidecar's pinned fields with the ledger and reports FORGED on a mismatch; the changelog calls that "a consistency check, not tamper evidence".
 
 **Plan vs repo.**
 - Ed25519 with a local key, not Sigstore. [ADR 0002](adr/0002-signed-run-manifest.md) rejected Sigstore keyless for now, because it needs the network at sign time and a heavy dependency. It names Sigstore as the right next step for cross-organisation trust. HMAC was rejected too, because whoever can verify can forge.
@@ -349,17 +352,60 @@ uv run seatbelt erase /tmp/gw/runs --principal alice@corp --case DSR-1 --key /tm
 **Check.**
 
 ```sh
-uv build                                         # dist/seatbelt_ai-0.5.0-py3-none-any.whl and .tar.gz
+uv build                                         # dist/seatbelt_ai-<version>-py3-none-any.whl and .tar.gz
 uv tool install seatbelt-ai && seatbelt version   # installs from PyPI; not run for this guide
 ```
 
 **Log.** [log/2026-09-29-v0.5.0.md](../log/2026-09-29-v0.5.0.md).
 
+## 0.5.1: a review of the whole project
+
+2026-09-29.
+
+**Planned.** Not in the guide, and there is no design note in `docs/plans/`. The changelog opens with "A review of the whole project, with every finding checked by a second reader. Upgrade gateways promptly."
+
+**Shipped.** No new commands. The [changelog](../CHANGELOG.md#051---2026-09-29) lists every fix; in groups:
+- **Gateway.**
+  - A model lookup or a Code Assist operation read is forwarded only when its id has the expected shape. Before, an authenticated employee could reach other provider endpoints through those routes with the gateway's provider key, unrecorded.
+  - Request shapes the gateway could not record faithfully are refused with 400: Gemini fields in snake_case, Chat Completions' legacy function calling, and `n` above 1, among others.
+  - A body over 64 MiB is refused with 413, one that inflates past 64 MiB with 415, and one nested more than 128 levels deep with 400.
+  - The output-token cap refuses a value that is not a whole number, instead of ignoring it.
+- **Redaction** covers more secret formats (seatbelt's own `sbk_` keys, Google API keys, private key blocks, JWTs, `.env`-style lines and others), dict keys, and every event's actor ids and `parent_id`.
+- **Tamper evidence.**
+  - `verify-pack --pubkey` fails an unsigned pack, or a run without its signature, as `verify --pubkey` does.
+  - Pack reading is bounded, and a hostile pack is reported as FORGED instead of crashing.
+  - Without a key, `verify`, `verify-pack` and `report` compare a signature file with its ledger and fail on a mismatch.
+- **Durability.** A failed write rolls the ledger back to its last whole line. Signatures and keys are written atomically and fsynced.
+- **Terminal output** shows control characters in recorded text as visible escapes (`seatbelt.terminal`), so a ledger cannot move the cursor or hide lines.
+- **`seatbelt run`** keeps seatbelt's own secrets out of the CLI's environment. Through a gateway, it also removes Claude Code's Bedrock and Vertex AI switches, which would take it around the gateway.
+- **Release workflow.** The job that builds, attests and uploads the release never installs the dev dependencies; the tests run in their own job. The tagged commit must be on `main`.
+- Fixes to the sandbox, the sink, the importer, `erase` and `report`.
+
+**Plan vs repo.** 0.5.1 changes what several earlier releases' docs say:
+- 0.0.1: [ADR 0001](adr/0001-hash-chained-jsonl-ledger.md) now records the ledger's own redaction of actor and parent ids, and the rollback of a failed write.
+- 0.0.4: [ADR 0002](adr/0002-signed-run-manifest.md) now records the comparison of a sidecar with its ledger when no key is given, and says it "catches a careless edit only".
+- 0.1.0: the [evidence pack spec](spec/evidence-pack-v1.md) adds the bounds on reading a pack, and exit 1 for an unsigned pack when a key is given.
+- 0.2.0: [ADR 0007](adr/0007-launcher.md) adds what the launcher now removes from the CLI's environment, and how it passes signals on.
+- 0.3.0: [docs/local-recording.md](local-recording.md) now says a local signature does not protect a run from the agent it records, or from you. The signing key is readable by your user, and so by any agent running as you.
+
+**Read.** [CHANGELOG 0.5.1](../CHANGELOG.md#051---2026-09-29); the updated ADRs 0001, 0002 and 0007; the evidence pack spec's verification steps and verdicts; the "Limits" section of [docs/local-recording.md](local-recording.md#limits); [SECURITY.md](../SECURITY.md).
+
+**Check.** With the scenario runs and key from the 0.1.0 check:
+
+```sh
+uv run pytest tests/unit/test_review_*.py tests/unit/test_terminal.py -q
+uv run seatbelt pack /tmp/scen --out /tmp/unsigned.seatbelt.zip        # no --key: an unsigned pack
+uv run seatbelt verify-pack /tmp/unsigned.seatbelt.zip --pubkey /tmp/keys/seatbelt.pub
+# UNSIGNED: a key was given but the pack carries no signature; exit 1 (0.5.0 exited 0)
+```
+
+**Log.** [log/2026-09-29-v0.5.1.md](../log/2026-09-29-v0.5.1.md).
+
 ---
 
 ## Planned, not built
 
-Items from the build guide and the learning pathway that have nothing in the repo at 0.5.0:
+Items from the build guide and the learning pathway that have nothing in the repo at 0.5.1:
 
 - An OpenTelemetry export (`export/otel.py`). Event attributes already use the OpenTelemetry GenAI names.
 - NIST AI RMF and NCSC references on scenarios. They carry OWASP Agentic and MITRE ATLAS ids only.
@@ -419,7 +465,14 @@ Four sources are the maintainer's learning notes and are not in this repository:
 | 0.4.0 check | one row for Alice; dry run; signed erasure record | run 2026-09-29 |
 | 0.5.0 | goal, shipped, name clash, upload date | `docs/plans/2026-09-29-pypi-design.md`; `CHANGELOG.md` 0.5.0 |
 | 0.5.0 vs repo | setup guide step 1 is a PyPI name check | setup guide, step 1 |
-| 0.5.0 check | `seatbelt_ai-0.5.0` wheel and sdist | run 2026-09-29 |
-| Planned, not built | OTel, NIST/NCSC, AgentDojo, InjecAgent, reproduction, LangGraph, Inspect | build guide and learning pathway; `grep -ri` over `src/`, `scenarios/`, `docs/` finds none built |
+| 0.5.0 check | `seatbelt_ai-<version>` wheel and sdist (0.5.1 at the time of the run) | run 2026-09-29 |
+| 0.5.1 | quoted description; no design note; upgrade advice | `CHANGELOG.md` 0.5.1; `docs/plans/` listing |
+| 0.5.1 shipped | the groups and each item in them | `CHANGELOG.md` 0.5.1 Security and Fixed |
+| 0.5.1 vs repo | ADR 0001, 0002, 0007, pack spec and local-recording changes; "catches a careless edit only" | `git diff v0.5.0 v0.5.1 -- docs/`; `docs/adr/0002-signed-run-manifest.md` |
+| 0.5.1 check | `UNSIGNED: a key was given …`, exit 1; the same pack under 0.5.0 exits 0; 250 tests pass | run 2026-09-29, the 0.5.0 run from a `v0.5.0` worktree |
+| 0.0.1 vs repo | 0.5.1 ledger changes | `CHANGELOG.md` 0.5.1; `docs/adr/0001-hash-chained-jsonl-ledger.md` |
+| 0.0.4 shipped | no-key comparison from 0.5.1; "a consistency check, not tamper evidence" | `CHANGELOG.md` 0.5.1 Security |
+| Modules by release | `terminal.py` in `v0.5.1` | `git ls-tree -r --name-only v0.5.1 -- src/seatbelt` |
+| Planned, not built | OTel, NIST/NCSC, AgentDojo, InjecAgent, reproduction, LangGraph, Inspect | build guide and learning pathway; `grep` over `src/`, `scenarios/`, `docs/` at 0.5.1 finds none built |
 | Planned, not built | Sigstore and rendered report quotes | `docs/adr/0002-signed-run-manifest.md`; `docs/adr/0004-evidence-pack.md` |
 | Planned, not built | `require_approval` | build guide, "Milestone v0.0.3"; not in `src/` |

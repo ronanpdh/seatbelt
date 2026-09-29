@@ -18,5 +18,6 @@ The facts in each entry come from this repository and from the original build an
 | [2026-09-29-v0.3.0.md](2026-09-29-v0.3.0.md) | 0.3.0, every major client, local recording, Compliance API importer | open |
 | [2026-09-29-v0.4.0.md](2026-09-29-v0.4.0.md) | 0.4.0, one row per person, erasure | open |
 | [2026-09-29-v0.5.0.md](2026-09-29-v0.5.0.md) | 0.5.0, on PyPI | open |
+| [2026-09-29-v0.5.1.md](2026-09-29-v0.5.1.md) | 0.5.1, a review of the whole project | open |
 
 The entries for 0.0.1 and 0.0.2 are not in the repository yet.
