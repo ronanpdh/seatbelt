@@ -219,17 +219,25 @@ class Recorder:
             {"decision.summary": summary, "decision.authority": authority, "decision.basis": basis},
         )
 
-    def action(self, description: str, target: str, decision_id: str | None = None) -> Event:
+    def action(
+        self,
+        description: str,
+        target: str,
+        decision_id: str | None = None,
+        attrs: dict[str, Any] | None = None,
+    ) -> Event:
         return self._emit(
             Kind.ACTION,
             self.agent,
-            {"action.description": description, "action.target": target},
+            {"action.description": description, "action.target": target, **(attrs or {})},
             parent_id=decision_id,
         )
 
-    def outcome(self, summary: str, success: bool) -> Event:
+    def outcome(self, summary: str, success: bool, attrs: dict[str, Any] | None = None) -> Event:
         return self._emit(
-            Kind.OUTCOME, self.agent, {"outcome.summary": summary, "outcome.success": success}
+            Kind.OUTCOME,
+            self.agent,
+            {"outcome.summary": summary, "outcome.success": success, **(attrs or {})},
         )
 
 

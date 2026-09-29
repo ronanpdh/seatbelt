@@ -64,6 +64,10 @@ class People:
     def person(self, principal: str) -> str:
         return self._person_of.get(principal, principal)
 
+    def ids_of(self, person: str) -> list[str]:
+        """The principal ids listed for `person`; none if the file does not name them."""
+        return sorted(i for i, p in self._person_of.items() if p == person)
+
 
 class Fleet(BaseModel):
     model_config = ConfigDict(extra="forbid")

@@ -152,6 +152,8 @@ seatbelt report runs runs/compliance --pubkey keys/seatbelt.pub --people people.
 
 Each session is `<ledgers>/<run id>.jsonl` with its signature beside it as `<run id>.attest.json`. Back up by copying the directory; keep each sidecar with its ledger. A closed ledger never changes again, so incremental copies are safe. `seatbelt verify`, `reconstruct`, `pack` and `verify-pack` work on these files unchanged, with nothing but the public key.
 
+While it runs, the gateway holds `<ledgers>/.lock`. A second gateway on the same folder refuses to start, and so does `seatbelt erase` ([erasing a person's ledgers](erasure.md)).
+
 ## Shipping ledgers to object storage
 
 With a `sink` in the config, the gateway uploads each ledger and its signature to S3-compatible object storage as soon as the session is closed and signed, so the gateway host no longer holds the only copy. Uploads run in the background: a slow or unreachable store never delays a request. A failed upload is retried with backoff (5 s, 30 s, 2 min, then every 5 min); what has not shipped by shutdown, or while the store was down, is shipped at the next start. `<ledgers>/.shipped/<run id>` records each shipped run, with the object keys and the SHA-256 of what was sent. Open ledgers are never shipped, only closed ones.

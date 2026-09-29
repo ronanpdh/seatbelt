@@ -5,10 +5,15 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 ## [Unreleased]
 
 ### Added
+- `seatbelt erase` removes every ledger recorded under a person's principal ids (`--principal`, or `--person` with a people file), with each signature and shipped mark, inside a signed `erasure-…` record that holds only hashes, the `--case` reference, who ran it and counts. A dry run is the default; `--yes` erases. Nothing may be writing: it holds each folder's lock, and refuses while a gateway, an import or a local run is using the folder. An interrupted erase is finished by the next. In importer folders it removes the person's state entries and adds them to `.erased`, so the importer never brings them back; an unreadable `.erased` stops the import. The sink's copies are listed, not deleted. `seatbelt.erase`; guide: `docs/deploy/erasure.md`.
 - `seatbelt report --people people.yaml` counts each person once across their principal ids: an issued gateway key, an identity provider's subject, an Anthropic user id from the importer. The file lists each person's ids. Nothing is matched by e-mail, and an id listed for two people is refused. The report lists the ids it joined (`people` in `--json`). `seatbelt.report.fleet.People`.
 - `seatbelt report` takes several runs folders, e.g. the gateway's and the Compliance API importer's.
 - `seatbelt reconstruct` shows an imported answer's text instead of `(? out)`, and marks imported messages that are not verified content: `[unverified]`, `[marker]`, `[unavailable: <reason>]`.
 - The OpenSSF Best Practices badge (bestpractices.dev project 15081) in the README; `docs/openssf-best-practices.md` names CodeQL among the static analysis tools.
+
+### Changed
+- `gateway serve` holds `<ledgers>/.lock` while it runs, so `seatbelt erase` never removes a ledger from under it; a second gateway on the same folder now refuses to start. The file-lock helpers moved to `seatbelt.locks`, and `seatbelt.gateway.local.login_name` is public.
+- `Recorder.action` and `Recorder.outcome` take extra `attrs`.
 
 ## [0.3.0] - 2026-09-29
 

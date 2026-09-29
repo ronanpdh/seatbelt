@@ -96,6 +96,7 @@ uv run seatbelt scenarios scenarios/ --target examples.scenario_target:target   
 | `seatbelt scenarios <corpus> --target m:f [--out] [--key] [--list] [--image] [--target-dir] [--timeout]` | runs the adversarial corpus | any finding (2: bad target) |
 | `seatbelt pack <runs> --out <zip> [--key] [--corpus]` | bundles a runs directory into an evidence pack | broken ledger, output exists |
 | `seatbelt verify-pack <zip> [--pubkey]` | re-checks a pack offline | forged, or a broken ledger inside |
+| `seatbelt erase <runs...> (--principal <id> \| --person <name> --people <file>) --case <ref> [--key \| --config] [--yes]` | removes a person's ledgers inside a signed record; lists only without `--yes` ([guide](docs/deploy/erasure.md)) | a folder in use, a bad people file or config, no signing key |
 | `seatbelt gateway keygen --user <id> [--config]` | issues a gateway key; stores only its hash | the user already has a key |
 | `seatbelt gateway serve [--config]` | runs the recording gateway | bad config or signing key |
 | `seatbelt import compliance [--config]` | imports Claude Enterprise transcripts (chats, Cowork, Claude Code and other app sessions) from Anthropic's Compliance API into signed ledgers; see [docs/deploy/compliance-import.md](docs/deploy/compliance-import.md) | bad config, key or API error, or a conversation that needs a person to check |

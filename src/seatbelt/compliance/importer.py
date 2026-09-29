@@ -37,11 +37,12 @@ from seatbelt.compliance.mapping import (
     local_message,
     remote_message,
 )
+from seatbelt.erase import id_hash, read_erased
 from seatbelt.gateway.config import ComplianceConfig
 from seatbelt.gateway.formats import as_dict, as_dicts
-from seatbelt.gateway.local import try_lock
 from seatbelt.gateway.sessions import close_open_chains
 from seatbelt.ledger.store import LedgerError, read_events
+from seatbelt.locks import try_lock
 from seatbelt.record.recorder import Recorder
 
 _log = logging.getLogger(__name__)
@@ -148,6 +149,7 @@ class Importer:
         self.state: dict[str, Any] = {}
         self.conversations: dict[str, Conversation] = {}
         self._blocked_orgs: set[str] = set()  # a customer-managed key that cannot be used
+        self._erased: set[str] = set()  # sha256 of owner ids `seatbelt erase` removed
         self._fetched: tuple[str, dict[str, Any]] = ("", {})  # the last transcript's request
         self._request_ids: list[str] = []  # the responses the transcript came from
 
@@ -188,12 +190,14 @@ class Importer:
         self.root.mkdir(parents=True, exist_ok=True)
         with (self.root / LOCK).open("wb") as handle:
             if not try_lock(handle):
-                raise Busy(f"another import is running on {self.root}")
+                raise Busy(f"another import, or an erase, is running on {self.root}")
             return self._run()
 
     def _run(self) -> Summary:
         start = self.now()
         summary = Summary(started=_iso(start))
+        # raises when the list cannot be read: better no import than an erased person restored
+        self._erased = read_erased(self.root)
         closed = close_open_chains(
             self.root, self.signer, only=_imported, reason=KILLED
         )  # a run killed before signing: close it, and carry on after its last message
@@ -215,7 +219,14 @@ class Importer:
 
     def _wanted(self, meta: dict[str, Any]) -> bool:
         surfaces = self.cfg.surfaces
-        return surfaces is None or meta.get("product_surface") in surfaces
+        wanted = surfaces is None or meta.get("product_surface") in surfaces
+        return wanted and not self._suppressed(meta)
+
+    def _suppressed(self, meta: dict[str, Any]) -> bool:
+        """Owned by, or started by, a person whose ledgers `seatbelt erase` removed."""
+        owner = as_dict(meta.get("user")) or as_dict(meta.get("started_by_user"))
+        oid = owner.get("id")
+        return isinstance(oid, str) and id_hash(oid) in self._erased
 
     def _settled(self, meta: dict[str, Any], start: datetime) -> bool:
         updated = _when(meta.get("updated_at"))
@@ -342,6 +353,8 @@ class Importer:
         while True:
             page = self.client.get(CHATS, params)
             for meta in as_dicts(page.get("data")):
+                if self._suppressed(meta):
+                    continue
                 c = self._conversation("chat", str(meta.get("id")))
                 c.meta = meta
                 c.pending = True
@@ -415,6 +428,9 @@ class Importer:
         return self._chat_messages(c)
 
     def _import(self, c: Conversation, summary: Summary) -> None:
+        if self._suppressed(c.meta):
+            c.pending = False
+            return
         org = str(c.meta.get("organization_uuid"))
         if org in self._blocked_orgs:
             summary.skipped.append(c.key)

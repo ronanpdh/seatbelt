@@ -63,6 +63,7 @@ Each run imports what changed and settled since the last run, then prints what i
 - **Aged-out turns.** When Anthropic's retention removes the oldest turns, the ledgers already written keep them.
 - **Following cloud sessions.** A cloud session is followed until it is archived, failed or deleted, or has had no activity for 30 days. Later activity in one that was dropped for no activity is imported only if it shows up in a later listing.
 - **Where the state lives.** State is kept in `.state.json` in the importer's folder. If it is lost, the next run rebuilds it from the ledgers and the API, and records nothing twice.
+- **Erased people.** `seatbelt erase` adds a hash of each erased id to `.erased` in the importer's folder. The importer then never imports those people's conversations again. If `.erased` cannot be read, the import stops ([erasing a person's ledgers](erasure.md)).
 - **A killed run.** If a run is killed mid-ledger, the next run closes that ledger as failed ("importer killed"), signs it, and carries on after its last message.
 
 Read the ledgers with the usual commands, passing the importer's folder:
