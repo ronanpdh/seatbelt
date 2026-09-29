@@ -17,7 +17,8 @@ from seatbelt.attest.sign import attest as sign_ledger
 from seatbelt.attest.sign import keygen as make_keys
 from seatbelt.gateway.config import add_principal
 from seatbelt.gateway.launcher import data_dir, load_client_config, run_cli
-from seatbelt.ledger.store import LedgerError
+from seatbelt.ledger.events import Kind
+from seatbelt.ledger.store import LedgerError, read_events
 from seatbelt.record.recorder import Recorder
 from seatbelt.report.fleet import fleet as build_fleet
 from seatbelt.report.pack import PackError, PackStatus
@@ -47,6 +48,70 @@ def version() -> None:
 
 
 PubKey = Annotated[Path | None, typer.Option(help="public key from keygen; checks the attestation")]
+LedgerRef = Annotated[
+    str | None,
+    typer.Argument(
+        help="a ledger file, or a run's name or id from `seatbelt runs` "
+        "(e.g. claude-99ce72ff); default: your latest run",
+        show_default=False,
+    ),
+]
+
+
+def _local_runs(pubkey: Path | None) -> tuple[Path, Path | None]:
+    cfg = load_client_config()
+    root = data_dir()
+    local_pub = root / "keys" / PUB_FILE
+    return cfg.ledgers or root / "runs", pubkey or (local_pub if local_pub.exists() else None)
+
+
+def _run_name(ledger: Path) -> str | None:
+    try:
+        first = next(read_events(ledger), None)
+    except (OSError, UnicodeDecodeError, LedgerError):
+        return None
+    name = first.attrs.get("run.name") if first is not None else None
+    return name if isinstance(name, str) else None
+
+
+def _resolve(ref: str | None, pubkey: Path | None) -> tuple[Path, Path | None]:
+    """The ledger `ref` names, and the key to check it with. A path is used as given; else
+    `ref` is looked up in this machine's runs: a file name, a run id (the file name without
+    .jsonl), or a run's name as `seatbelt run` prints it. None: the latest run. A local run is
+    checked against this machine's key unless `pubkey` is given."""
+    if ref is not None and (Path(ref).expanduser().is_file() or os.sep in ref or "/" in ref):
+        ledger = Path(ref).expanduser()  # a path: checked as given, missing or not
+        runs, local_pub = _local_runs(pubkey)
+        mine = ledger.resolve().parent == runs.resolve()
+        return ledger, pubkey or (local_pub if mine else None)
+    runs, local_pub = _local_runs(pubkey)
+    ledgers = sorted(runs.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if ref is None:
+        found = ledgers[:1]
+        if not found:
+            raise ValueError(f"no runs recorded yet in {runs}. Start one with: seatbelt run claude")
+    else:
+        name = ref.removesuffix(".jsonl")
+        found = [p for p in ledgers if p.stem == name] or [
+            p for p in ledgers if f"-{name}-" in p.stem and _run_name(p) == name
+        ]
+        if not found:
+            raise ValueError(
+                f"no ledger or run {ref!r}: not a file, and not in {runs}. "
+                "List your runs with: seatbelt runs"
+            )
+        if len(found) > 1:
+            names = ", ".join(p.stem for p in found)
+            raise ValueError(f"{ref!r} names {len(found)} ledgers ({names}); give one of these")
+    return found[0], local_pub
+
+
+def _resolved(ref: str | None, pubkey: Path | None) -> tuple[Path, Path | None]:
+    try:
+        return _resolve(ref, pubkey)
+    except ValueError as exc:  # also a bad client config
+        console.print(f"[red]{escape(str(exc))}[/]")
+        raise typer.Exit(code=1) from exc
 
 
 def _check(ledger: Path, pubkey: Path | None = None) -> tuple[Verdict, AttestVerdict]:
@@ -78,19 +143,59 @@ def _check(ledger: Path, pubkey: Path | None = None) -> tuple[Verdict, AttestVer
 
 
 @app.command()
-def verify(ledger: Path, pubkey: PubKey = None) -> None:
+def verify(ledger: LedgerRef = None, pubkey: PubKey = None) -> None:
     """Check a run ledger's hash chain and attestation. Exit 1 if altered, forged or incomplete."""
-    verdict, att = _check(ledger, pubkey)
+    path, pubkey = _resolved(ledger, pubkey)
+    verdict, att = _check(path, pubkey)
     if not verdict.complete:
         raise typer.Exit(code=1)
     console.print(f"[green]ok[/] {verdict.events} events, chain intact, {att.status}")
 
 
 @app.command()
-def reconstruct(ledger: Path, pubkey: PubKey = None) -> None:
+def reconstruct(ledger: LedgerRef = None, pubkey: PubKey = None) -> None:
     """Print the run as a timeline a reviewer can read. Refuses an altered ledger."""
-    _check(ledger, pubkey)
-    timeline(ledger, console)
+    path, pubkey = _resolved(ledger, pubkey)
+    _check(path, pubkey)
+    timeline(path, console)
+
+
+@app.command()
+def runs(
+    limit: Annotated[int, typer.Option(help="how many to show, newest first")] = 20,
+) -> None:
+    """List the runs `seatbelt run` recorded on this machine, newest first, by the name
+    `seatbelt reconstruct` and `seatbelt verify` take."""
+    try:
+        folder, _ = _local_runs(None)
+    except ValueError as exc:
+        console.print(f"[red]{escape(str(exc))}[/]")
+        raise typer.Exit(code=1) from exc
+    ledgers = sorted(folder.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not ledgers:
+        console.print(f"No runs recorded yet in {folder}. Start one with: seatbelt run claude")
+        return
+    table = Table(Column("run", no_wrap=True), "started", "model calls", "status")
+    for path in ledgers[:limit]:
+        try:
+            events = list(read_events(path))
+        except (OSError, UnicodeDecodeError, LedgerError):
+            table.add_row(Text(path.stem), "", "", "[red]unreadable[/]")
+            continue
+        first = events[0] if events else None
+        name = first.attrs.get("run.name") if first is not None else None
+        started = first.ts.astimezone().strftime("%Y-%m-%d %H:%M") if first is not None else ""
+        calls = sum(e.kind is Kind.MODEL_REQUEST for e in events)
+        ended = bool(events) and events[-1].kind is Kind.RUN_END
+        table.add_row(
+            Text(name if isinstance(name, str) else path.stem),
+            started,
+            str(calls),
+            "ended" if ended else "[yellow]open[/]",
+        )
+    console.print(table)
+    console.print(f"{len(ledgers)} runs in {escape(str(folder))}")
+    console.print("Replay one with: seatbelt reconstruct <run>")
 
 
 @app.command()
@@ -335,13 +440,6 @@ def run(
         console.print(f"[red]{escape(str(exc))}[/]")
         raise typer.Exit(code=127) from exc
     raise typer.Exit(code=code)
-
-
-def _local_runs(pubkey: Path | None) -> tuple[Path, Path | None]:
-    cfg = load_client_config()
-    root = data_dir()
-    local_pub = root / "keys" / PUB_FILE
-    return cfg.ledgers or root / "runs", pubkey or (local_pub if local_pub.exists() else None)
 
 
 @app.command()

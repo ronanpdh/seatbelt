@@ -101,7 +101,9 @@ def test_a_local_run_passes_the_clis_own_key_through_and_signs_the_ledger(
     assert headers["x-api-key"] == "sk-ant-USERS-OWN"  # passed through, not replaced
     assert "x-seatbelt-key" not in headers and "x-seatbelt-run" not in headers
     (ledger,) = (tmp_path / "home" / "runs").glob("*.jsonl")
-    assert f"seatbelt: recorded {ledger}" in err
+    run = ledger.stem.split("-", 1)[1].rsplit("-", 1)[0]  # <user>-<run>-<hex>
+    assert f"seatbelt: recorded run {run}" in err
+    assert f"replay it: seatbelt reconstruct {run}" in err and str(ledger) in err
     events = list(read_events(ledger))
     assert [e.kind for e in events] == [
         Kind.RUN_START,

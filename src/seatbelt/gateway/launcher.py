@@ -401,8 +401,12 @@ def _run_local(cli: str, args: list[str], cfg: ClientConfig, exe: str | None, ru
             code = _spawn([exe or cli, *extra, *args], env)
         finally:
             recorder.end(run)
-    for path in recorder.written:
-        print(f"seatbelt: recorded {path}", file=sys.stderr)
-    if not recorder.written:
+    if recorder.written:
+        paths = "\n".join(f"  file:      {path}" for path in recorder.written)
+        print(
+            f"seatbelt: recorded run {run}\n  replay it: seatbelt reconstruct {run}\n{paths}",
+            file=sys.stderr,
+        )
+    else:
         print(f"seatbelt: nothing recorded ({cli} sent no model requests)", file=sys.stderr)
     return code

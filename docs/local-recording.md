@@ -3,9 +3,13 @@
 `seatbelt run claude` (or `codex`, or `gemini`) records the CLI's model traffic on your machine, with nothing to set up. The CLI signs in as it always does. Each run's ledger is signed and written to your local data folder.
 
 ```sh
-seatbelt run claude
+seatbelt run claude      # when it exits: "recorded run claude-99ce72ff"
+seatbelt reconstruct     # replay the latest run; or: seatbelt reconstruct claude-99ce72ff
+seatbelt runs            # your runs by name, newest first
 seatbelt report          # your local runs, checked against this machine's key
 ```
+
+`verify` and `reconstruct` find a local run by its name, by its id (the file name, with or without `.jsonl`), or take a file path. A local run is checked against this machine's key without `--pubkey`.
 
 To record through your organisation's gateway instead, see [Through a gateway](#through-a-gateway).
 

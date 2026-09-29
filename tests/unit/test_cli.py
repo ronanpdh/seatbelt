@@ -5,6 +5,7 @@ from rich.console import Console
 from typer.testing import CliRunner
 
 from seatbelt import __version__
+from seatbelt.attest.sign import Signer
 from seatbelt.cli import app
 from seatbelt.ledger.events import Actor, ActorType, Kind
 from seatbelt.ledger.store import Ledger
@@ -183,3 +184,69 @@ def test_gateway_serve_recovers_then_serves_then_closes(
     ledgers = sorted(cfg.ledgers.glob("*.jsonl"))
     assert len(ledgers) == 2  # the recovered crash and the session served
     assert all(verify_file(p).complete and sidecar(p).exists() for p in ledgers)
+
+
+def _local_run(home: Path, run: str, when: float) -> Path:
+    """A finished, signed run as `seatbelt run` leaves it in the data folder."""
+    import os
+
+    from seatbelt.attest.sign import keygen
+
+    keys = home / "keys"
+    if not (keys / "seatbelt.key").exists():
+        keygen(keys)
+    signer = Signer.from_file(keys / "seatbelt.key")
+    with Recorder.start(
+        home / "runs",
+        agent_id="gw",
+        run_id=f"rh-{run}-1a2b3c4d",
+        metadata={"run.name": run},
+        signer=signer,
+    ) as rec:
+        rec.user_message("u", "hi")
+    path = home / "runs" / f"rh-{run}-1a2b3c4d.jsonl"
+    os.utime(path, (when, when))
+    return path
+
+
+@pytest.fixture
+def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    from seatbelt.gateway import launcher
+
+    monkeypatch.setattr(launcher, "DEFAULT_CONFIG", tmp_path / "config.toml")
+    monkeypatch.setattr(launcher, "LEGACY_CONFIG", tmp_path / "gateway.toml")
+    monkeypatch.setenv("SEATBELT_HOME", str(tmp_path / "home"))
+    return tmp_path / "home"
+
+
+def test_a_local_run_is_found_by_its_name_or_id_and_checked_against_this_machines_key(
+    home: Path,
+) -> None:
+    older = _local_run(home, "claude-11111111", 1_000_000)
+    _local_run(home, "claude-99ce72ff", 2_000_000)
+    for ref in (
+        "claude-99ce72ff",
+        "rh-claude-99ce72ff-1a2b3c4d",
+        "rh-claude-99ce72ff-1a2b3c4d.jsonl",
+    ):
+        r = runner.invoke(app, ["verify", ref])
+        assert r.exit_code == 0 and "attested" in r.output, ref  # the machine's key, found
+    r = runner.invoke(app, ["reconstruct"])  # no name: the latest run
+    assert r.exit_code == 0 and "claude-99ce72ff" in r.output
+    r = runner.invoke(app, ["verify", str(older)])  # a path still works
+    assert r.exit_code == 0 and "attested" in r.output
+    r = runner.invoke(app, ["reconstruct", "claude-nope"])
+    assert r.exit_code == 1 and "seatbelt runs" in r.output and "Traceback" not in r.output
+
+
+def test_seatbelt_runs_lists_local_runs_by_name_newest_first(home: Path) -> None:
+    r = runner.invoke(app, ["runs"])
+    assert r.exit_code == 0 and "No runs recorded yet" in r.output
+    _local_run(home, "claude-11111111", 1_000_000)
+    _local_run(home, "codex-22222222", 2_000_000)
+    r = runner.invoke(app, ["runs"])
+    assert r.exit_code == 0
+    assert r.output.index("codex-22222222") < r.output.index("claude-11111111")
+    assert "2 runs in" in r.output and "seatbelt reconstruct <run>" in r.output
+    r = runner.invoke(app, ["reconstruct"])
+    assert r.exit_code == 0 and "codex-22222222" in r.output
