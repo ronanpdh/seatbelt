@@ -4,6 +4,8 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-29
+
 ### Added
 - Releases are published to PyPI as **`seatbelt-ai`**: `uv tool install seatbelt-ai`, or once with `uvx --from seatbelt-ai seatbelt …`. The module and the command stay `seatbelt`. `seatbelt` on PyPI is an unrelated project that installs the same module and command, so `pip install seatbelt` and `uvx seatbelt` fetch it, not this. The release workflow's new `pypi` job publishes the wheel and sdist the `release` job built, through Trusted Publishing in the `pypi` environment, with no stored token; PyPI attaches its own attestations.
 
@@ -186,7 +188,8 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 - Tests: hash determinism, chain link and resume, property test that any edit breaks the chain, deletion detection, redaction, recorder lineage and failure path, CLI round trip and tamper detection.
 - Project scaffolding: uv, ruff, pyright strict, pytest, Hypothesis, pre-commit, CI, Dependabot, Scorecard, SECURITY.md, CONTRIBUTING.md, STANDARDS.md, ROADMAP.md.
 
-[Unreleased]: https://github.com/ronanpdh/seatbelt/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/ronanpdh/seatbelt/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.5.0
 [0.4.0]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.4.0
 [0.3.0]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.3.0
 [0.2.0]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.2.0
