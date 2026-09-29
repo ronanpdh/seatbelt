@@ -16,7 +16,7 @@ import httpx2
 _log = logging.getLogger(__name__)
 
 VERSION = "2023-06-01"
-MAX_ATTEMPTS = 7  # 1 + 2 + 4 + ... + 60 s: about two minutes of backoff before giving up
+MAX_ATTEMPTS = 7  # 1 + 2 + 4 + ... + 32 s: about a minute of backoff before giving up
 RESERVE = 30  # requests left in the shared window below which the client waits for the reset
 _TRANSIENT = {500, 502, 503, 504, 529}
 

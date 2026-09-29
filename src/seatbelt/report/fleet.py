@@ -1,7 +1,9 @@
 """Aggregate a runs directory: who used what, how much, and what was refused.
 
 Only ledgers whose chain verifies are counted: a broken one's numbers cannot be trusted, so
-it is listed, not summed."""
+it is listed, not summed. Nor are forged ones, or, when a key is given, ledgers that ended but
+carry no signature. A signature whose ledger is gone is listed as missing; a ledger deleted
+together with its signature leaves nothing behind, so no report can tell it was there."""
 
 from __future__ import annotations
 
@@ -13,6 +15,8 @@ from typing import Any, cast
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
+from seatbelt.attest.manifest import sidecar
+from seatbelt.erase import erased_hashes, erased_sidecar
 from seatbelt.ledger.events import Event, Kind
 from seatbelt.ledger.store import LedgerError, read_events
 from seatbelt.verify.attest import Attestation, verify_attestation
@@ -80,8 +84,12 @@ class Fleet(BaseModel):
     failed: list[str] = Field(default_factory=list[str])  # ended with run.ok false
     incomplete: list[str] = Field(default_factory=list[str])  # no run.end: open or truncated
     unattested: list[str] = Field(default_factory=list[str])  # no signed sidecar
-    forged: list[str] = Field(default_factory=list[str])  # sidecar fails the given key
+    forged: list[str] = Field(default_factory=list[str])  # fails the given key; not counted
+    # with a key given: ended but no sidecar, as when one is edited and its signature deleted;
+    # not counted
+    unsigned: list[str] = Field(default_factory=list[str])
     broken: list[str] = Field(default_factory=list[str])  # unreadable or chain fails; not counted
+    missing: list[str] = Field(default_factory=list[str])  # a sidecar whose ledger is gone
 
 
 def _tokens(event: Event, name: str) -> int:
@@ -107,12 +115,26 @@ def fleet(
         except (OSError, UnicodeDecodeError, LedgerError):
             out.broken.append(path.stem)
             continue
-        if not events:
+        if not events:  # emptied after it was signed, or a crash before its first event
+            if not sidecar(path).exists():
+                out.incomplete.append(path.stem)
+            elif verify_attestation(path, pubkey).status is Attestation.FORGED:
+                out.forged.append(path.stem)
+            else:
+                out.broken.append(path.stem)
             continue
         if not verify_events(events).ok:
             out.broken.append(events[0].run_id)
             continue
         run_id = events[0].run_id
+        last = events[-1]
+        status = verify_attestation(path, pubkey).status
+        if status is Attestation.FORGED:
+            out.forged.append(run_id)
+            continue
+        if pubkey is not None and status is Attestation.UNATTESTED and last.kind is Kind.RUN_END:
+            out.unsigned.append(run_id)  # an open one is signed only when it ends
+            continue
         out.runs += 1
         principal = str(events[0].attrs.get("principal.id") or "unknown")
         person = people.person(principal)
@@ -145,16 +167,18 @@ def fleet(
                     models_used.add(model)
         for model in models_used:
             out.by_model[model].runs += 1
-        last = events[-1]
         if last.kind is not Kind.RUN_END:
             out.incomplete.append(run_id)
         elif last.attrs.get("run.ok") is False:
             out.failed.append(run_id)
-        status = verify_attestation(path, pubkey).status
         if status is Attestation.UNATTESTED:
             out.unattested.append(run_id)
-        elif status is Attestation.FORGED:
-            out.forged.append(run_id)
+    for d in dirs:
+        erased = erased_hashes(d)
+        for side in sorted(d.glob("*.attest.json")):
+            ledger = side.with_name(side.name.removesuffix(".attest.json") + ".jsonl")
+            if not ledger.exists() and not erased_sidecar(side, erased):
+                out.missing.append(ledger.stem)
     out.by_tool = dict(sorted(tools.items()))
     out.people = {person: sorted(ids) for person, ids in sorted(seen.items())}
     return out
