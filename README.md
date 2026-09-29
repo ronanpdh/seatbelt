@@ -15,7 +15,7 @@ uv tool install seatbelt-ai   # needs uv: https://docs.astral.sh/uv/
 seatbelt run claude           # or: seatbelt run codex, seatbelt run gemini
 ```
 
-The package is `seatbelt-ai`; the command is `seatbelt`. `pip install seatbelt` and `uvx seatbelt` fetch an unrelated project, so run once without installing with `uvx --from seatbelt-ai seatbelt run claude`. Only one `seatbelt` command can be installed at a time: if you installed from git before 0.5.0, run `uv tool uninstall seatbelt` first. Until 0.5.0 is on PyPI, install from git: `uv tool install git+https://github.com/ronanpdh/seatbelt`.
+The package is `seatbelt-ai`; the command is `seatbelt`. `pip install seatbelt` and `uvx seatbelt` fetch an unrelated project, so run once without installing with `uvx --from seatbelt-ai seatbelt run claude`. Only one `seatbelt` command can be installed at a time: if you installed from git before 0.5.0, run `uv tool uninstall seatbelt` first.
 
 Use the CLI as you normally would; it keeps its own sign-in, whether that's a subscription or an API key. When you exit, seatbelt prints the run's name (e.g. `claude-99ce72ff`) and saves a signed record of it. Then:
 
