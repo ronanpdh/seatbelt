@@ -6,8 +6,11 @@ it is listed, not summed."""
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterable, Mapping
 from pathlib import Path
+from typing import Any, cast
 
+import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
 from seatbelt.ledger.events import Event, Kind
@@ -25,10 +28,49 @@ class Usage(BaseModel):
     denials: int = 0  # policy checks that refused
 
 
+class People:
+    """Who each principal id belongs to. One person can have several: an issued gateway key,
+    an identity provider's subject, an Anthropic user id from the Compliance API importer.
+    Only ids listed explicitly are joined; matching on e-mail is never done, since an e-mail
+    address is not an immutable identity and some providers do not verify it."""
+
+    def __init__(self, person_of: Mapping[str, str] | None = None) -> None:
+        self._person_of = dict(person_of or {})
+
+    @classmethod
+    def load(cls, path: Path) -> People:
+        """`people:` in a YAML file: each person's name, then the principal ids that are
+        theirs. Raises ValueError, naming the file, for anything else."""
+        try:
+            data: Any = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+            raise ValueError(f"{path}: {exc}") from exc
+        people = cast(dict[str, Any], data).get("people") if isinstance(data, dict) else None
+        if not isinstance(people, dict):
+            raise ValueError(f"{path}: expected `people:`, each person's name then their ids")
+        person_of: dict[str, str] = {}
+        for name, ids in cast(dict[Any, Any], people).items():
+            name = str(name)
+            if not isinstance(ids, list):
+                raise ValueError(f"{path}: {name}: expected a list of principal ids")
+            for principal in cast(list[Any], ids):
+                if not isinstance(principal, str) or not principal:
+                    raise ValueError(f"{path}: {name}: expected a list of principal ids")
+                other = person_of.setdefault(principal, name)
+                if other != name:
+                    raise ValueError(f"{path}: {principal} is listed for both {other} and {name}")
+        return cls(person_of)
+
+    def person(self, principal: str) -> str:
+        return self._person_of.get(principal, principal)
+
+
 class Fleet(BaseModel):
     model_config = ConfigDict(extra="forbid")
     runs: int = 0
-    by_principal: dict[str, Usage] = Field(default_factory=dict[str, Usage])
+    by_principal: dict[str, Usage] = Field(default_factory=dict[str, Usage])  # by person
+    # each person given in a people file, with the principal ids of theirs that were seen
+    people: dict[str, list[str]] = Field(default_factory=dict[str, list[str]])
     by_model: dict[str, Usage] = Field(default_factory=dict[str, Usage])
     by_tool: dict[str, int] = Field(default_factory=dict[str, int])
     failed: list[str] = Field(default_factory=list[str])  # ended with run.ok false
@@ -43,11 +85,19 @@ def _tokens(event: Event, name: str) -> int:
     return value if isinstance(value, int) else 0
 
 
-def fleet(runs: Path, pubkey: Path | None = None) -> Fleet:
-    """`pubkey` checks every attestation; without it only their presence is checked."""
+def fleet(
+    runs: Path | Iterable[Path], pubkey: Path | None = None, people: People | None = None
+) -> Fleet:
+    """`runs` is one runs directory or several, e.g. the gateway's and the Compliance API
+    importer's. `pubkey` checks every attestation; without it only their presence is checked.
+    `people` joins principal ids that belong to one person."""
     out = Fleet()
+    people = people or People()
+    seen: dict[str, set[str]] = defaultdict(set)
     tools: dict[str, int] = defaultdict(int)
-    for path in sorted(runs.glob("*.jsonl")):
+    dirs = [runs] if isinstance(runs, Path) else list(runs)
+    paths = sorted(p for d in dirs for p in d.glob("*.jsonl"))
+    for path in paths:
         try:
             events = list(read_events(path))
         except (OSError, UnicodeDecodeError, LedgerError):
@@ -61,7 +111,10 @@ def fleet(runs: Path, pubkey: Path | None = None) -> Fleet:
         run_id = events[0].run_id
         out.runs += 1
         principal = str(events[0].attrs.get("principal.id") or "unknown")
-        who = out.by_principal.setdefault(principal, Usage())
+        person = people.person(principal)
+        if person != principal:
+            seen[person].add(principal)
+        who = out.by_principal.setdefault(person, Usage())
         who.runs += 1
         requested: dict[str, str] = {}  # model.request id -> model asked for
         models_used: set[str] = set()
@@ -99,4 +152,5 @@ def fleet(runs: Path, pubkey: Path | None = None) -> Fleet:
         elif status is Attestation.FORGED:
             out.forged.append(run_id)
     out.by_tool = dict(sorted(tools.items()))
+    out.people = {person: sorted(ids) for person, ids in sorted(seen.items())}
     return out

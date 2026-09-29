@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -10,7 +11,7 @@ from seatbelt.cli import app
 from seatbelt.ledger.events import Actor, ActorType, Kind
 from seatbelt.ledger.store import Ledger
 from seatbelt.record.recorder import Recorder
-from seatbelt.report.fleet import fleet
+from seatbelt.report.fleet import People, fleet
 
 MODEL = "claude-sonnet-5-20260601"
 
@@ -120,3 +121,58 @@ def test_cli_report_with_a_bad_client_config_says_so_cleanly(
     r = CliRunner().invoke(app, ["report"])
     assert r.exit_code == 1 and "unknown keys ledger" in r.output
     assert r.exception is None or isinstance(r.exception, SystemExit)
+
+
+def _people(root: Path, text: str) -> Path:
+    path = root / "people.yaml"
+    path.write_text(text)
+    return path
+
+
+def test_a_people_file_joins_one_persons_ids_across_directories(tmp_path: Path) -> None:
+    """A person seen through the gateway (an issued key) and through the Compliance API
+    importer (an Anthropic user id) is one row once the file names both ids."""
+    _build(tmp_path)
+    imported = tmp_path / "runs" / "compliance"
+    with Recorder.start(
+        imported, "compliance:cowork", run_id="i1", metadata={"principal.id": "user_01Gp"}
+    ) as rec:
+        rec.model_responded("claude-opus-5-5", {"content": []})
+    people = People.load(
+        _people(
+            tmp_path, "people:\n  Alice:\n    - alice@corp\n    - user_01Gp\n    - never-seen\n"
+        )
+    )
+    report = fleet([tmp_path / "runs", imported], people=people)
+    alice = report.by_principal["Alice"]
+    assert (alice.runs, alice.calls) == (3, 3)  # two gateway runs, one imported
+    assert "alice@corp" not in report.by_principal and "user_01Gp" not in report.by_principal
+    assert report.by_principal["bob@corp"].runs == 1  # not in the file: as recorded
+    assert report.people == {"Alice": ["alice@corp", "user_01Gp"]}  # ids seen, not all listed
+    assert fleet(tmp_path / "runs").people == {}  # no file: nothing joined
+
+
+@pytest.mark.parametrize(
+    ("text", "error"),
+    [
+        ("people:\n  A: [x]\n  B: [x]\n", "x is listed for both A and B"),
+        ("people:\n  A: x\n", "expected a list"),
+        ("people:\n  A: [1]\n", "expected a list"),
+        ("A: [x]\n", "expected `people:`"),
+        ("people: [\n", "people.yaml"),
+    ],
+)
+def test_a_bad_people_file_is_refused(tmp_path: Path, text: str, error: str) -> None:
+    with pytest.raises(ValueError, match=re.escape(error)):
+        People.load(_people(tmp_path, text))
+
+
+def test_cli_report_with_a_people_file(tmp_path: Path) -> None:
+    _build(tmp_path)
+    people = _people(tmp_path, "people:\n  Alice Example:\n    - alice@corp\n")
+    runner = CliRunner()
+    r = runner.invoke(app, ["report", str(tmp_path / "runs"), "--people", str(people)])
+    assert "Alice Example" in r.output and "Alice Example: alice@corp" in r.output
+    bad = _people(tmp_path, "people:\n  A: [x]\n  B: [x]\n")
+    r = runner.invoke(app, ["report", str(tmp_path / "runs"), "--people", str(bad)])
+    assert r.exit_code == 1 and "listed for both" in r.output

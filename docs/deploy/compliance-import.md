@@ -68,9 +68,11 @@ Each run imports what changed and settled since the last run, then prints what i
 Read the ledgers with the usual commands, passing the importer's folder:
 
 ```sh
-seatbelt report runs/compliance --pubkey keys/seatbelt.pub
+seatbelt report runs runs/compliance --pubkey keys/seatbelt.pub --people people.yaml
 seatbelt reconstruct runs/compliance/cowork-clls_01Hx...-1.jsonl --pubkey keys/seatbelt.pub
 ```
+
+`reconstruct` shows each imported answer's text. A message Anthropic marks is shown with its mark: `[unverified]` for a turn the client claimed, `[marker]` for a placeholder such as the system prompt's, and `[unavailable: <reason>]` for content that could not be returned.
 
 With `sink:` in the config, each ledger is also shipped to object storage as it is written. The gateway's own sink does not ship the importer's folder.
 
@@ -84,7 +86,7 @@ With `sink:` in the config, each ledger is also shipped to object storage as it 
   - content already removed by retention or deleted by a user before an import.
 - **Whole tool blocks, up to a point.** The importer asks for tool inputs and results up to the server's maximum, about 1 MiB [C2]. A block still cut is recorded with `compliance.truncated`, its input kept as a string.
 - **Files and artifacts: metadata only.** Chat attachments, generated files and artifacts are recorded as ids, names, types, and where given, sizes and MD5s. Their content is not downloaded.
-- **People.** Imported ledgers name people by Anthropic's user id (`principal.id`), with their email as `principal.name`. Gateway ledgers name them by issued key or OIDC subject, so one person can appear twice in a report.
+- **People.** Imported ledgers name people by Anthropic's user id (`principal.id`), with their email as `principal.name`. Gateway ledgers name them by issued key or OIDC subject. To count each person once, list their ids in a people file and pass it to `seatbelt report --people` ([gateway guide](gateway.md#one-row-per-person)).
 - **Deleted content is kept.** A signed ledger keeps what a user later deletes in claude.ai. That is the point of a legal hold, but it can conflict with data-protection duties such as erasure requests. Decide how you will handle those before you start. seatbelt has no tool yet to remove a person's ledgers.
 - **Rate limit.** The Compliance API allows 600 requests per minute per parent organization, shared by every key [C1][C5]. The importer slows down when fewer than 30 are left in the minute, and honours `retry-after`.
 - **Cursors expire.** A walk of local-session messages must finish within 24 hours [C2]. A run fetches each transcript in one go.

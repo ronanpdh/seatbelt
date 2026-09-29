@@ -119,6 +119,35 @@ Each reload is logged as `config reloaded:` with the number of principals, the i
 
 Every verdict is a `policy.check` event in the ledger. `seatbelt report` counts each denying check per employee (a request two rules deny counts twice; a denied tool call counts too) and, for refused requests, against the model asked for.
 
+## One row per person
+
+`seatbelt report` counts usage per principal id. One person can have several:
+- an issued key (`seatbelt gateway keygen --user alice@corp`);
+- an identity provider's subject, such as `auth0|abc123` or an Entra object id;
+- an Anthropic user id, from the Compliance API importer.
+
+To count them as one person, list each person's ids in a YAML file and pass it with `--people`:
+
+```yaml
+people:
+  Alice Example:
+    - alice@corp                      # issued gateway key
+    - auth0|abc123                      # Claude Desktop, signed in with OIDC
+    - user_01GpKpLmNoPqRsTuVwXyZaBc   # imported from the Compliance API
+```
+
+```sh
+seatbelt report runs runs/compliance --pubkey keys/seatbelt.pub --people people.yaml
+```
+
+- The report then has one row per person, and lists which of each person's ids it saw.
+- Ids not in the file are shown as recorded.
+- An id listed for two people is refused.
+- Nothing is matched by e-mail. An address can change, some providers do not verify it, and the id each source records is the one that does not change.
+- The file changes only how the report groups runs. The ledgers and their signatures are untouched, so the file can be corrected at any time.
+
+`report` takes several folders, as here: the gateway's ledgers and the importer's.
+
 ## Where ledgers live, and backups
 
 Each session is `<ledgers>/<run id>.jsonl` with its signature beside it as `<run id>.attest.json`. Back up by copying the directory; keep each sidecar with its ledger. A closed ledger never changes again, so incremental copies are safe. `seatbelt verify`, `reconstruct`, `pack` and `verify-pack` work on these files unchanged, with nothing but the public key.

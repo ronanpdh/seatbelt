@@ -20,6 +20,7 @@ from seatbelt.gateway.launcher import data_dir, load_client_config, run_cli
 from seatbelt.ledger.events import Kind
 from seatbelt.ledger.store import LedgerError, read_events
 from seatbelt.record.recorder import Recorder
+from seatbelt.report.fleet import People
 from seatbelt.report.fleet import fleet as build_fleet
 from seatbelt.report.pack import PackError, PackStatus
 from seatbelt.report.pack import build as build_pack
@@ -514,34 +515,44 @@ def run(
 @app.command()
 def report(
     runs: Annotated[
-        Path | None, typer.Argument(help="runs directory; default: this machine's local runs")
+        list[Path] | None,
+        typer.Argument(
+            help="runs directories, e.g. the gateway's and the importer's; "
+            "default: this machine's local runs"
+        ),
     ] = None,
     pubkey: PubKey = None,
+    people_file: Annotated[
+        Path | None,
+        typer.Option("--people", help="YAML file joining each person's principal ids (see docs)"),
+    ] = None,
     json_out: Annotated[bool, typer.Option("--json", help="print the report as JSON")] = False,
 ) -> None:
-    """Usage across a runs directory by person, model and tool, with refused, failed, open and
+    """Usage across runs directories by person, model and tool, with refused, failed, open and
     unsigned runs. Exit 1 if any ledger is broken or, with --pubkey, forged. With no
     directory: the runs `seatbelt run` recorded here, checked against this machine's key."""
-    if runs is None:
+    if not runs:
         try:
-            runs, pubkey = _local_runs(pubkey)
+            local, pubkey = _local_runs(pubkey)
         except ValueError as exc:  # a bad client config
             console.print(f"[red]{escape(str(exc))}[/]")
             raise typer.Exit(code=1) from exc
-        if not any(runs.glob("*.jsonl")):
-            console.print(f"No runs recorded yet in {runs}. Start one with: seatbelt run claude")
+        if not any(local.glob("*.jsonl")):
+            console.print(f"No runs recorded yet in {local}. Start one with: seatbelt run claude")
             return
+        runs = [local]
     try:
-        fleet = build_fleet(runs, pubkey)
-    except AttestError as exc:
+        people = People.load(people_file) if people_file is not None else None
+        fleet = build_fleet(runs, pubkey, people)
+    except (AttestError, ValueError) as exc:
         console.print(f"[red]{escape(str(exc))}[/]")
         raise typer.Exit(code=1) from exc
     if json_out:
         print(fleet.model_dump_json(indent=2))
     else:
-        people = Table(Column("principal", no_wrap=True), "runs", "calls", "in", "out", "denied")
+        by_person = Table(Column("person", no_wrap=True), "runs", "calls", "in", "out", "denied")
         for name, u in fleet.by_principal.items():
-            people.add_row(
+            by_person.add_row(
                 Text(name), *map(str, (u.runs, u.calls, u.input_tokens, u.output_tokens, u.denials))
             )
         models = Table(Column("model", no_wrap=True), "runs", "calls", "in", "out", "denied")
@@ -552,8 +563,10 @@ def report(
         tools = Table(Column("tool", no_wrap=True), "calls")
         for name, n in fleet.by_tool.items():
             tools.add_row(Text(name), str(n))
-        for table in (people, models, tools):
+        for table in (by_person, models, tools):
             console.print(table)
+        for person, ids in fleet.people.items():
+            console.print(Text(f"{person}: {', '.join(ids)}"))
         console.print(f"{fleet.runs} runs")
         for label, ids in (
             ("failed", fleet.failed),

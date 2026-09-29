@@ -5,6 +5,9 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 ## [Unreleased]
 
 ### Added
+- `seatbelt report --people people.yaml` counts each person once across their principal ids: an issued gateway key, an identity provider's subject, an Anthropic user id from the importer. The file lists each person's ids. Nothing is matched by e-mail, and an id listed for two people is refused. The report lists the ids it joined (`people` in `--json`). `seatbelt.report.fleet.People`.
+- `seatbelt report` takes several runs folders, e.g. the gateway's and the Compliance API importer's.
+- `seatbelt reconstruct` shows an imported answer's text instead of `(? out)`, and marks imported messages that are not verified content: `[unverified]`, `[marker]`, `[unavailable: <reason>]`.
 - The OpenSSF Best Practices badge (bestpractices.dev project 15081) in the README; `docs/openssf-best-practices.md` names CodeQL among the static analysis tools.
 
 ## [0.3.0] - 2026-09-29
