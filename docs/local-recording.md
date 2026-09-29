@@ -1,6 +1,6 @@
 # Recording on your own machine
 
-`seatbelt run claude` (or `codex`, or `gemini`) records the CLI's model traffic on your machine, with nothing to set up. The CLI signs in as it always does. Each run's ledger is signed and written to your local data folder.
+`seatbelt run claude` (or `codex`, or `gemini`) records the CLI's model traffic on your machine, with nothing to set up. The CLI signs in as it always does. Each run's ledger is signed and written to your local data folder. What that signature does and does not prove is under [Limits](#limits).
 
 ```sh
 seatbelt run claude      # when it exits: "recorded run claude-99ce72ff"
@@ -119,6 +119,11 @@ A 0.2.0 `~/.config/seatbelt/gateway.toml` with `url` and `key` is still read whe
   - Gemini `generateContent`;
   - Code Assist.
 - **Only a restricted set of requests is forwarded unrecorded.** A CLI feature that calls another model endpoint through the base URL gets an error rather than going unrecorded. Only token counts, model lists, Gemini's embeddings and Code Assist's account calls pass through unrecorded.
+- **A local signature does not protect a run from the agent it records, or from you.**
+  - The signing key is in `keys/` in the data folder, readable by your user. The CLI, and every tool it runs, runs as your user too.
+  - So an agent that can run commands can rewrite a ledger and sign it again, and `seatbelt verify` then reports it attested.
+  - What a local signature does show: the file has not changed since it was signed, by another user on the machine or by a later accidental edit.
+  - When the agent itself is the adversary, record through your organisation's gateway, which keeps the key and the ledgers on another machine. Or ship each ledger to a `[sink]` bucket with Object Lock in COMPLIANCE mode ([deploy/gateway.md](deploy/gateway.md#shipping-ledgers-to-object-storage)). Once shipped, a ledger's version there cannot be deleted before its retention ends, and a later upload under the same name only adds a version beside it, so check the first version. A ledger not yet shipped is only as safe as the local copy.
 
 ## Sources
 

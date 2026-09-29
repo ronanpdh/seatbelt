@@ -33,8 +33,8 @@ No agent to hand? `seatbelt demo` records an example run, then `seatbelt verify 
 ## What you get
 
 - **One file per run** (JSONL): user messages, model requests and responses (with the exact model version and token usage), tool calls and results, and policy checks.
-- **Tamper evidence.** Each event is SHA-256 hash-chained to the one before it. Any edit, reorder or deletion makes `seatbelt verify` fail and name the first bad event.
-- **A signature.** A signed manifest pins the final hash, so a rewritten ending fails too.
+- **Tamper evidence.** Each event is SHA-256 hash-chained to the one before it. An edit, reorder or deletion breaks the chain, and `seatbelt verify` fails and names the first bad event.
+- **A signature.** A signed manifest pins the final hash and the file's SHA-256. Anyone who can write the file can also recompute the chain, so a ledger that was re-chained, or cut short and closed again, is caught for certain only with `--pubkey` against a signed sidecar. `verify` checks a local run against this machine's key; for any other ledger, without `--pubkey` it does not check the signature and says `unchecked` or `unattested`.
 - **Redaction.** Secrets are removed before anything is hashed or written.
 
 ## Record for a team
@@ -56,6 +56,14 @@ On Claude Enterprise, `seatbelt import compliance` also brings in what no gatewa
 `seatbelt report runs --pubkey keys/seatbelt.pub` summarises who used what.
 
 ## Record your own agent
+
+Install the library into your agent's environment, with the extra for your SDK:
+
+```sh
+pip install "seatbelt-ai[anthropic]"      # or: uv add "seatbelt-ai[openai-agents]"
+```
+
+The import name is `seatbelt`, which an unrelated PyPI project also uses: install `seatbelt-ai`, never `seatbelt`, and don't install both in one environment. The `uv tool install` in the quick start puts the CLI in its own environment, where your code can't import it.
 
 ```python
 from pathlib import Path

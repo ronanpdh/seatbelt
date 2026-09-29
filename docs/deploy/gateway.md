@@ -39,12 +39,13 @@ The container image runs as uid 1000 and writes ledgers under `/var/lib/seatbelt
    seatbelt gateway keygen --user alice@corp --config gateway/gateway.yaml
    ```
 
-4. Pull the released image, or build it, and run it with the config directory mounted read-only and the provider keys passed as environment. Each release from 0.3.0 publishes `ghcr.io/ronanpdh/seatbelt-gateway:<version>` (and `:latest`) with signed build provenance; check it before you run it:
+4. Pull the released image, or build it, and run it with the config directory mounted read-only and the provider keys passed as environment. Each release from 0.3.0 publishes `ghcr.io/ronanpdh/seatbelt-gateway:<version>` (and `:latest`) with signed build provenance. Use the latest release (the newest tag on the [releases page](https://github.com/ronanpdh/seatbelt/releases), without the `v`): an older image lacks later fixes, and one before 0.4.0 does not hold the folder lock `seatbelt erase` relies on. Check it before you run it:
 
    ```sh
-   docker pull ghcr.io/ronanpdh/seatbelt-gateway:0.3.0
-   gh attestation verify oci://ghcr.io/ronanpdh/seatbelt-gateway:0.3.0 --repo ronanpdh/seatbelt
-   docker tag ghcr.io/ronanpdh/seatbelt-gateway:0.3.0 seatbelt-gateway
+   docker pull ghcr.io/ronanpdh/seatbelt-gateway:<version>
+   gh attestation verify oci://ghcr.io/ronanpdh/seatbelt-gateway:<version> --repo ronanpdh/seatbelt
+   docker inspect --format '{{index .RepoDigests 0}}' ghcr.io/ronanpdh/seatbelt-gateway:<version>
+   docker tag ghcr.io/ronanpdh/seatbelt-gateway:<version> seatbelt-gateway
    # or build it from a checkout: docker build -f docker/Dockerfile.gateway -t seatbelt-gateway .
    docker volume create seatbelt-runs
    docker run -d --name seatbelt-gateway -p 8080:8080 --stop-timeout 70 \
@@ -54,14 +55,18 @@ The container image runs as uid 1000 and writes ledgers under `/var/lib/seatbelt
      seatbelt-gateway
    ```
 
+   `docker inspect` prints the image you verified by its digest, `ghcr.io/ronanpdh/seatbelt-gateway@sha256:...`. Anywhere you deploy it again (a compose file, a PaaS), use that reference rather than the tag, so a tag that moves later cannot change what runs.
+
    Mount the directory, not the file: `keygen` replaces `gateway.yaml` rather than writing into it, and a container that mounted the file alone keeps reading the old one. `seatbelt keygen` writes both key files mode 0600, so each must be readable by uid 1000 inside the container: `chown 1000` the signing key on the host, or mount a copy owned by 1000; the public key can be `chmod 644`. `--stop-timeout 70` gives the shutdown drain (below) time to finish before Docker kills the process; Docker's default is 10 seconds. Put TLS in front of the gateway (a load balancer or reverse proxy); it serves plain HTTP.
 
-5. Point a client at it with the employee's key. For Claude Code, the employee writes `~/.config/seatbelt/gateway.toml` (mode 0600):
+5. Point a client at it with the employee's key. For Claude Code, the employee adds two lines to `~/.config/seatbelt/config.toml` (mode 0600), the file that also holds any local-recording settings ([local-recording.md](../local-recording.md)):
 
    ```toml
-   url = "https://gw.corp.example"
+   gateway = "https://gw.corp.example"
    key = "sbk_..."
    ```
+
+   A 0.2.0 `~/.config/seatbelt/gateway.toml` is read only when there is no `config.toml`. Beside a `config.toml` it is ignored: with no `gateway` in `config.toml`, `seatbelt run` records on the machine, not through the gateway. Move its `url` (as `gateway`) and `key` into `config.toml`.
 
    and runs `seatbelt run claude`, `seatbelt run codex` for Codex, or `seatbelt run gemini` for Gemini CLI. Any Anthropic SDK client works with `ANTHROPIC_BASE_URL=https://gw.corp.example` and the key as its API key; an OpenAI SDK client (Chat Completions or Responses, the OpenAI Agents SDK included) with `OPENAI_BASE_URL=https://gw.corp.example/v1` and the key as `OPENAI_API_KEY`; a Google Gen AI SDK client (Gemini API, not Vertex AI) with `GOOGLE_GEMINI_BASE_URL=https://gw.corp.example` and the key as its API key. Claude Desktop and Cowork: [claude-desktop-gateway.md](claude-desktop-gateway.md).
 
@@ -85,17 +90,17 @@ The container image runs as uid 1000 and writes ledgers under `/var/lib/seatbelt
 
 ### On a PaaS (Coolify and similar)
 
-A host that runs images can run `ghcr.io/ronanpdh/seatbelt-gateway:<version>` (in Coolify, the Docker Image build pack), which pins a verified release rather than whatever the branch holds. A host that builds from git can use `docker/Dockerfile.gateway` as is: it builds seatbelt from the repository, no `uv build` first. Mount `gateway.yaml` at `/etc/seatbelt/gateway.yaml` (a directory mount at `/etc/seatbelt` where the host offers one, for the reason in step 4), give `/var/lib/seatbelt` a persistent volume, expose port 8080 and put the host's HTTPS domain in front.
+A host that runs images can run the release you verified in step 4, by digest (`ghcr.io/ronanpdh/seatbelt-gateway@sha256:...`; in Coolify, the Docker Image build pack), which pins that release rather than whatever the branch holds. A host that builds from git can use `docker/Dockerfile.gateway` as is: it builds seatbelt from the repository, no `uv build` first. Mount `gateway.yaml` at `/etc/seatbelt/gateway.yaml` (a directory mount at `/etc/seatbelt` where the host offers one, for the reason in step 4), give `/var/lib/seatbelt` a persistent volume, expose port 8080 and put the host's HTTPS domain in front.
 
 Where you cannot control a mounted file's owner or mode, leave `signing_key` out of the config and pass the key in the environment instead, as `SEATBELT_SIGNING_KEY`: the PEM itself, or its base64 so it survives any env var editor (`base64 < gateway/keys/seatbelt.key | tr -d '\n'`). Setting both is refused. Treat the variable like the key file: anyone who can read the service's environment can sign ledgers.
 
-Because the service is reachable only through the host's proxy, `FORWARDED_ALLOW_IPS=*` is safe there and makes `client.ip` the real client. Issue employee keys with `seatbelt gateway keygen` against a local copy of the config, then paste the new `principals` entry into the mounted file. Within 30 seconds the logs say `config reloaded`. If they say `config not reloaded`, fix what it names (a restart would fail on the same file). If they say neither, the container does not see the edit, as with a single-file mount the host replaces: restart the service.
+Because the service is reachable only through the host's proxy, `FORWARDED_ALLOW_IPS=*` makes uvicorn trust that proxy's `X-Forwarded-For`, and `client.ip` is then the leftmost address in it. That is the real client only when the proxy replaces any `X-Forwarded-For` a client sends, as Coolify's Traefik does by default. Behind a proxy that appends to it instead (nginx with `$proxy_add_x_forwarded_for`, or a CDN in front of the host's proxy), an employee can put any address there; set `FORWARDED_ALLOW_IPS` to the proxy's address instead of `*`. Issue employee keys with `seatbelt gateway keygen` against a local copy of the config, then paste the new `principals` entry into the mounted file. Within 30 seconds the logs say `config reloaded`. If they say `config not reloaded`, fix what it names (a restart would fail on the same file). If they say neither, the container does not see the edit, as with a single-file mount the host replaces: restart the service.
 
 ## Sessions and runs
 
 Requests from the same employee go into one ledger until `session_idle` seconds pass with no request; then the gateway writes `run.end`, signs the ledger, and the next request starts a new one. A client can name a run with the header `X-Seatbelt-Run: <name>` and close it with `X-Seatbelt-Run-End: true` or `POST /seatbelt/runs/<name>/end`. `seatbelt run` names each run and ends it with the POST when the CLI exits. `run.start` records `principal.id`, `principal.key_id`, `client.ip` and `client.user_agent`.
 
-Behind a reverse proxy, `client.ip` is the proxy's address unless uvicorn trusts the proxy's `X-Forwarded-For`. uvicorn trusts forwarded headers only from `127.0.0.1` and `::1` by default; set `FORWARDED_ALLOW_IPS` in the container's environment to the address the proxy's connections arrive from. With `-p 8080:8080` that is usually the Docker bridge gateway (for example `172.17.0.1`), not the proxy's own address.
+Behind a reverse proxy, `client.ip` is the proxy's address unless uvicorn trusts the proxy's `X-Forwarded-For`. uvicorn trusts forwarded headers only from `127.0.0.1` and `::1` by default; set `FORWARDED_ALLOW_IPS` in the container's environment to the address the proxy's connections arrive from. With `-p 8080:8080` that is usually the Docker bridge gateway (for example `172.17.0.1`), not the proxy's own address. `client.ip` is recorded as evidence, and it is only as trustworthy as the proxy's handling of `X-Forwarded-For` ([On a PaaS](#on-a-paas-coolify-and-similar)).
 
 On shutdown (SIGTERM or Ctrl-C) the gateway stops accepting requests and waits up to 30 seconds for in-flight ones, then up to 30 more for any session still busy, and closes and signs every session it can. A session still busy after that is left open and closed on the next start. A second stop signal during that close is ignored, so a ledger is never left closed but unsigned; `docker stop` escalates to SIGKILL after its timeout (`--stop-timeout`, step 4). If it is killed instead, the next start closes each ledger left open with `run.ok: false` and `run.error: "gateway restarted"` and signs it. A ledger killed between its `run.end` and its signature is never signed at the next start, because it looks the same as one rewritten and its signature deleted: the start logs it as closed but not signed, for a person to check and sign with `seatbelt attest`. A ledger it cannot read, or whose chain does not verify, is left untouched and logged, never signed.
 
