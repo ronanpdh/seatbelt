@@ -4,6 +4,5 @@
 !README.md
 !LICENSE
 !src
-!docker/requirements-gateway.txt
-!docker/requirements-build.txt
+!uv.lock
 src/**/__pycache__

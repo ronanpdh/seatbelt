@@ -22,7 +22,7 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         with:
           # inside pyproject's uv_build range, so `uv build` uses the backend bundled in this
-          # binary and fetches none; bump both together (and docker/requirements-build.txt)
+          # binary and fetches none; bump both together (and the uv stage in docker/Dockerfile.gateway)
           version: "0.12.20"
           checksum: "6590717592ace991ff83a63fef799e3ad9d33ecc8f96c5d6bdd732496e79337f"  # uv-x86_64-unknown-linux-gnu.tar.gz
           enable-cache: false

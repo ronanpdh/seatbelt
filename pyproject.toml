@@ -22,18 +22,22 @@ classifiers = [
     "Topic :: Security",
     "Topic :: System :: Logging",
 ]
+# Floors: the lowest release the tests pass with, and never below the first release from which
+# no later one has a known advisory. CI tests and audits them (.github/workflows/lowest.yml);
+# raise one only when code needs it or the audit fails.
+# Design: docs/plans/2026-09-29-dependency-floors-design.md
 dependencies = [
     # the recording gateway, which `seatbelt run` also starts in-process to record locally
-    "anyio>=4.15",
-    "cryptography>=50.0.1",
-    "httpx2>=2.13.1",
-    "pydantic>=2.13.5",
-    "pyjwt>=2.15",
-    "pyyaml>=6.0.3",
-    "rich>=15.0.0",
-    "starlette>=1.7.0",
-    "typer>=0.27.2",
-    "uvicorn>=0.54.0",
+    "anyio>=4.14.2",
+    "cryptography>=50.0.0",
+    "httpx2>=2.12.0",
+    "pydantic>=2.12.2",
+    "pyjwt>=2.13.0",
+    "pyyaml>=6.0.2",
+    "rich>=13.8",
+    "starlette>=1.3.1",
+    "typer>=0.17",
+    "uvicorn>=0.34",
 ]
 
 [project.urls]
@@ -47,18 +51,18 @@ seatbelt = "seatbelt.cli:app"
 
 [project.optional-dependencies]
 anthropic = [
-    "anthropic>=1.8.0",
+    "anthropic>=1.0.0",
 ]
 openai-agents = [
-    "openai-agents>=0.22.3",
+    "openai-agents>=0.19",
 ]
 # kept so `seatbelt-ai[gateway]` still installs; its packages are now core dependencies
 gateway = [
-    "anyio>=4.15",
-    "httpx2>=2.13.1",
-    "pyjwt>=2.15",
-    "starlette>=1.7.0",
-    "uvicorn>=0.54.0",
+    "anyio>=4.14.2",
+    "httpx2>=2.12.0",
+    "pyjwt>=2.13.0",
+    "starlette>=1.3.1",
+    "uvicorn>=0.34",
 ]
 
 [build-system]
@@ -71,21 +75,21 @@ module-name = "seatbelt"
 
 [dependency-groups]
 dev = [
-    "anthropic>=1.8.0",  # adapter tests and pyright need the optional SDK
-    "anyio>=4.15",  # gateway extra
-    "httpx2>=2.13.1",
+    "anthropic>=1.0.0",  # adapter tests and pyright need the optional SDK
+    "anyio>=4.14.2",  # gateway extra
+    "httpx2>=2.12.0",
     "hypothesis>=6.168.1",
-    "openai-agents>=0.22.3",
+    "openai-agents>=0.19",
     "pre-commit>=4.6.2",
     "pyright>=1.1.414",
     "pytest>=9.1.1",
     "ruff>=0.16.9",
-    "starlette>=1.7.0",
-    "uvicorn>=0.54.0",
+    "starlette>=1.3.1",
+    "uvicorn>=0.34",
     "types-pyyaml>=6.0.12.20260906",
     "botocore>=1.43",  # oracle for the sink's SigV4 signing in tests; never shipped
     "botocore-stubs>=1.43.67",  # types for the test oracle
-    "pyjwt>=2.15",
+    "pyjwt>=2.13.0",
 ]
 fuzz = [
     "atheris>=3.1",

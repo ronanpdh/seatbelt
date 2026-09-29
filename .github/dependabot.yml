@@ -4,6 +4,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # the lockfile only: pyproject's floors move by hand (see its comment)
+    versioning-strategy: lockfile-only
     groups:
       python:
         patterns: ["*"]
@@ -14,6 +16,12 @@ updates:
     ignore:
       - dependency-name: python
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      # uv moves by hand, with the workflows' uv and pyproject's uv_build range
+      - dependency-name: astral-sh/uv
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
   - package-ecosystem: github-actions
     directory: /
     schedule:
