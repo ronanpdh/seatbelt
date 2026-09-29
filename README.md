@@ -1,4 +1,4 @@
-<img src="docs/assets/seatbelt-cover.png" alt="Seatbelt" width="100%">
+<img src="https://raw.githubusercontent.com/ronanpdh/seatbelt/main/docs/assets/seatbelt-cover.png" alt="Seatbelt" width="100%">
 
 # seatbelt
 
@@ -11,9 +11,11 @@ Seatbelt records what your AI agents do: every prompt, model response and tool c
 ## Quick start
 
 ```sh
-uv tool install git+https://github.com/ronanpdh/seatbelt   # needs uv: https://docs.astral.sh/uv/
-seatbelt run claude                                         # or: seatbelt run codex, seatbelt run gemini
+uv tool install seatbelt-ai   # needs uv: https://docs.astral.sh/uv/
+seatbelt run claude           # or: seatbelt run codex, seatbelt run gemini
 ```
+
+The package is `seatbelt-ai`; the command is `seatbelt`. `pip install seatbelt` and `uvx seatbelt` fetch an unrelated project, so run once without installing with `uvx --from seatbelt-ai seatbelt run claude`. Only one `seatbelt` command can be installed at a time: if you installed from git before 0.5.0, run `uv tool uninstall seatbelt` first. Until 0.5.0 is on PyPI, install from git: `uv tool install git+https://github.com/ronanpdh/seatbelt`.
 
 Use the CLI as you normally would; it keeps its own sign-in, whether that's a subscription or an API key. When you exit, seatbelt prints the run's name (e.g. `claude-99ce72ff`) and saves a signed record of it. Then:
 
@@ -24,7 +26,7 @@ seatbelt runs                        # list your runs by name
 seatbelt report                      # what your runs did: models, tools, tokens, anything refused or altered
 ```
 
-There is nothing to set up. How it works, where runs are saved, and what is and isn't recorded: [docs/local-recording.md](docs/local-recording.md).
+There is nothing to set up. How it works, where runs are saved, and what is and isn't recorded: [docs/local-recording.md](https://github.com/ronanpdh/seatbelt/blob/main/docs/local-recording.md).
 
 No agent to hand? `seatbelt demo` records an example run, then `seatbelt verify runs/<run id>.jsonl` checks it. `verify` and `reconstruct` take a file path, or a run's name from `seatbelt runs`.
 
@@ -37,7 +39,7 @@ No agent to hand? `seatbelt demo` records an example run, then `seatbelt verify 
 
 ## Record for a team
 
-To record everyone's agents in one place, run a gateway ([docs/deploy/gateway.md](docs/deploy/gateway.md)). Each person then adds two lines to `~/.config/seatbelt/config.toml`, and `seatbelt run` records through the gateway instead:
+To record everyone's agents in one place, run a gateway ([docs/deploy/gateway.md](https://github.com/ronanpdh/seatbelt/blob/main/docs/deploy/gateway.md)). Each person then adds two lines to `~/.config/seatbelt/config.toml`, and `seatbelt run` records through the gateway instead:
 
 ```toml
 gateway = "https://gw.corp.example"
@@ -49,7 +51,7 @@ The gateway holds the provider keys and signs one ledger per session. It can als
 - accept Claude Desktop users signed in with your identity provider;
 - ship every ledger to object storage.
 
-On Claude Enterprise, `seatbelt import compliance` also brings in what no gateway sees: claude.ai chats, and Cowork and Claude Code sessions, from Anthropic's Compliance API ([docs/deploy/compliance-import.md](docs/deploy/compliance-import.md)).
+On Claude Enterprise, `seatbelt import compliance` also brings in what no gateway sees: claude.ai chats, and Cowork and Claude Code sessions, from Anthropic's Compliance API ([docs/deploy/compliance-import.md](https://github.com/ronanpdh/seatbelt/blob/main/docs/deploy/compliance-import.md)).
 
 `seatbelt report runs --pubkey keys/seatbelt.pub` summarises who used what.
 
@@ -66,15 +68,15 @@ with Recorder.start(Path("runs"), agent_id="support-bot") as rec:
     rec.outcome("refund issued", success=True)
 ```
 
-Using the Anthropic SDK? Wrap the client and every `create` or `stream` call is recorded, tool calls included: `AnthropicAdapter(rec).messages(client)`, `.messages(client.beta)`, or `.async_messages(async_client)`. See [`examples/anthropic_refund.py`](examples/anthropic_refund.py).
+Using the Anthropic SDK? Wrap the client and every `create` or `stream` call is recorded, tool calls included: `AnthropicAdapter(rec).messages(client)`, `.messages(client.beta)`, or `.async_messages(async_client)`. See [`examples/anthropic_refund.py`](https://github.com/ronanpdh/seatbelt/blob/main/examples/anthropic_refund.py).
 
-Using the OpenAI Agents SDK? Register `agents.add_trace_processor(SeatbeltProcessor(rec))` once at startup. See [`examples/openai_agents_refund.py`](examples/openai_agents_refund.py).
+Using the OpenAI Agents SDK? Register `agents.add_trace_processor(SeatbeltProcessor(rec))` once at startup. See [`examples/openai_agents_refund.py`](https://github.com/ronanpdh/seatbelt/blob/main/examples/openai_agents_refund.py).
 
 To sign each run when it ends, make a key with `seatbelt keygen keys` and pass `signer=Signer.from_file(Path("keys/seatbelt.key"))` to `Recorder.start` (`from seatbelt.attest.sign import Signer`).
 
 ## Test your agent
 
-The shipped corpus feeds prompt injection, tool-argument smuggling, credential exfiltration and more to your agent, then checks the ledger. It can also run your agent in a sandbox with no network, and bundle the results into one signed evidence pack. See [docs/scenarios.md](docs/scenarios.md).
+The shipped corpus feeds prompt injection, tool-argument smuggling, credential exfiltration and more to your agent, then checks the ledger. It can also run your agent in a sandbox with no network, and bundle the results into one signed evidence pack. See [docs/scenarios.md](https://github.com/ronanpdh/seatbelt/blob/main/docs/scenarios.md).
 
 ```sh
 git clone https://github.com/ronanpdh/seatbelt && cd seatbelt && uv sync
@@ -86,7 +88,7 @@ uv run seatbelt scenarios scenarios/ --target examples.scenario_target:target   
 | Command | Does | Exit 1 when |
 |---|---|---|
 | `seatbelt run <cli> [--config] [--exe] [-- args]` | runs `claude`, `codex` or `gemini`, recorded on this machine or through your gateway | bad config or unknown CLI (127: executable not found); otherwise the CLI's own exit code |
-| `seatbelt report [runs...] [--pubkey] [--people] [--json]` | usage by person, model and tool; refused, failed, open and unsigned runs. Takes several folders; `--people` joins one person's ids ([guide](docs/deploy/gateway.md#one-row-per-person)). With no `runs`, this machine's runs | a ledger is broken, or forged with a key given; a bad people file |
+| `seatbelt report [runs...] [--pubkey] [--people] [--json]` | usage by person, model and tool; refused, failed, open and unsigned runs. Takes several folders; `--people` joins one person's ids ([guide](https://github.com/ronanpdh/seatbelt/blob/main/docs/deploy/gateway.md#one-row-per-person)). With no `runs`, this machine's runs | a ledger is broken, or forged with a key given; a bad people file |
 | `seatbelt runs [--limit]` | lists this machine's runs by name, newest first | |
 | `seatbelt verify [run or ledger] [--pubkey]` | checks the hash chain and attestation; a local run against this machine's key. With no argument, the latest run | broken, forged, incomplete, or unattested with a key given |
 | `seatbelt reconstruct [run or ledger] [--pubkey]` | prints the run as a timeline; with no argument, the latest run | same as verify |
@@ -96,21 +98,21 @@ uv run seatbelt scenarios scenarios/ --target examples.scenario_target:target   
 | `seatbelt scenarios <corpus> --target m:f [--out] [--key] [--list] [--image] [--target-dir] [--timeout]` | runs the adversarial corpus | any finding (2: bad target) |
 | `seatbelt pack <runs> --out <zip> [--key] [--corpus]` | bundles a runs directory into an evidence pack | broken ledger, output exists |
 | `seatbelt verify-pack <zip> [--pubkey]` | re-checks a pack offline | forged, or a broken ledger inside |
-| `seatbelt erase <runs...> (--principal <id> \| --person <name> --people <file>) --case <ref> [--key \| --config] [--yes]` | removes a person's ledgers inside a signed record; lists only without `--yes` ([guide](docs/deploy/erasure.md)) | a folder in use, a bad people file or config, no signing key |
+| `seatbelt erase <runs...> (--principal <id> \| --person <name> --people <file>) --case <ref> [--key \| --config] [--yes]` | removes a person's ledgers inside a signed record; lists only without `--yes` ([guide](https://github.com/ronanpdh/seatbelt/blob/main/docs/deploy/erasure.md)) | a folder in use, a bad people file or config, no signing key |
 | `seatbelt gateway keygen --user <id> [--config]` | issues a gateway key; stores only its hash | the user already has a key |
 | `seatbelt gateway serve [--config]` | runs the recording gateway | bad config or signing key |
-| `seatbelt import compliance [--config]` | imports Claude Enterprise transcripts (chats, Cowork, Claude Code and other app sessions) from Anthropic's Compliance API into signed ledgers; see [docs/deploy/compliance-import.md](docs/deploy/compliance-import.md) | bad config, key or API error, or a conversation that needs a person to check |
+| `seatbelt import compliance [--config]` | imports Claude Enterprise transcripts (chats, Cowork, Claude Code and other app sessions) from Anthropic's Compliance API into signed ledgers; see [docs/deploy/compliance-import.md](https://github.com/ronanpdh/seatbelt/blob/main/docs/deploy/compliance-import.md) | bad config, key or API error, or a conversation that needs a person to check |
 
-Every command has `--help`. Formats: ledger and attestation in [ADR 0001](docs/adr/0001-hash-chained-jsonl-ledger.md) and [ADR 0002](docs/adr/0002-signed-run-manifest.md), scenario and findings schemas in [`docs/schema/`](docs/schema/), evidence pack in [`docs/spec/evidence-pack-v1.md`](docs/spec/evidence-pack-v1.md).
+Every command has `--help`. Formats: ledger and attestation in [ADR 0001](https://github.com/ronanpdh/seatbelt/blob/main/docs/adr/0001-hash-chained-jsonl-ledger.md) and [ADR 0002](https://github.com/ronanpdh/seatbelt/blob/main/docs/adr/0002-signed-run-manifest.md), scenario and findings schemas in [`docs/schema/`](https://github.com/ronanpdh/seatbelt/tree/main/docs/schema/), evidence pack in [`docs/spec/evidence-pack-v1.md`](https://github.com/ronanpdh/seatbelt/blob/main/docs/spec/evidence-pack-v1.md).
 
 ## Status
 
-Pre-1.0 and moving quickly: the ledger schema may change between minor versions. See [ROADMAP.md](ROADMAP.md) and [CHANGELOG.md](CHANGELOG.md).
+Pre-1.0 and moving quickly: the ledger schema may change between minor versions. See [ROADMAP.md](https://github.com/ronanpdh/seatbelt/blob/main/ROADMAP.md) and [CHANGELOG.md](https://github.com/ronanpdh/seatbelt/blob/main/CHANGELOG.md).
 
 ## Project
 
 - [Issues](https://github.com/ronanpdh/seatbelt/issues) for bugs, questions and ideas
-- [CONTRIBUTING.md](CONTRIBUTING.md) and [STANDARDS.md](STANDARDS.md)
-- [SECURITY.md](SECURITY.md) for reporting vulnerabilities
-- [Code of conduct](CODE_OF_CONDUCT.md)
-- Licensed under [Apache-2.0](LICENSE)
+- [CONTRIBUTING.md](https://github.com/ronanpdh/seatbelt/blob/main/CONTRIBUTING.md) and [STANDARDS.md](https://github.com/ronanpdh/seatbelt/blob/main/STANDARDS.md)
+- [SECURITY.md](https://github.com/ronanpdh/seatbelt/blob/main/SECURITY.md) for reporting vulnerabilities
+- [Code of conduct](https://github.com/ronanpdh/seatbelt/blob/main/CODE_OF_CONDUCT.md)
+- Licensed under [Apache-2.0](https://github.com/ronanpdh/seatbelt/blob/main/LICENSE)

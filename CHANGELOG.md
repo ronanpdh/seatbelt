@@ -4,6 +4,15 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 
 ## [Unreleased]
 
+### Added
+- Releases are published to PyPI as **`seatbelt-ai`**: `uv tool install seatbelt-ai`, or once with `uvx --from seatbelt-ai seatbelt …`. The module and the command stay `seatbelt`. `seatbelt` on PyPI is an unrelated project that installs the same module and command, so `pip install seatbelt` and `uvx seatbelt` fetch it, not this. The release workflow's new `pypi` job publishes the wheel and sdist the `release` job built, through Trusted Publishing in the `pypi` environment, with no stored token; PyPI attaches its own attestations.
+
+### Changed
+- The distribution is renamed `seatbelt` → `seatbelt-ai` (`[tool.uv.build-backend] module-name = "seatbelt"` keeps the module). `seatbelt.__version__` is read from `seatbelt-ai`.
+- The release's provenance asset is `seatbelt_ai-<version>.intoto.jsonl`, named like the wheel and sdist. Verify with `gh attestation verify <wheel> --bundle seatbelt_ai-<version>.intoto.jsonl --repo ronanpdh/seatbelt`.
+- Upgrading an install from git: `uv tool uninstall seatbelt`, then `uv tool install seatbelt-ai`; the old tool owns the `seatbelt` command, so the new one will not install beside it. Rebuild any `seatbelt-target` sandbox image (docs/scenarios.md); one built before this has no `seatbelt-ai` package, and `seatbelt scenarios --image` now points to the rebuild.
+- README links and the cover image are absolute GitHub URLs, so they work on PyPI.
+
 ## [0.4.0] - 2026-09-29
 
 ### Added

@@ -35,6 +35,20 @@ New functionality comes with tests, and a bug fix comes with a test that fails w
 - Add a line under `[Unreleased]` in [CHANGELOG.md](CHANGELOG.md) for anything a user would notice.
 - A change to the ledger schema needs a schema version bump, a changelog note and, if it changes a design decision, an ADR in [docs/adr/](docs/adr/).
 
+## Releasing
+
+The maintainer tags; `.github/workflows/release.yml` does the rest.
+
+1. By pull request, set the version in `pyproject.toml` (`uv version <x.y.z>`), move `[Unreleased]` in CHANGELOG.md to `## [x.y.z] - <date>`, and merge.
+2. Tag the merge commit: `git tag vx.y.z <sha> && git push origin vx.y.z`. The workflow refuses a tag that does not match the version.
+3. The `release` job tests, builds, attests and creates the GitHub release. The `image` job pushes the gateway image to GHCR. The `pypi` job publishes the wheel and sdist to PyPI as `seatbelt-ai`, after a required reviewer approves it in the Actions tab.
+
+**Once, before the first PyPI release:**
+- On GitHub, Settings → Environments → New environment `pypi`, with yourself as a required reviewer.
+- On PyPI, Account settings → Publishing → add a pending GitHub publisher: project `seatbelt-ai`, owner `ronanpdh`, repository `seatbelt`, workflow `release.yml`, environment `pypi`. A pending publisher does not reserve the name, so add it just before tagging.
+
+Design and sources: [docs/plans/2026-09-29-pypi-design.md](docs/plans/2026-09-29-pypi-design.md).
+
 ## Security issues
 
 Do not open a public issue. Follow [SECURITY.md](SECURITY.md).

@@ -2,7 +2,7 @@
 
 **Goal:** `uv tool install seatbelt-ai`, then `seatbelt run claude`. Each release goes to PyPI from the existing release workflow, with no stored password or token, and with PyPI's own attestations beside the GitHub ones.
 
-**Status:** a design for review, checked claim by claim by a second reader (42 claims; the 8 it found wrong or incomplete are fixed here).
+**Status:** decided 2026-09-29 (see "Decided") and built for 0.5.0. Checked claim by claim by a second reader (42 claims; the 8 it found wrong or incomplete are fixed here).
 - Facts come from the sources in the source map, read 2026-09-29.
 - Decisions that are ours are marked "(ours)".
 - The maintainer has already chosen the name and the module; see "Decided".
@@ -105,7 +105,7 @@ A new project is created by a **pending publisher**. A pending publisher creates
 
 **Timing.** A pending publisher "does not create a project or reserve a project's name until it is actually used to publish". If someone else registers the name first, the pending publisher is invalidated [P1]. So it should be added just before the first release that publishes. The names are free as of 2026-09-29 [P0].
 
-**On GitHub,** create the `pypi` environment (Settings → Environments). It must be named in the publisher, as above. The security model recommends a dedicated environment, and required reviewers are one of the protections it allows [P4]. With a required reviewer, each PyPI upload waits for an approval in the Actions tab (Open, 2).
+**On GitHub,** create the `pypi` environment (Settings → Environments). It must be named in the publisher, as above. The security model recommends a dedicated environment, and required reviewers are one of the protections it allows [P4]. With a required reviewer, each PyPI upload waits for an approval in the Actions tab (Decided, 4).
 
 **The names are free.** `seatbelt-ai`, `seatbelt_ai` and the alternatives returned 404 on PyPI's JSON and simple indexes and on TestPyPI, on 2026-09-29 [P0]. A 404 means no public project exists. It does not prove PyPI will accept the name.
 
@@ -116,19 +116,16 @@ A new project is created by a **pending publisher**. A pending publisher creates
   - `uv build`;
   - `unzip -l` the wheel, to check it holds only `seatbelt/`;
   - install it into a fresh venv, then run `seatbelt version` and `seatbelt demo`.
-- **The first publish is the test of the workflow,** unless a dry run on TestPyPI comes first. TestPyPI is supported with `repository-url` and its own publisher [P2][P3]. The dry run is Open, 1.
+- **The first publish is the test of the workflow,** unless a dry run on TestPyPI comes first. TestPyPI is supported with `repository-url` and its own publisher [P2][P3]. There is no dry run (Decided, 3).
 - **After the release:** `uv tool install seatbelt-ai` on a clean machine, `seatbelt version`, and the attestations shown on the PyPI file page.
 
 ## Decided (2026-09-29)
 
 1. **Distribution name: `seatbelt-ai`.**
 2. **Module and command: stay `seatbelt`.** The docs recommend an isolated install.
-
-## Open
-
-1. **Dry run on TestPyPI first?** It needs a second pending publisher on test.pypi.org, and a tag or a manual trigger that publishes there. Recommendation: skip it. The first real release (0.5.0) is the test, and a failed upload can be re-run.
-2. **A required reviewer on the `pypi` environment?** It adds a manual approval to each release. Recommendation: yes, as the security model suggests [P4]. You are already the one who tags.
-3. **Existing installs from git.** Those installs are a uv tool named `seatbelt`, which owns the `seatbelt` executable. Installing `seatbelt-ai` beside it fails with "Executable already exists … use `--force`", as checked with uv 0.8.17 (above). Recommendation: the upgrade note says to run `uv tool uninstall seatbelt`, then `uv tool install seatbelt-ai`.
+3. **No TestPyPI dry run.** The first real release (0.5.0) is the test, and a failed upload can be re-run. A dry run would need a second pending publisher on test.pypi.org and a tag or manual trigger that publishes there.
+4. **A required reviewer on the `pypi` environment**, as the security model suggests [P4]. Each PyPI upload waits for the maintainer's approval.
+5. **Existing installs from git.** Those installs are a uv tool named `seatbelt`, which owns the `seatbelt` executable, so installing `seatbelt-ai` beside it fails with "Executable already exists … use `--force`" (checked with uv 0.8.17, above). The upgrade note says to run `uv tool uninstall seatbelt`, then `uv tool install seatbelt-ai`.
 
 ## Source map
 
