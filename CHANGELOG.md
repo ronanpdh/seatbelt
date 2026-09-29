@@ -4,6 +4,8 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-29
+
 ### Added
 - `seatbelt erase` removes every ledger recorded under a person's principal ids (`--principal`, or `--person` with a people file), with each signature and shipped mark, inside a signed `erasure-…` record that holds only hashes, the `--case` reference, who ran it and counts. A dry run is the default; `--yes` erases. Nothing may be writing: it holds each folder's lock, and refuses while a gateway, an import or a local run is using the folder. An interrupted erase is finished by the next. In importer folders it removes the person's state entries and adds them to `.erased`, so the importer never brings them back; an unreadable `.erased` stops the import. The sink's copies are listed, not deleted. `seatbelt.erase`; guide: `docs/deploy/erasure.md`.
 - `seatbelt report --people people.yaml` counts each person once across their principal ids: an issued gateway key, an identity provider's subject, an Anthropic user id from the importer. The file lists each person's ids. Nothing is matched by e-mail, and an id listed for two people is refused. The report lists the ids it joined (`people` in `--json`). `seatbelt.report.fleet.People`.
@@ -175,7 +177,8 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 - Tests: hash determinism, chain link and resume, property test that any edit breaks the chain, deletion detection, redaction, recorder lineage and failure path, CLI round trip and tamper detection.
 - Project scaffolding: uv, ruff, pyright strict, pytest, Hypothesis, pre-commit, CI, Dependabot, Scorecard, SECURITY.md, CONTRIBUTING.md, STANDARDS.md, ROADMAP.md.
 
-[Unreleased]: https://github.com/ronanpdh/seatbelt/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/ronanpdh/seatbelt/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.4.0
 [0.3.0]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.3.0
 [0.2.0]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.2.0
 [0.1.0]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.1.0
