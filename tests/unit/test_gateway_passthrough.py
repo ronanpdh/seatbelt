@@ -280,3 +280,11 @@ def test_a_provider_credential_with_sbk_inside_it_is_passed_on(gw: Gw) -> None:
         headers={"x-seatbelt-key": KEY},
     )
     assert gw.seen[-1].url.params["key"] == "AIza-xsbk_y"
+
+
+def test_a_code_assist_request_with_snake_case_fields_is_refused(gw: Gw) -> None:
+    gw.upstream(httpx2.Response(200, json={}))
+    body = _code_assist([{"text": "hi"}], generation_config={"max_output_tokens": 5000})
+    r = gw.client.post("/v1internal:generateContent", json=body, headers=GOOGLE)
+    assert r.status_code == 400 and "generation_config" in r.text
+    assert gw.seen == []

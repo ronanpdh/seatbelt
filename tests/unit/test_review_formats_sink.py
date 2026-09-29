@@ -797,3 +797,16 @@ def test_the_host_signed_is_the_host_sent(
     ours = sigv4_headers("PUT", as_configured, b"x", {}, "fsn1", AK, SK, NOW)
     theirs = sigv4_headers("PUT", str(sent.url), b"x", {}, "fsn1", AK, SK, NOW)
     assert ours == theirs
+
+
+def test_the_sink_config_opts_into_plain_http(tmp_path: Path) -> None:
+    from seatbelt.gateway.config import GatewayConfig, SinkConfig
+    from seatbelt.gateway.serve import make_sink
+
+    env = {"SEATBELT_SINK_ACCESS_KEY": "a", "SEATBELT_SINK_SECRET_KEY": "b"}
+    plain = SinkConfig(url="http://minio.internal:9000", bucket="b", region="r")
+    cfg = GatewayConfig(ledgers=tmp_path, sink=plain)
+    with pytest.raises(ValueError):
+        make_sink(cfg, env)
+    allowed = cfg.model_copy(update={"sink": plain.model_copy(update={"allow_http": True})})
+    assert make_sink(allowed, env) is not None

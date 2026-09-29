@@ -146,6 +146,8 @@ _CHATGPT_PREFIX = "/backend-api/codex"
 _MAX_BODY = 64 * 1024 * 1024  # a request body larger than this, as sent or inflated, is refused
 # of a stream the gateway could not record as a response, this much is kept in its place
 _MAX_UNASSEMBLED = 1024 * 1024
+# nesting of a request body's objects and arrays; the ledger's serialiser gives up near 255
+_MAX_DEPTH = 128
 # google.rpc.Code names, which Google's clients read beside the HTTP status. 502 has no code
 # of its own; UNAVAILABLE is the nearest
 _GOOGLE_STATUS = {
@@ -382,6 +384,24 @@ def _json(raw: bytes) -> Any:
 def _json_object(raw: bytes) -> dict[str, Any] | None:
     value = _json(raw)
     return cast(dict[str, Any], value) if isinstance(value, dict) else None
+
+
+def _deeper_than(value: Any, limit: int) -> bool:
+    """Whether JSON `value` nests objects and arrays more than `limit` deep. Walked with a
+    stack, not recursion, so a hostile body cannot exhaust the interpreter's."""
+    stack: list[tuple[Any, int]] = [(value, 0)]
+    while stack:
+        node, depth = stack.pop()
+        if isinstance(node, dict):
+            children: list[Any] = list(cast(dict[str, Any], node).values())
+        elif isinstance(node, list):
+            children = cast(list[Any], node)
+        else:
+            continue
+        if depth >= limit:
+            return True
+        stack.extend((c, depth + 1) for c in children)
+    return False
 
 
 def _with_query(request: Request, upstream: Upstream, path: str) -> str:
@@ -656,13 +676,16 @@ def create_app(
         body = _json_object(plain)
         if body is None:
             return _error(request, 400, "invalid_request_error", "body must be a JSON object")
+        if _deeper_than(body, _MAX_DEPTH):  # past what the ledger can serialise
+            return _error(request, 400, "invalid_request_error", "body is nested too deeply")
         if path_model is not None:
             body = {**body, "model": path_model}
-        if format_cls is OpenAIResponsesFormat and body.get("background") is True:
-            # its output is fetched later with GET /v1/responses/{id}, which is not recorded
-            return _error(
-                request, 400, "invalid_request_error", "background responses are not recorded"
-            )
+        # a request shape the format cannot record faithfully (Responses `background`, Chat
+        # `functions` or n > 1, Gemini snake_case fields or candidateCount > 1) is refused,
+        # not forwarded with what the gateway did not read
+        unrecordable = format_cls.unrecordable(body)
+        if unrecordable is not None:
+            return _error(request, 400, "invalid_request_error", unrecordable)
         run = request.headers.get(RUN_HEADER) or None
         run_end = request.headers.get(RUN_END_HEADER, "").lower() == "true"
         meta = {**_meta(request), **principal.attrs}

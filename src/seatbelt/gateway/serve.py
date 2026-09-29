@@ -174,7 +174,14 @@ def make_sink(cfg: GatewayConfig, env: Mapping[str, str], root: Path | None = No
     missing = [n for n in (s.access_key_env, s.secret_key_env) if not env.get(n)]
     if missing:
         raise ValueError(f"sink: set {', '.join(missing)} in the environment")
-    store = S3Store(s.url, s.bucket, s.region, env[s.access_key_env], env[s.secret_key_env])
+    store = S3Store(
+        s.url,
+        s.bucket,
+        s.region,
+        env[s.access_key_env],
+        env[s.secret_key_env],
+        allow_http=s.allow_http,
+    )
     return Sink(store, cfg.ledgers if root is None else root, prefix=s.prefix)
 
 
