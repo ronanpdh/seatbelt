@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 if TYPE_CHECKING:
@@ -25,6 +26,12 @@ class Format(Protocol):
     @staticmethod
     def tool_result_calls(body: dict[str, Any]) -> list[tuple[str, str | None]]: ...
 
+    @staticmethod
+    def unrecordable(body: dict[str, Any]) -> str | None:
+        """Why this request cannot be recorded faithfully, so the gateway refuses it (400)
+        rather than forward what it did not read; None to record it."""
+        ...
+
     def finish(
         self, call: ModelCall, response: dict[str, Any] | None, error: str | None = None
     ) -> list[Event]: ...
@@ -38,6 +45,20 @@ def as_dicts(content: Any) -> list[dict[str, Any]]:
     if not isinstance(content, list):
         return []
     return [cast(dict[str, Any], b) for b in cast(list[Any], content) if isinstance(b, dict)]
+
+
+def integer(value: Any) -> int | None:
+    """An integer as proto3 JSON reads one: a JSON integer, an integral float or a string of
+    digits. None for anything else."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str) and re.fullmatch(r"\s*-?[0-9]+\s*", value):
+        return int(value)
+    return None
 
 
 def parse_arguments(raw: Any) -> dict[str, Any]:

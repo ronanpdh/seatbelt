@@ -45,13 +45,14 @@ Start the gateway again afterwards.
 - **Removes** each matching ledger, its `.attest.json` signature, and its `.shipped` mark.
 - **Importer folders:**
   - removes the person's entries from `.state.json`;
-  - adds a hash of each id to `.erased`, so the importer never imports that person's conversations again, even though Anthropic still keeps them. If `.erased` cannot be read, the import stops rather than risk bringing them back.
+  - adds a hash of each id to `.erased` (mode 0600), so the importer never imports that person's conversations again, even though Anthropic still keeps them. The hashes are unsalted: anyone who can read the folder can check whether a given id, an email address say, was erased. If `.erased` cannot be read, the import stops rather than risk bringing them back.
 - **Writes a signed record** in each folder it changes: `erasure-<time>-<hex>.jsonl`.
   - It holds a SHA-256 hash of every file removed, your case reference, who ran `erase`, and the counts.
   - It holds no file name or id, because gateway file names begin with the person's id.
   - Anyone holding a copy of an erased ledger can hash it and find it in the record, but the record does not say whose it was.
   - `seatbelt verify` checks the record, and `seatbelt report` shows erasures as a `seatbelt:erasure` row.
 - **Finishes interrupted erasures.** If an erase is interrupted, run `erase` again: it removes anything a record names that is still there.
+- **Leaves unreadable ledgers for you.** A ledger it cannot read (a line torn by a crash) is not removed. When its first line names the person, or cannot be read, the listing shows it as `unreadable, may be theirs, not erased`, and `erase --yes` erases everything else, then names each such file by its path and exits 1. Repair or remove those by hand.
 
 ## What it cannot reach
 

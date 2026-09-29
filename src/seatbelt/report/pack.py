@@ -7,7 +7,7 @@ import re
 import tempfile
 import zipfile
 import zlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
@@ -18,15 +18,28 @@ from seatbelt import __version__
 from seatbelt.attest.manifest import Signed, sidecar
 from seatbelt.attest.sign import Signer, load_public_key
 from seatbelt.ledger.store import LedgerError, read_events
+from seatbelt.record.recorder import RUN_ID
 from seatbelt.scenarios.model import corpus_sha256
 from seatbelt.scenarios.runner import Report
-from seatbelt.verify.attest import Attestation, verify_attestation, verify_signature
+from seatbelt.verify.attest import (
+    Attestation,
+    check_attestation,
+    verify_attestation,
+    verify_signature,
+)
 from seatbelt.verify.chain import verify_file
 
 PACK_VERSION = 1
 MANIFEST = "pack.json"
 _MEMBER = re.compile(r"runs/[^/]+\.(jsonl|attest\.json)|findings\.json|corpus/[^/]+\.yaml")
 _EPOCH = (1980, 1, 1, 0, 0, 0)  # zip's earliest timestamp; fixed so builds are byte-identical
+# A pack is untrusted input: bound what verifying it may inflate, in memory and on disk
+_MAX_MANIFEST = 16 << 20
+_MAX_MEMBER = 2 << 30
+_MAX_TOTAL = 8 << 30
+_MAX_RATIO = 200  # uncompressed / compressed, for members above _RATIO_FLOOR
+_RATIO_FLOOR = 16 << 20
+_CHUNK = 1 << 20
 
 
 class PackError(Exception):
@@ -44,7 +57,7 @@ class Member(BaseModel):
 class RunSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    run_id: str
+    run_id: str = Field(pattern=f"^{RUN_ID.pattern}$")  # names runs/<run_id>.jsonl
     events: int
     complete: bool
     attested: bool
@@ -83,8 +96,14 @@ def build(
                 f"{ledger}: BROKEN at seq {verdict.first_bad_seq}: {verdict.reason}; "
                 "a pack never carries a broken ledger"
             )
+        if not RUN_ID.fullmatch(ledger.stem):
+            raise PackError(f"{ledger}: a run id must match {RUN_ID.pattern}; rename the file")
         blobs.append((f"runs/{ledger.name}", _read(ledger)))
         side = sidecar(ledger)
+        # never pack a sidecar that contradicts its ledger, nor sign over one another key made
+        att = check_attestation(ledger, signer.public_key() if signer is not None else None)
+        if att.status is Attestation.FORGED:
+            raise PackError(f"{side}: {att.reason}")
         if side.exists():
             blobs.append((f"runs/{side.name}", _read(side)))
         runs.append(
@@ -167,11 +186,27 @@ class PackVerdict:
     status: PackStatus
     ledgers: list[LedgerStatus] = field(default_factory=list[LedgerStatus])
     reason: str | None = None
+    keyed: bool = False  # a public key was given: no signature is a failure, as in `verify`
+
+    @property
+    def unsigned(self) -> bool:
+        """A key was given but the pack carries no signature (ADR 0002)."""
+        return self.keyed and self.status is PackStatus.UNSIGNED
+
+    @property
+    def unattested(self) -> list[str]:
+        """Run ids with no sidecar although a key was given: deleting it is the cheapest tamper."""
+        if not self.keyed:
+            return []
+        return [s.run_id for s in self.ledgers if s.attestation is Attestation.UNATTESTED]
 
     @property
     def ok(self) -> bool:
-        return self.status is not PackStatus.FORGED and all(
-            s.chain != "broken" for s in self.ledgers
+        return (
+            self.status is not PackStatus.FORGED
+            and all(s.chain != "broken" for s in self.ledgers)
+            and not self.unsigned
+            and not self.unattested
         )
 
 
@@ -187,6 +222,10 @@ def _safe(name: str) -> bool:
 
 def _forged(reason: str) -> PackVerdict:
     return PackVerdict(PackStatus.FORGED, reason=reason)
+
+
+def _inside(root: Path, path: Path) -> bool:
+    return path.resolve().is_relative_to(root.resolve())
 
 
 def verify_pack(path: Path, pubkey: Path | None = None) -> PackVerdict:
@@ -207,12 +246,25 @@ def verify_pack(path: Path, pubkey: Path | None = None) -> PackVerdict:
         unsafe = [n for n in names if not _safe(n)]
         if unsafe:
             return _forged(f"unsafe member path {unsafe[0]!r}")
+        for info in zf.infolist():
+            if info.flag_bits & 0x1:
+                return _forged(f"{info.filename}: encrypted members are not allowed")
+            if info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+                return _forged(f"{info.filename}: compression method {info.compress_type}")
         if MANIFEST not in names:
             return _forged(f"no {MANIFEST} in the pack")
+        if zf.getinfo(MANIFEST).file_size > _MAX_MANIFEST:
+            return _forged(f"{MANIFEST} is larger than {_MAX_MANIFEST} bytes")
         try:
-            manifest = PackManifest.model_validate_json(zf.read(MANIFEST))
+            with zf.open(MANIFEST) as fh:
+                raw = fh.read(_MAX_MANIFEST + 1)
+            if len(raw) > _MAX_MANIFEST:
+                return _forged(f"{MANIFEST} is larger than {_MAX_MANIFEST} bytes")
+            manifest = PackManifest.model_validate_json(raw)
         except ValidationError as exc:
             return _forged(f"{MANIFEST} is not a pack manifest: {exc}")
+        except _CORRUPT as exc:
+            return _forged(f"{MANIFEST}: {exc}")
         if manifest.pack_version != PACK_VERSION:
             return _forged(f"unsupported pack_version {manifest.pack_version}")
         if not manifest.signature:
@@ -232,29 +284,49 @@ def verify_pack(path: Path, pubkey: Path | None = None) -> PackVerdict:
             return _forged(f"members not in manifest: {stray}")
         if missing := sorted(expected - actual):
             return _forged(f"members missing from the zip: {missing}")
+        if sum(max(m.bytes, 0) for m in manifest.members) > _MAX_TOTAL:
+            return _forged(f"members add up to more than {_MAX_TOTAL} bytes")
         for m in manifest.members:
-            if reason := _mismatch(zf, m):
+            if reason := _oversized(zf.getinfo(m.path), m):
                 return _forged(f"{m.path}: {reason}")
         with tempfile.TemporaryDirectory() as tmp:
-            try:
-                zf.extractall(tmp)  # every name passed _safe above
-            except _CORRUPT as exc:
-                return _forged(f"{path}: {exc}")
-            return _verify_contents(Path(tmp), manifest, pubkey, status)
+            root = Path(tmp)
+            for m in manifest.members:
+                if reason := _extract(zf, m, root):
+                    return _forged(f"{m.path}: {reason}")
+            verdict = _verify_contents(root, manifest, pubkey, status)
+        return replace(verdict, keyed=key is not None)
 
 
-_CORRUPT = (zipfile.BadZipFile, zlib.error, OSError)
+_CORRUPT = (zipfile.BadZipFile, zlib.error, OSError, RuntimeError, NotImplementedError, EOFError)
 
 
-def _mismatch(zf: zipfile.ZipFile, m: Member) -> str | None:
-    # ponytail: header size only; a patched header still inflates before the CRC fails. Stream it.
-    if zf.getinfo(m.path).file_size != m.bytes:
+def _oversized(info: zipfile.ZipInfo, m: Member) -> str | None:
+    if m.bytes > _MAX_MEMBER:
+        return f"larger than {_MAX_MEMBER} bytes"
+    if info.file_size > _RATIO_FLOOR and info.file_size > _MAX_RATIO * max(info.compress_size, 1):
+        return f"compressed more than {_MAX_RATIO}:1"
+    return None
+
+
+def _extract(zf: zipfile.ZipFile, m: Member, root: Path) -> str | None:
+    """Inflate one member to `root`, hashing it on the way, and never past its declared size."""
+    if zf.getinfo(m.path).file_size != m.bytes:  # the central directory, before any inflating
         return "size does not match the manifest"
+    dest = root / m.path
+    if not _inside(root, dest):
+        return "resolves outside the pack"
+    digest, size = hashlib.sha256(), 0
     try:
-        data = zf.read(m.path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with zf.open(m.path) as src, dest.open("xb") as out:
+            while size <= m.bytes and (chunk := src.read(min(_CHUNK, m.bytes + 1 - size))):
+                size += len(chunk)
+                digest.update(chunk)
+                out.write(chunk)
     except _CORRUPT as exc:
         return str(exc)
-    if len(data) != m.bytes or hashlib.sha256(data).hexdigest() != m.sha256:
+    if size != m.bytes or digest.hexdigest() != m.sha256:
         return "content does not match the manifest"
     return None
 
@@ -270,13 +342,17 @@ def _verify_contents(
     root: Path, manifest: PackManifest, pubkey: Path | None, status: PackStatus
 ) -> PackVerdict:
     listed = {r.run_id for r in manifest.runs}
-    for m in manifest.members:
-        if m.path.startswith("runs/") and m.path.endswith(".jsonl") and m.path[5:-6] not in listed:
+    if len(listed) != len(manifest.runs):
+        return _forged("a run is listed twice under runs")
+    for m in manifest.members:  # a ledger or sidecar, and the run it belongs to
+        stem = m.path[5:-12] if m.path.endswith(".attest.json") else m.path[5:-6]
+        if m.path.startswith("runs/") and stem not in listed:
             return _forged(f"{m.path} is not listed under runs")
+    members = {m.path for m in manifest.members}
     ledgers: list[LedgerStatus] = []
     for run in manifest.runs:
         ledger = root / "runs" / f"{run.run_id}.jsonl"
-        if not ledger.exists():
+        if f"runs/{run.run_id}.jsonl" not in members or not _inside(root, ledger):
             return _forged(f"runs/{run.run_id}.jsonl listed under runs but absent")
         chain = verify_file(ledger)
         att = verify_attestation(ledger, pubkey)
@@ -300,6 +376,8 @@ def _verify_contents(
             return _forged("findings.json does not match the manifest")
         known: dict[str, set[str]] = {}
         for f in report.findings:
+            if not RUN_ID.fullmatch(f.scenario_id):
+                return _forged(f"finding {f.scenario_id!r}: not a run id")
             if f.scenario_id not in known:
                 known[f.scenario_id] = _event_ids(root / "runs" / f"{f.scenario_id}.jsonl")
             if not set(f.evidence) <= known[f.scenario_id]:

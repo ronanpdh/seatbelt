@@ -1,0 +1,30 @@
+"""Make untrusted text safe to print to a terminal.
+
+Ledgers and packs hold strings that users, models, tools and pack authors chose. Rich's
+`Text` and `escape` stop Rich markup, but pass ESC, CSI and OSC sequences straight to the
+terminal, where they can move the cursor, erase or hide lines, or write the clipboard. So
+every string that comes from a ledger or a pack goes through `printable` before it is shown.
+"""
+
+import re
+
+# C0 controls except tab and newline, DEL, the C1 controls (0x9b is a one-byte CSI, 0x9d
+# a one-byte OSC), and the bidirectional overrides that can reorder what a reader sees
+_CODES = (
+    *range(0x00, 0x09),
+    *range(0x0B, 0x20),
+    *range(0x7F, 0xA0),
+    *range(0x202A, 0x202F),
+    *range(0x2066, 0x206A),
+)
+_UNSAFE = re.compile("[" + "".join(re.escape(chr(c)) for c in _CODES) + "]")
+
+
+def _visible(m: re.Match[str]) -> str:
+    c = ord(m.group())
+    return f"\\x{c:02x}" if c < 0x100 else f"\\u{c:04x}"
+
+
+def printable(s: str) -> str:
+    """`s` with every control character shown as a visible escape, e.g. ESC as `\\x1b`."""
+    return _UNSAFE.sub(_visible, s)

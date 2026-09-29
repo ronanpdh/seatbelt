@@ -64,7 +64,8 @@ Each run imports what changed and settled since the last run, then prints what i
 - **Following cloud sessions.** A cloud session is followed until it is archived, failed or deleted, or has had no activity for 30 days. Later activity in one that was dropped for no activity is imported only if it shows up in a later listing.
 - **Where the state lives.** State is kept in `.state.json` in the importer's folder. If it is lost, the next run rebuilds it from the ledgers and the API, and records nothing twice.
 - **Erased people.** `seatbelt erase` adds a hash of each erased id to `.erased` in the importer's folder. The importer then never imports those people's conversations again. If `.erased` cannot be read, the import stops ([erasing a person's ledgers](erasure.md)).
-- **A killed run.** If a run is killed mid-ledger, the next run closes that ledger as failed ("importer killed"), signs it, and carries on after its last message.
+- **A killed run.** If a run is killed mid-ledger, the next run closes that ledger as failed ("importer killed"), signs it, and carries on from its last message, which it imports again whole: one API message is several events, so the last may be only partly written. That message can then appear in both segments.
+- **Conversations that need a person.** A run exits 1, naming the conversation, when a local session in the pending list cannot be read again for 3 runs in a row (it is still retried each run), or when a chat comes back marked `has_more`, which means only part of it was returned: nothing is written for that chat until it comes back whole. Other conversations and sources are still imported.
 
 Read the ledgers with the usual commands, passing the importer's folder:
 
@@ -88,7 +89,7 @@ With `sink:` in the config, each ledger is also shipped to object storage as it 
 - **Whole tool blocks, up to a point.** The importer asks for tool inputs and results up to the server's maximum, about 1 MiB [C2]. A block still cut is recorded with `compliance.truncated`, its input kept as a string.
 - **Files and artifacts: metadata only.** Chat attachments, generated files and artifacts are recorded as ids, names, types, and where given, sizes and MD5s. Their content is not downloaded.
 - **People.** Imported ledgers name people by Anthropic's user id (`principal.id`), with their email as `principal.name`. Gateway ledgers name them by issued key or OIDC subject. To count each person once, list their ids in a people file and pass it to `seatbelt report --people` ([gateway guide](gateway.md#one-row-per-person)).
-- **Deleted content is kept.** A signed ledger keeps what a user later deletes in claude.ai. That is the point of a legal hold, but it can conflict with data-protection duties such as erasure requests. Decide how you will handle those before you start. seatbelt has no tool yet to remove a person's ledgers.
+- **Deleted content is kept.** A signed ledger keeps what a user later deletes in claude.ai. That is the point of a legal hold, but it can conflict with data-protection duties such as erasure requests. Decide how you will handle those before you start. `seatbelt erase` removes a person's ledgers and leaves a signed record of it; run on the importer's folder, it also stops the importer bringing their conversations in again. It does not delete copies already shipped to object storage ([erasing a person's ledgers](erasure.md)).
 - **Rate limit.** The Compliance API allows 600 requests per minute per parent organization, shared by every key [C1][C5]. The importer slows down when fewer than 30 are left in the minute, and honours `retry-after`.
 - **Cursors expire.** A walk of local-session messages must finish within 24 hours [C2]. A run fetches each transcript in one go.
 

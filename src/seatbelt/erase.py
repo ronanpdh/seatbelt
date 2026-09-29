@@ -71,6 +71,9 @@ class Plan:
     state_entries: list[str] = field(default_factory=list[str])  # importer conversations
     unmatched: list[str] = field(default_factory=list[str])  # ledgers under unknown or none
     unreadable: list[str] = field(default_factory=list[str])
+    # unreadable, and its first line names the person or cannot be read: left in place, for
+    # the operator to deal with
+    to_check: list[str] = field(default_factory=list[str])
     importer: bool = False  # the folder is an importer's: its suppression list is kept
 
     @property
@@ -87,6 +90,7 @@ class Result:
     marks: int = 0
     state_entries: int = 0
     closed: list[str] = field(default_factory=list[str])  # interrupted records closed
+    to_check: list[str] = field(default_factory=list[str])  # as in Plan: not removed
 
 
 # -- locks ----------------------------------------------------------------------------------
@@ -109,7 +113,7 @@ def live_local_runs(folder: Path) -> list[str]:
 # -- finding --------------------------------------------------------------------------------
 
 
-def _erased_hashes(folder: Path) -> set[str]:
+def erased_hashes(folder: Path) -> set[str]:
     """Every hash named by an erasure record in the folder: what must not be left behind."""
     hashes: set[str] = set()
     for path in folder.glob(f"{PREFIX}*.jsonl"):
@@ -132,6 +136,22 @@ def _erased_hashes(folder: Path) -> set[str]:
     return hashes
 
 
+def erased_sidecar(side: Path, erased: set[str]) -> bool:
+    """A sidecar, or its ledger, that an erasure record names: left by an interrupted erase."""
+    return _sha256(side) in erased or _side_ledger(side) in erased
+
+
+def _first_principal(path: Path) -> str | None:
+    """An unreadable ledger's run.start principal.id, read from the lines before the bad one:
+    a crash tears only the last. Raises LedgerError when its first line cannot be read."""
+    try:
+        first = next(read_events(path), None)
+    except (OSError, UnicodeDecodeError) as exc:
+        raise LedgerError(str(exc)) from exc
+    principal = first.attrs.get("principal.id") if first is not None else None
+    return principal if isinstance(principal, str) else None
+
+
 def _owner(meta: dict[str, Any]) -> str | None:
     owner = as_dict(meta.get("user")) or as_dict(meta.get("started_by_user"))
     value = owner.get("id")
@@ -141,7 +161,7 @@ def _owner(meta: dict[str, Any]) -> str | None:
 def plan(folder: Path, principals: Iterable[str]) -> Plan:
     wanted = set(principals)
     out = Plan(folder=folder, importer=(folder / STATE).exists() or (folder / ERASED).exists())
-    erased = _erased_hashes(folder)
+    erased = erased_hashes(folder)
     for path in sorted(folder.glob("*.jsonl")):
         if path.name.startswith(PREFIX):
             continue
@@ -149,6 +169,12 @@ def plan(folder: Path, principals: Iterable[str]) -> Plan:
             events = list(read_events(path))
         except (OSError, UnicodeDecodeError, LedgerError):
             out.unreadable.append(path.name)
+            try:
+                theirs = _first_principal(path) in wanted
+            except LedgerError:
+                theirs = True  # whose it is cannot be told
+            if theirs:
+                out.to_check.append(path.name)
             continue
         if not events:
             continue
@@ -164,7 +190,7 @@ def plan(folder: Path, principals: Iterable[str]) -> Plan:
     # sidecars and marks whose ledger is gone and whose hash an erasure record names
     for side in sorted(folder.glob("*.attest.json")):
         ledger = side.with_name(side.name.removesuffix(".attest.json") + ".jsonl")
-        if not ledger.exists() and (_sha256(side) in erased or _side_ledger(side) in erased):
+        if not ledger.exists() and erased_sidecar(side, erased):
             out.orphans.append(side)
     for mark in sorted((folder / SHIPPED).glob("*")):
         if (folder / f"{mark.name}.jsonl").exists():
@@ -252,7 +278,10 @@ def _add_erased(folder: Path, principals: Iterable[str]) -> None:
     path = folder / ERASED
     hashes = read_erased(folder) | {id_hash(p) for p in principals}
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text("".join(f"{h}\n" for h in sorted(hashes)), encoding="utf-8")
+    tmp.unlink(missing_ok=True)  # created afresh, so owner-only whatever an old one allowed
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write("".join(f"{h}\n" for h in sorted(hashes)))
     os.replace(tmp, path)
 
 
@@ -280,7 +309,9 @@ def erase(
     principals = list(principals)
     closed = close_open_chains(folder, signer, only=is_record, reason="erase interrupted")
     p = plan(folder, principals)
-    result = Result(folder=folder, record=None, closed=[c.stem for c in closed])
+    result = Result(
+        folder=folder, record=None, closed=[c.stem for c in closed], to_check=p.to_check
+    )
     if p.importer:
         _add_erased(folder, principals)  # before anything goes: an import must never restore it
     if p.empty:

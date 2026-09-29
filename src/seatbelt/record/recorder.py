@@ -20,7 +20,8 @@ from seatbelt.policy.engine import PolicyDenied
 if TYPE_CHECKING:
     from seatbelt.policy.engine import Policy
 
-_RUN_ID = re.compile(r"[A-Za-z0-9_.-]+")
+# a file name stem: no separators, and not only dots, so `{run_id}.jsonl` stays in its folder
+RUN_ID = re.compile(r"[A-Za-z0-9_.-]*[A-Za-z0-9_-][A-Za-z0-9_.-]*")
 
 
 class Recorder:
@@ -56,8 +57,8 @@ class Recorder:
         signer: Signer | None = None,
     ) -> Generator[Recorder]:
         run_id = run_id or uuid4().hex
-        if not _RUN_ID.fullmatch(run_id):
-            raise ValueError(f"run_id {run_id!r} must match {_RUN_ID.pattern}")
+        if not RUN_ID.fullmatch(run_id):
+            raise ValueError(f"run_id {run_id!r} must match {RUN_ID.pattern}")
         path = root / f"{run_id}.jsonl"
         if path.exists() or (signer is not None and sidecar(path).exists()):
             raise FileExistsError(f"{path} or its attestation already exists")

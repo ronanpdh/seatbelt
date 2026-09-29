@@ -10,6 +10,7 @@ Usage::
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
@@ -66,11 +67,28 @@ def models(*allowed: str) -> Rule:
     )
 
 
+_WHOLE = re.compile(r"\s*[+-]?[0-9]+\s*")  # a count as a string, which proto3 JSON reads
+
+
+def _count(value: Any) -> int | None:
+    """A token count as a provider may read it: an integer, a float with no fraction, or an
+    integer in a string. None for anything else, a bool included."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str) and _WHOLE.fullmatch(value):
+        return int(value)
+    return None
+
+
 def max_output_tokens(limit: int) -> Rule:
     """For a model request: caps `max_tokens` (Anthropic, OpenAI), `max_completion_tokens`
     (OpenAI Chat Completions), `max_output_tokens` (OpenAI Responses) and
     `generationConfig.maxOutputTokens` (Gemini). A request that sets none passes; the
-    provider's default applies."""
+    provider's default applies. A value that is not a whole number is denied, not ignored."""
 
     def check(_: str, args: dict[str, Any]) -> str | None:
         caps = {
@@ -80,8 +98,13 @@ def max_output_tokens(limit: int) -> Rule:
         if isinstance(generation, dict):
             value: Any = cast(dict[str, Any], generation).get("maxOutputTokens")
             caps["generationConfig.maxOutputTokens"] = value
-        for key, n in caps.items():
-            if isinstance(n, int) and n > limit:
+        for key, value in caps.items():
+            if value is None:
+                continue
+            n = _count(value)
+            if n is None:
+                return f"{key} {repr(value)[:40]} is not a whole number"
+            if n > limit:
                 return f"{key} {n} exceeds {limit}"
         return None
 

@@ -60,6 +60,9 @@ class SinkConfig(_Strict):
     prefix: str = ""  # prepended to each object key, e.g. "runs/"
     access_key_env: str = "SEATBELT_SINK_ACCESS_KEY"  # env var names; never the keys
     secret_key_env: str = "SEATBELT_SINK_SECRET_KEY"  # noqa: S105 - an env var name
+    # plain http sends every prompt and tool output in the clear: only for a test store on a
+    # private network
+    allow_http: bool = False
 
 
 _ASYMMETRIC = {
