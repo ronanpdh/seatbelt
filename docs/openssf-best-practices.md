@@ -1,6 +1,6 @@
 # OpenSSF Best Practices badge: evidence for the passing level
 
-Register the project at <https://www.bestpractices.dev/en/projects/new> with the repository URL, then answer each criterion from this table. Criteria are the passing level as published at <https://www.bestpractices.dev/en/criteria/0>. `Met` means the repository already satisfies it; the evidence column is what to paste.
+The project is registered as [bestpractices.dev project 15081](https://www.bestpractices.dev/projects/15081). When the repository changes, update the answers there from this table. Criteria are the passing level as published at <https://www.bestpractices.dev/en/criteria/0>. `Met` means the repository already satisfies it; the evidence column is what to paste.
 
 ## Basics
 
@@ -66,15 +66,11 @@ Register the project at <https://www.bestpractices.dev/en/projects/new> with the
 
 | Criterion | Status | Evidence |
 |---|---|---|
-| static_analysis, static_analysis_often | Met | ruff and pyright on every push and pull request |
-| static_analysis_common_vulnerabilities | Met | ruff `S` (bandit) rules enabled; OpenSSF Scorecard weekly (`.github/workflows/scorecard.yml`) |
+| static_analysis, static_analysis_often | Met | CodeQL (default query suite; also weekly, `.github/workflows/codeql.yml`), ruff and pyright (strict) on every push to main and every pull request |
+| static_analysis_common_vulnerabilities | Met | CodeQL's Python queries; ruff `S` (bandit) rules enabled; OpenSSF Scorecard weekly (`.github/workflows/scorecard.yml`) |
 | static_analysis_fixed | Met | zero findings on `main` |
 | dynamic_analysis, dynamic_analysis_enable_assertions | Met | Hypothesis property tests run under pytest with assertions enabled |
 | dynamic_analysis_unsafe | N/A | Python |
 | dynamic_analysis_fixed | Met | nothing outstanding |
 
-After the badge is issued, add to README under the Scorecard badge:
-
-```markdown
-[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/<id>/badge)](https://www.bestpractices.dev/projects/<id>)
-```
+The badge is in the README, under the Scorecard badge.

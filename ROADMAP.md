@@ -24,7 +24,7 @@ Signed Ed25519 attestation of each run (`seatbelt.attest`, `keygen`, `attest`, `
 - Done: sandboxed target runs in Docker (`seatbelt scenarios --image`), no network unless a scenario declares egress
 - Done: evidence pack format (`seatbelt pack`, `seatbelt verify-pack`), documented as a versioned spec in `docs/spec/evidence-pack-v1.md`
 - Done: signed releases (Sigstore), CycloneDX SBOM and SLSA provenance (since 0.0.2)
-- Done (repository side): OpenSSF Best Practices badge, evidence in `docs/openssf-best-practices.md`; registration on bestpractices.dev is a maintainer step
+- Done (repository side): OpenSSF Best Practices badge, evidence in `docs/openssf-best-practices.md`; registered as bestpractices.dev project 15081, badge in the README
 
 ## 0.2.0 (released)
 

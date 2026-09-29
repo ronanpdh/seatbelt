@@ -4,6 +4,7 @@
 
 [![ci](https://github.com/ronanpdh/seatbelt/actions/workflows/ci.yml/badge.svg)](https://github.com/ronanpdh/seatbelt/actions/workflows/ci.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/ronanpdh/seatbelt/badge)](https://scorecard.dev/viewer/?uri=github.com/ronanpdh/seatbelt)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15081/badge)](https://www.bestpractices.dev/projects/15081)
 
 Seatbelt records what your AI agents do: every prompt, model response and tool call. The record is tamper-evident and signed, so you can prove later exactly what happened.
 
