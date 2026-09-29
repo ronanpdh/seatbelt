@@ -6,11 +6,13 @@ import base64
 import binascii
 import logging
 import os
+import re
 import signal
 import threading
 from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import unquote_plus
 
 import uvicorn
 
@@ -28,6 +30,44 @@ DRAIN = 30  # seconds uvicorn, then close_all, wait for in-flight requests on sh
 RELOAD_EVERY = 30.0  # seconds between checks of the config file; SIGHUP checks at once
 
 _log = logging.getLogger(__name__)
+
+
+# the query parameters Google reads as an API key, which the gateway accepts a seatbelt key in
+_KEY_PARAMS = frozenset({"key", "$key"})
+_KEY_IN_PATH = re.compile(r"(/_seatbelt/)[^/?\s\"]+")  # the local recorder's path prefix
+
+
+def _without_keys(target: str) -> str:
+    """A logged path and query with the values of key parameters, and the key in a
+    `/_seatbelt/{key}/` prefix, replaced."""
+    path, mark, query = target.partition("?")
+    params = [
+        f"{name}=REDACTED" if eq and unquote_plus(name) in _KEY_PARAMS else param
+        for param in query.split("&")
+        for name, eq, _ in [param.partition("=")]
+    ]
+    return _KEY_IN_PATH.sub(r"\1REDACTED", path) + mark + "&".join(params)
+
+
+class _RedactKeys(logging.Filter):
+    """Takes keys out of uvicorn's access log lines, whose arguments hold each request's path
+    and query as sent."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(_without_keys(a) if isinstance(a, str) else a for a in record.args)
+        return True
+
+
+def _quiet_logs() -> None:
+    """No key in the logs: uvicorn's access log is redacted, and the HTTP clients' own
+    INFO lines, which name each upstream URL (a pass-through upstream's with the client's own
+    `?key=`), are not logged."""
+    access = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, _RedactKeys) for f in access.filters):
+        access.addFilter(_RedactKeys())
+    for name in ("httpx2", "httpcore2", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 def _host_port(listen: str) -> tuple[str, int]:
@@ -141,6 +181,7 @@ def make_sink(cfg: GatewayConfig, env: Mapping[str, str], root: Path | None = No
 def serve(path: Path) -> None:
     """Run the gateway on the config at `path`, and reload the file when it changes."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(name)s: %(message)s")
+    _quiet_logs()
     stop = threading.Event()
     hup = threading.Event()
     # from the start: a SIGHUP during the startup scan leaves `hup` set, and the watcher's
@@ -166,7 +207,8 @@ def serve(path: Path) -> None:
             idle=cfg.session_idle,
             on_close=sink.ship if sink is not None else None,
         )
-        app = create_app(cfg, sessions)
+        # the `/_seatbelt/{key}/` path prefix is the local recorder's; a key in a path is logged
+        app = create_app(cfg, sessions, path_credentials=False)
         reloader = Reloader(path, app, sessions, loaded)
 
         def sweeper() -> None:
