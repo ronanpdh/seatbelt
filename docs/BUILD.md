@@ -84,7 +84,7 @@ sed -i 's/refund issued/refund denied/' /tmp/runs/<run id>.jsonl   # macOS: sed 
 uv run seatbelt verify /tmp/runs/<run id>.jsonl       # BROKEN at seq 9: content does not match its hash (exit 1)
 ```
 
-**Log.** Not in the repo yet.
+**Log.** [log/2026-09-14-v0.0.1.md](../log/2026-09-14-v0.0.1.md).
 
 ## 0.0.2: real agents through adapters
 
@@ -118,7 +118,7 @@ uv run pytest tests/unit/test_anthropic_transports.py tests/unit/test_openai_age
 uv run python examples/anthropic_refund.py   # needs ANTHROPIC_API_KEY; not run for this guide
 ```
 
-**Log.** Not in the repo yet.
+**Log.** [log/2026-09-15-v0.0.2.md](../log/2026-09-15-v0.0.2.md).
 
 ## 0.0.3: policy at the tool boundary
 

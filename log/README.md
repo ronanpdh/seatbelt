@@ -7,10 +7,12 @@ One entry per release. Each entry has four parts:
 - what is worth studying in it;
 - a reflection prompt.
 
-The facts in each entry come from this repository and from the original build and setup guides, and each entry lists its sources. **The reflection is yours to write**, and is left blank on purpose. How each release was built is in [docs/BUILD.md](../docs/BUILD.md).
+The facts in each entry come from this repository and from the original learning guides (build, adapters, setup, and the learning pathway), and each entry lists its sources. **The reflection is yours to write**, and is left blank on purpose. How each release was built is in [docs/BUILD.md](../docs/BUILD.md).
 
 | Entry | Release | Reflection |
 |---|---|---|
+| [2026-09-14-v0.0.1.md](2026-09-14-v0.0.1.md) | 0.0.1, a run you can verify and reconstruct | open |
+| [2026-09-15-v0.0.2.md](2026-09-15-v0.0.2.md) | 0.0.2, real agents through adapters | open |
 | [2026-09-17-v0.0.3.md](2026-09-17-v0.0.3.md) | 0.0.3, policy at the tool boundary | open |
 | [2026-09-17-v0.0.4.md](2026-09-17-v0.0.4.md) | 0.0.4, signed runs | open |
 | [2026-09-18-v0.1.0.md](2026-09-18-v0.1.0.md) | 0.1.0, scenario pack, sandbox, evidence pack | open |
@@ -19,5 +21,3 @@ The facts in each entry come from this repository and from the original build an
 | [2026-09-29-v0.4.0.md](2026-09-29-v0.4.0.md) | 0.4.0, one row per person, erasure | open |
 | [2026-09-29-v0.5.0.md](2026-09-29-v0.5.0.md) | 0.5.0, on PyPI | open |
 | [2026-09-29-v0.5.1.md](2026-09-29-v0.5.1.md) | 0.5.1, a review of the whole project | open |
-
-The entries for 0.0.1 and 0.0.2 are not in the repository yet.
