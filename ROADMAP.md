@@ -44,4 +44,4 @@ Signed Ed25519 attestation of each run (`seatbelt.attest`, `keygen`, `attest`, `
 - Done: config reload when the file changes or on SIGHUP, so a new or revoked key takes effect without a restart
 - Done: central sink, shipping each signed ledger to S3-compatible object storage (Hetzner Object Storage) at run end
 - Done: OIDC sign-in for Claude Desktop (`inferenceGatewayOidc`), users identified by the provider's immutable id
-- Compliance API importer (`seatbelt import compliance`) for Claude Enterprise transcripts (claude.ai chats, Cowork, and Claude Code and other app sessions) where clients are not routed through the gateway; design in `docs/plans/2026-09-29-compliance-importer-design.md`
+- Done: Compliance API importer (`seatbelt import compliance`) for Claude Enterprise transcripts (claude.ai chats, Cowork, and Claude Code and other app sessions) where clients are not routed through the gateway; tested against a fake of the documented API, not a live tenant; guide in `docs/deploy/compliance-import.md`

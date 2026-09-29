@@ -94,7 +94,7 @@ Which clients it records:
 | OpenAI Agents SDK, OpenAI SDKs (Responses API) | `OPENAI_BASE_URL` | 0.3.0 |
 | Gemini CLI | `seatbelt run gemini` | 0.3.0 |
 | Google Gen AI SDKs (Gemini API) | `GOOGLE_GEMINI_BASE_URL` | 0.3.0 |
-| claude.ai web, unmanaged desktops | Compliance API importer | 0.3.0 |
+| claude.ai web, unmanaged desktops (Claude Enterprise) | Compliance API importer, `seatbelt import compliance` | 0.3.0 |
 
 ### Launcher
 

@@ -48,6 +48,8 @@ The gateway holds the provider keys and signs one ledger per session. It can als
 - accept Claude Desktop users signed in with your identity provider;
 - ship every ledger to object storage.
 
+On Claude Enterprise, `seatbelt import compliance` also brings in what no gateway sees: claude.ai chats, and Cowork and Claude Code sessions, from Anthropic's Compliance API ([docs/deploy/compliance-import.md](docs/deploy/compliance-import.md)).
+
 `seatbelt report runs --pubkey keys/seatbelt.pub` summarises who used what.
 
 ## Record your own agent
@@ -95,6 +97,7 @@ uv run seatbelt scenarios scenarios/ --target examples.scenario_target:target   
 | `seatbelt verify-pack <zip> [--pubkey]` | re-checks a pack offline | forged, or a broken ledger inside |
 | `seatbelt gateway keygen --user <id> [--config]` | issues a gateway key; stores only its hash | the user already has a key |
 | `seatbelt gateway serve [--config]` | runs the recording gateway | bad config or signing key |
+| `seatbelt import compliance [--config]` | imports Claude Enterprise transcripts (chats, Cowork, Claude Code and other app sessions) from Anthropic's Compliance API into signed ledgers; see [docs/deploy/compliance-import.md](docs/deploy/compliance-import.md) | bad config, key or API error, or a conversation that needs a person to check |
 
 Every command has `--help`. Formats: ledger and attestation in [ADR 0001](docs/adr/0001-hash-chained-jsonl-ledger.md) and [ADR 0002](docs/adr/0002-signed-run-manifest.md), scenario and findings schemas in [`docs/schema/`](docs/schema/), evidence pack in [`docs/spec/evidence-pack-v1.md`](docs/spec/evidence-pack-v1.md).
 

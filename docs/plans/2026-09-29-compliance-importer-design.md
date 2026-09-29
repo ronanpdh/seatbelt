@@ -10,7 +10,7 @@
 - So every imported ledger names its source, and every event carries the API's own ids and timestamps.
 - The seatbelt signature proves only that the ledger has not changed since the import.
 
-**Status:** a design for review, with the maintainer's decisions under "Decided".
+**Status:** implemented in `seatbelt.compliance`, and tested against a fake of the documented API only; the user guide is `docs/deploy/compliance-import.md`. The maintainer's decisions are under "Decided".
 - Every Compliance API fact comes from the sources in the source map at the end, read on 2026-09-29.
 - Decisions that are ours, not the API's, are marked "(ours)".
 - Where the design relies on something the sources leave open, it says so.
@@ -78,7 +78,7 @@ The API gives each source different filters and cursors, so each is walked diffe
   - `archived` or `failed`;
   - gone from the list;
   - answering 404 to its messages while not `pending`, which means it was deleted.
-- **Re-listing (ours).** The importer re-lists by `created_at` back to the oldest session that is on the pending list and not final. There is no single-session retrieve endpoint for remote sessions.
+- **Re-listing (ours).** The importer re-lists by `created_at` back to the oldest session it still follows. It follows a session that is not final and has had activity in the last 30 days. There is no single-session retrieve endpoint for remote sessions. A session left quiet for 30 days and then resumed is picked up only if it is in a later listing.
 - **Where fields come from.** The messages response always returns `user.email_address`, `started_by_user` and `claude_project_id` as `null` [C2]. The importer takes them from the list.
 
 **Chats** [C3]:
@@ -119,7 +119,7 @@ The API gives each source different filters and cursors, so each is walked diffe
 
 ## Writing: one ledger per import of a conversation
 
-**Where (ours).** The importer writes to its own folder, by default `compliance/` next to the gateway's ledgers, never into the gateway's folder.
+**Where (ours).** The importer writes to its own folder, by default `compliance/` inside the gateway's ledgers folder, never into the gateway's folder itself. The gateway reads only the top level of its folder, so a subfolder is safe. A lock file, `.lock`, stops two imports from running on one folder at once, since each would close the other's open segment.
 - **Why:** at start-up the gateway closes and signs every open ledger in its folder. That would include a segment the importer is still writing [repo: `gateway/sessions.py`, `gateway/serve.py`].
 - **Consequence:** the report and the sink read one folder, not its subfolders [repo: `report/fleet.py`, `gateway/sink.py`]. So:
   - `seatbelt report` takes the importer's folder as its own argument;
@@ -127,10 +127,10 @@ The API gives each source different filters and cursors, so each is walked diffe
 
 **When a conversation is imported (ours).** Sessions and chats keep growing, but a signed ledger is closed. So:
 - **Waiting to settle.** The importer waits until a conversation has been quiet for `settle`, 1 hour. Quiet means:
-  - `updated_at` at least an hour old, for local sessions and chats;
-  - final, as defined above, for remote sessions.
+  - `updated_at` at least an hour old, for every source;
+  - for remote sessions, also final, as defined above, however recent.
 - **Writing.** It then writes one ledger of the messages it has not recorded before.
-- **Later messages.** If the conversation gains messages, the next import writes a new ledger with only those. That ledger is a *segment*: its `run.start` names the previous segment and carries that segment's attestation digest, so one conversation's segments form a chain.
+- **Later messages.** If the conversation gains messages, the next import writes a new ledger with only those. That ledger is a *segment*: its `run.start` names the previous segment and carries that segment's `ledger_sha256`, from its attestation, so one conversation's segments form a chain.
 
 **Run id (ours).** `<source>-<conversation id>-<segment>`, for example `cowork-clls_01Hx...-1`.
 - `<source>` is the `product_surface` for sessions, with every character outside `[A-Za-z0-9_.-]` made `.`, so `office_agents/excel` becomes `office_agents.excel`. A null surface becomes `unknown` [C2][C8][repo: `record/recorder.py`].
@@ -149,8 +149,8 @@ The API gives each source different filters and cursors, so each is walked diffe
 
 **Which messages are new.** For local sessions, a message id is stable while its turn is kept [C2][C8]. The sources say nothing on this for remote sessions or chats, and the design assumes it.
 - The importer appends, in the order the API returns them, only the messages after the last message it recorded. The API asks callers to keep that order and not re-sort by timestamp [C2].
-- **If that last message is no longer in the transcript,** the importer cannot tell what is new. It writes nothing for that conversation and logs it for a person to check. Guessing could record a message twice or drop one.
-- **A local `retention_elapsed` placeholder** gets a new id each time more turns age out [C8]. The importer records it only as the first message of a conversation's first segment, and never again.
+- **If that last message is no longer in the transcript because it aged out,** everything still kept is new. Retention removes the oldest turns first, and a transcript whose start has aged out begins with a `retention_elapsed` placeholder [C2]. The importer records the messages after the placeholder, but not the placeholder, which stands for turns already recorded. The placeholder gets a new id each time more turns age out [C8], so it is recorded only when it opens a conversation's first segment.
+- **If that last message is gone for any other reason,** the importer cannot tell what is new. It writes nothing for that conversation and logs it for a person to check. Guessing could record a message twice or drop one.
 - **A message that was recorded and later changed upstream** (compaction, retention) is not rewritten. The ledger keeps what the API returned when it was imported.
 - **A chat that comes back with `deleted_at` set** gets a segment with no messages. Its `run.start` records `compliance.deleted_at`, so the ledgers show the chat was deleted after it was archived.
 
@@ -167,7 +167,7 @@ The API gives each source different filters and cursors, so each is walked diffe
 | `compliance.organization_uuid`, `compliance.product_surface`, `compliance.workspace_id`, `compliance.project_id`, `compliance.created_at`, `compliance.updated_at`, `compliance.status`, `compliance.deleted_at` | from the list or retrieve response (for remote sessions, the list) |
 | `compliance.agent_id` | the agent, on agent-owned remote sessions such as Cowork scheduled tasks [C2] |
 | `compliance.started_by` | the user who started an agent-owned remote session [C2] |
-| `compliance.segment`, `compliance.previous` | the segment number, and the previous segment's run id and attestation digest |
+| `compliance.segment`, `compliance.previous` | the segment number, and the previous segment's run id and `ledger_sha256` (null when unsigned) |
 | `compliance.endpoint`, `compliance.query`, `compliance.request_ids` | the endpoint and query parameters the ledger was built from, and each response's `request-id` (ours). For chain of custody, Anthropic advises storing each record with its source endpoint, query parameters, run timestamp and a content hash [C6]. The run timestamp is the events' `ts`, and the hash is each event's own. |
 
 **Events (ours).** The mapping uses the same event kinds the gateway writes, so `reconstruct` and `verify` work unchanged.

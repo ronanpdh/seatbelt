@@ -125,7 +125,8 @@ def _graceful_stop() -> Generator[None]:
             signal.signal(sig, signal.SIG_DFL if handler is None else handler)
 
 
-def make_sink(cfg: GatewayConfig, env: Mapping[str, str]) -> Sink | None:
+def make_sink(cfg: GatewayConfig, env: Mapping[str, str], root: Path | None = None) -> Sink | None:
+    """The configured sink, shipping ledgers from `root` (default: the gateway's)."""
     if cfg.sink is None:
         return None
     s = cfg.sink
@@ -133,7 +134,7 @@ def make_sink(cfg: GatewayConfig, env: Mapping[str, str]) -> Sink | None:
     if missing:
         raise ValueError(f"sink: set {', '.join(missing)} in the environment")
     store = S3Store(s.url, s.bucket, s.region, env[s.access_key_env], env[s.secret_key_env])
-    return Sink(store, cfg.ledgers, prefix=s.prefix)
+    return Sink(store, cfg.ledgers if root is None else root, prefix=s.prefix)
 
 
 def serve(path: Path) -> None:

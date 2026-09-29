@@ -416,6 +416,75 @@ def gateway_serve(config: ConfigOpt = Path("gateway.yaml")) -> None:
         raise typer.Exit(code=1) from exc
 
 
+importer = typer.Typer(help="Import records kept elsewhere into signed ledgers.")
+app.add_typer(importer, name="import")
+
+
+@importer.command(name="compliance")
+def import_compliance(config: ConfigOpt = Path("gateway.yaml")) -> None:
+    """Import Claude Enterprise transcripts from Anthropic's Compliance API: claude.ai chats,
+    and Cowork, Claude Code and other app sessions. Run it on a schedule; each run imports
+    what has changed and settled since the last."""
+    import logging
+
+    from seatbelt.compliance.client import ComplianceClient, ComplianceError
+    from seatbelt.compliance.importer import Busy, Importer
+    from seatbelt.gateway.config import load_config
+    from seatbelt.gateway.serve import load_signer, make_sink
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(name)s: %(message)s")
+    try:
+        cfg = load_config(config)
+        if cfg.compliance is None:
+            raise ValueError(f"{config}: add a `compliance:` block to import from the API")
+        key = os.environ.get(cfg.compliance.key_env, "").strip()
+        if not key:
+            raise ValueError(f"set {cfg.compliance.key_env} to a Compliance Access Key")
+        signer = load_signer(cfg, os.environ)
+        root = cfg.compliance_ledgers
+        root.mkdir(parents=True, exist_ok=True)
+        sink = make_sink(cfg, os.environ, root)
+    except (AttestError, OSError, ValueError) as exc:
+        console.print(f"[red]{escape(str(exc))}[/]")
+        raise typer.Exit(code=1) from exc
+    client = ComplianceClient(key, cfg.compliance.url)
+    if sink is not None:
+        sink.catch_up()
+        sink.start()
+    try:
+        summary = Importer(
+            cfg.compliance,
+            root,
+            client,
+            signer,
+            on_written=sink.ship if sink is not None else None,
+        ).run()
+    except (Busy, ComplianceError) as exc:
+        console.print(f"[red]{escape(str(exc))}[/]")
+        raise typer.Exit(code=1) from exc
+    finally:
+        client.close()
+        if sink is not None and (left := sink.stop(60)):
+            console.print(f"[yellow]{left} ledgers not shipped yet; the next run ships them[/]")
+    for source in cfg.compliance.sources:
+        name = source.removesuffix("s")
+        console.print(
+            f"{source}: {summary.listed.get(source, 0)} listed, "
+            f"{summary.imported.get(name, 0)} ledgers written, "
+            f"{summary.messages.get(name, 0)} messages"
+        )
+    console.print(f"started {summary.started}; last request-id {summary.last_request_id}")
+    console.print(f"ledgers: {root}")
+    for closed in summary.closed:
+        console.print(f"[yellow]closed {escape(closed)}, left open by a killed import[/]")
+    for skipped in summary.skipped:
+        console.print(f"[yellow]skipped {escape(skipped)}; retried next run[/]")
+    for stuck in summary.stuck:
+        console.print(f"[red]{escape(stuck)}: needs a person to check; see the log above[/]")
+    if not summary.ok:
+        raise typer.Exit(code=1)
+
+
 @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
 def run(
     ctx: typer.Context,

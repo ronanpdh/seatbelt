@@ -69,7 +69,9 @@ def fleet(runs: Path, pubkey: Path | None = None) -> Fleet:
             if e.kind is Kind.MODEL_REQUEST:
                 requested[e.id] = str(e.attrs.get("gen_ai.request.model"))
             elif e.kind is Kind.MODEL_RESPONSE:
-                model = str(e.attrs.get("gen_ai.response.model"))
+                if e.attrs.get("compliance.provenance"):
+                    continue  # imported, but not a verified model answer: a marker or claim
+                model = str(e.attrs.get("gen_ai.response.model") or "unknown")
                 m = out.by_model.setdefault(model, Usage())
                 models_used.add(model)
                 for u in (who, m):
