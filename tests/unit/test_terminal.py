@@ -17,7 +17,7 @@ def test_tab_newline_and_ordinary_unicode_are_kept():
 
 
 def test_bidi_overrides_are_shown():
-    assert printable("run‮gnp.exe") == "run\\u202egnp.exe"
+    assert printable("run\u202egnp.exe") == "run\\u202egnp.exe"
 
 
 def test_nothing_raw_reaches_the_terminal():

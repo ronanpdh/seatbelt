@@ -10,7 +10,14 @@ import re
 
 # C0 controls except tab and newline, DEL, the C1 controls (0x9b is a one-byte CSI, 0x9d
 # a one-byte OSC), and the bidirectional overrides that can reorder what a reader sees
-_UNSAFE = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f‪-‮⁦-⁩]")
+_CODES = (
+    *range(0x00, 0x09),
+    *range(0x0B, 0x20),
+    *range(0x7F, 0xA0),
+    *range(0x202A, 0x202F),
+    *range(0x2066, 0x206A),
+)
+_UNSAFE = re.compile("[" + "".join(re.escape(chr(c)) for c in _CODES) + "]")
 
 
 def _visible(m: re.Match[str]) -> str:
