@@ -4,6 +4,9 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 
 ## [Unreleased]
 
+### Added
+- `docs/BUILD.md`: how each release from 0.0.1 to 0.5.1 was built, where it differs from the original build plan, and commands that check it. `log/`: a learning-log entry per release.
+
 ## [0.5.1] - 2026-09-29
 
 A review of the whole project, with every finding checked by a second reader. Upgrade gateways promptly.
