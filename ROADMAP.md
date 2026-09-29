@@ -2,6 +2,8 @@
 
 Versions are targets, not promises. Released work is recorded in [CHANGELOG.md](CHANGELOG.md).
 
+How each release was built, and where it differs from the original plan: [docs/BUILD.md](docs/BUILD.md). A learning log per release is in [log/](log/).
+
 ## 0.0.1 (released)
 
 Event model, hash-chained JSONL ledger, redaction, Recorder API, verification, timeline reconstruction, CLI.
