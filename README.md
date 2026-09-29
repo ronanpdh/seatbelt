@@ -14,16 +14,18 @@ uv tool install git+https://github.com/ronanpdh/seatbelt   # needs uv: https://d
 seatbelt run claude                                         # or: seatbelt run codex, seatbelt run gemini
 ```
 
-Use the CLI as you normally would; it keeps its own sign-in, whether that's a subscription or an API key. When you exit, seatbelt prints where it saved the signed record of the run. Then:
+Use the CLI as you normally would; it keeps its own sign-in, whether that's a subscription or an API key. When you exit, seatbelt prints the run's name (e.g. `claude-99ce72ff`) and saves a signed record of it. Then:
 
 ```sh
+seatbelt reconstruct                 # replay your latest run as a timeline
+seatbelt reconstruct claude-99ce72ff # or a run by name
+seatbelt runs                        # list your runs by name
 seatbelt report                      # what your runs did: models, tools, tokens, anything refused or altered
-seatbelt reconstruct <ledger>        # replay one run as a timeline
 ```
 
 There is nothing to set up. How it works, where runs are saved, and what is and isn't recorded: [docs/local-recording.md](docs/local-recording.md).
 
-No agent to hand? `seatbelt demo` records an example run, then `seatbelt verify runs/<run id>.jsonl` checks it.
+No agent to hand? `seatbelt demo` records an example run, then `seatbelt verify runs/<run id>.jsonl` checks it. `verify` and `reconstruct` take a file path, or a run's name from `seatbelt runs`.
 
 ## What you get
 
@@ -82,8 +84,9 @@ uv run seatbelt scenarios scenarios/ --target examples.scenario_target:target   
 |---|---|---|
 | `seatbelt run <cli> [--config] [--exe] [-- args]` | runs `claude`, `codex` or `gemini`, recorded on this machine or through your gateway | bad config or unknown CLI (127: executable not found); otherwise the CLI's own exit code |
 | `seatbelt report [runs] [--pubkey] [--json]` | usage by person, model and tool; refused, failed, open and unsigned runs. With no `runs`, this machine's runs | a ledger is broken, or forged with a key given |
-| `seatbelt verify <ledger> [--pubkey]` | checks the hash chain and attestation | broken, forged, incomplete, or unattested with a key given |
-| `seatbelt reconstruct <ledger> [--pubkey]` | prints the run as a timeline | same as verify |
+| `seatbelt runs [--limit]` | lists this machine's runs by name, newest first | |
+| `seatbelt verify [run or ledger] [--pubkey]` | checks the hash chain and attestation; a local run against this machine's key. With no argument, the latest run | broken, forged, incomplete, or unattested with a key given |
+| `seatbelt reconstruct [run or ledger] [--pubkey]` | prints the run as a timeline; with no argument, the latest run | same as verify |
 | `seatbelt demo [--out runs]` | records a scripted example run | |
 | `seatbelt keygen [dir]` | writes an Ed25519 key pair | a key file exists |
 | `seatbelt attest <ledger> --key` | signs a finished ledger into `<id>.attest.json` | broken or incomplete chain, sidecar exists |
