@@ -72,6 +72,13 @@ The container image runs as uid 1000 and writes ledgers under `/var/lib/seatbelt
 
    `seatbelt run codex` gives Codex its own model provider on the command line (`-c model_provider="seatbelt"` and a `model_providers.seatbelt` table): the gateway URL plus `/v1`, the Responses API over HTTP, the key from the environment, and the run name as a header. Pointing Codex's built-in provider at the gateway with `openai_base_url` instead would have it try a WebSocket first, which the gateway does not serve. The OpenAI Agents SDK traces by default, straight to `api.openai.com` and not through `OPENAI_BASE_URL`, and authenticates with `OPENAI_API_KEY`: here the employee's gateway key, sent to OpenAI along with the traced prompts. Set `OPENAI_AGENTS_DISABLE_TRACING=1`, or give tracing its own key with `set_tracing_export_api_key`. Its Conversations API, `/responses/compact` and WebSocket transport are opt-in and not served, and a request with `background: true` is refused with 400: its output is fetched later with a request the gateway does not record.
 
+   The gateway refuses with 400, rather than forward, any request it could not record faithfully:
+   - a Chat Completions request that uses legacy function calling (`functions`, `function_call`, or a `function` message; use `tools`), or asks for more than one choice (`n` above 1);
+   - a Gemini or Code Assist request that uses a field's snake_case name (`system_instruction`, `generation_config`, `function_response` and the like; Google's API accepts both spellings, and the gateway reads the camelCase one), or asks for more than one candidate (`candidateCount` above 1);
+   - a request body over 64 MiB, as sent or inflated (413), or nested more than 128 levels deep.
+
+   A `GET` for one model is forwarded only when the id is a plain model id, and the request's `OpenAI-Organization`, `OpenAI-Project` and `x-goog-user-project` headers are not sent on with the gateway's provider key.
+
    `seatbelt run gemini` sets `GEMINI_API_KEY` to the employee's key, `GOOGLE_GEMINI_BASE_URL` to the gateway and the run name as a header (through `GEMINI_CLI_CUSTOM_HEADERS`, which Gemini CLI reads but does not document), and sets `GOOGLE_API_KEY` empty and `GOOGLE_GENAI_USE_VERTEXAI` and `GOOGLE_GENAI_USE_GCA` to `false`, so that a `.env` file cannot switch it away from the gateway. Gemini CLI uses the base URL only when it signs in with an API key, so its settings (`~/.gemini/settings.json`) need
 
    ```json
@@ -119,7 +126,7 @@ Each reload is logged as `config reloaded:` with the number of principals, the i
 ## Policy
 
 - `models`: requests for any other model are refused with 403 before they leave the gateway. The match is exact, so list the model ids your clients send (for Gemini, the model in the URL, e.g. `gemini-2.5-pro`).
-- `max_output_tokens`: a request whose `max_tokens`, `max_completion_tokens`, (Responses API) `max_output_tokens` or (Gemini) `generationConfig.maxOutputTokens` exceeds it is refused with 403. A request that sets none of them passes.
+- `max_output_tokens`: a request whose `max_tokens`, `max_completion_tokens`, (Responses API) `max_output_tokens` or (Gemini) `generationConfig.maxOutputTokens` exceeds it is refused with 403. A value is read as a number when it is an integer, a float with no fraction, or an integer in a string, as a provider may read it; any other value is refused. A request that sets none of them passes, and the provider's default applies, so the cap binds only requests that set one.
 - `tools_denied`: when the model asks for one of these tools, the call is recorded as denied and the response is still relayed, because the gateway cannot stop a client running a tool on its own machine. Any later request that carries that tool's result is refused with 403 while the tool stays denied, so the result does not reach the model. The gateway remembers each employee's denied calls across sessions, for Responses clients that send a tool's output without the call (`previous_response_id`), until it restarts; after a restart such an output is refused only if the request names the tool. A Codex MCP tool is named `mcp__<server>__<tool>`, as in Claude Code. A Gemini tool result is refused by the tool name it carries. A config reload that removes the tool lets such results through, in open sessions too, and records that it did.
 
 Every verdict is a `policy.check` event in the ledger. `seatbelt report` counts each denying check per employee (a request two rules deny counts twice; a denied tool call counts too) and, for refused requests, against the model asked for.
@@ -161,7 +168,7 @@ While it runs, the gateway holds `<ledgers>/.lock`. A second gateway on the same
 
 ## Shipping ledgers to object storage
 
-With a `sink` in the config, the gateway uploads each ledger and its signature to S3-compatible object storage as soon as the session is closed and signed, so the gateway host no longer holds the only copy. Uploads run in the background: a slow or unreachable store never delays a request. A failed upload is retried with backoff (5 s, 30 s, 2 min, then every 5 min); what has not shipped by shutdown, or while the store was down, is shipped at the next start. `<ledgers>/.shipped/<run id>` records each shipped run, with the object keys and the SHA-256 of what was sent. Open ledgers are never shipped, only closed ones.
+With a `sink` in the config, the gateway uploads each ledger and its signature to S3-compatible object storage as soon as the session is closed and signed, so the gateway host no longer holds the only copy. Uploads run in the background: a slow or unreachable store never delays a request. A failed upload is retried with backoff (5 s, 30 s, 2 min, then every 5 min); after 5 failed attempts in a row the ledger goes to the back of the queue and an error is logged, so one ledger the store keeps refusing does not hold up the rest. What has not shipped by shutdown, or while the store was down, is shipped at the next start, and so is a signature added after its ledger shipped (`seatbelt attest` on a ledger the start left unsigned). `<ledgers>/.shipped/<run id>` records each shipped run, with the object keys and the SHA-256 of what was sent. Open ledgers are never shipped, only closed ones.
 
 ```yaml
 sink:
@@ -173,6 +180,8 @@ sink:
   # defaults SEATBELT_SINK_ACCESS_KEY and SEATBELT_SINK_SECRET_KEY
 ```
 
+`url` is `https://` with a host and an optional port, nothing else: no path, query or user name, which the gateway refuses at start rather than drop. Plain `http://` sends every prompt and tool output in the clear, and is accepted only with `allow_http: true`, for a test store on a private network.
+
 The keys come from the environment, never the file; the gateway refuses to start with a `sink` and no keys. The sink is read at start only: a change to it waits for a restart.
 
 On Hetzner Object Storage ([docs](https://docs.hetzner.com/storage/object-storage/)):
@@ -181,4 +190,4 @@ On Hetzner Object Storage ([docs](https://docs.hetzner.com/storage/object-storag
 2. Generate S3 credentials (Console → your project → Security → S3 Credentials) and set them as `SEATBELT_SINK_ACCESS_KEY` and `SEATBELT_SINK_SECRET_KEY` in the gateway's environment. A key can read and write every bucket of its project unless a bucket policy narrows it; the gateway only ever uploads objects to this one bucket, so narrow its key to that.
 3. Point `url` at the location's endpoint (`https://<location>.your-objectstorage.com`) and `region` at the location code.
 
-Requests are signed with AWS Signature Version 4 over the whole payload and address the bucket in the host name (`https://<bucket>.<location>.your-objectstorage.com/<key>`), as Hetzner documents for plain HTTP clients; no checksum headers are sent. Any S3-compatible service that accepts that works the same way. To check what arrived, download the objects and run `seatbelt verify <run id>.jsonl --pubkey seatbelt.pub` on them: the signature travels with each ledger.
+Requests are signed with AWS Signature Version 4 over the whole payload and address the bucket in the host name (`https://<bucket>.<location>.your-objectstorage.com/<key>`), as Hetzner documents for plain HTTP clients, with a `Content-MD5` header, which S3 requires on uploads to a bucket with Object Lock. Any S3-compatible service that accepts that works the same way. To check what arrived, download the objects and run `seatbelt verify <run id>.jsonl --pubkey seatbelt.pub` on them: the signature travels with each ledger.

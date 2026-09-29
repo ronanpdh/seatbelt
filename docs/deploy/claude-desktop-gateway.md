@@ -39,7 +39,7 @@ Claude Desktop signs the user in with your provider in the system browser (autho
      # allow: [<oid>, ...]                  # optional: only these users
    ```
 
-   The keys are found from the issuer's discovery document (`<issuer>/.well-known/openid-configuration`), kept for 5 minutes, and fetched again early when a token names a key the gateway does not hold, which is how a provider's key rotation shows. `jwks_url` overrides discovery. Only asymmetric signature algorithms can be configured (`algorithms`, default `[RS256]`), so an unsigned or HMAC-signed token is never accepted; `leeway` allows up to 60 seconds of clock skew by default.
+   The keys are found from the issuer's discovery document (`<issuer>/.well-known/openid-configuration`), kept for 5 minutes, and fetched again early when a token names a key the gateway does not hold, which is how a provider's key rotation shows. If a fetch fails, the keys already held stay in use for up to an hour more, a failed fetch is tried again at most every 30 seconds, and a client sees only `sign-in token refused` (the details are in the gateway's log). `jwks_url` overrides discovery. Only asymmetric signature algorithms can be configured (`algorithms`, default `[RS256]`), so an unsigned or HMAC-signed token is never accepted; `leeway` allows up to 60 seconds of clock skew by default.
 3. Configure the app (MDM, or the in-app configuration) [1][3]. To use the in-app configuration on one machine, enable **Help → Troubleshooting → Enable Developer Mode** in the menu bar (on Windows, the ☰ menu of the sign-in screen). Then open **Developer → Configure Third-Party Inference…**, fill in **Connection**, and choose **Apply Changes** [5]. It is not in the Settings window.
 
    | Key | Value |

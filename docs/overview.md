@@ -102,7 +102,7 @@ Which clients it records:
 
 ### Fleet report
 
-`seatbelt report [runs...]` sums one or more runs directories (with none, this machine's runs) by person, model and tool: runs, model calls, tokens, policy refusals, and the failed, open, unsigned, forged and broken runs. `--people` joins one person's ids across sources. Only chains that verify are counted.
+`seatbelt report [runs...]` sums one or more runs directories (with none, this machine's runs) by person, model and tool: runs, model calls, tokens, policy refusals, and the failed, open, unsigned, forged and broken runs, and signatures whose ledger is gone. `--people` joins one person's ids across sources. Only chains that verify are counted, and neither forged ledgers nor, with `--pubkey`, ledgers that ended without a signature. A ledger deleted together with its signature leaves nothing for a report to find.
 
 ### Supply chain
 
@@ -234,17 +234,17 @@ The recipient needs the zip, the public key and the harness. Nothing else.
 
 | Command | Does | Exit 1 when |
 |---|---|---|
-| `seatbelt run <cli> [--config] [--exe] [-- args]` | runs `claude`, `codex` or `gemini`, recorded on this machine or through your gateway | bad config or unknown CLI (127: executable not found); otherwise the CLI's own exit code |
-| `seatbelt report [runs...] [--pubkey] [--people] [--json]` | usage by person, model and tool; refused, failed, open and unsigned runs. Takes several folders; `--people` joins one person's ids ([guide](deploy/gateway.md#one-row-per-person)). With no `runs`, this machine's runs | a ledger is broken, or forged with a key given; a bad people file |
+| `seatbelt run <cli> [--config] [--exe] [-- args]` | runs `claude`, `codex` or `gemini`, recorded on this machine or through your gateway | bad config, signing key or spawn error, or unknown CLI (127: executable not found); otherwise the CLI's own exit code, 128 + N when a signal N ended it |
+| `seatbelt report [runs...] [--pubkey] [--people] [--json]` | usage by person, model and tool; refused, failed, open and unsigned runs. Takes several folders; `--people` joins one person's ids ([guide](deploy/gateway.md#one-row-per-person)). With no `runs`, this machine's runs | a ledger is broken or forged, a signature's ledger is missing, or with a key given one ended unsigned; a bad people file |
 | `seatbelt runs [--limit]` | lists this machine's runs by name, newest first | |
-| `seatbelt verify [run or ledger] [--pubkey]` | checks the hash chain and attestation; a local run against this machine's key. With no argument, the latest run | broken, forged, incomplete, or unattested with a key given |
+| `seatbelt verify [run or ledger] [--pubkey]` | checks the hash chain and attestation; a local run against this machine's key. With no argument, the latest run | broken, forged (a signature that does not match the ledger counts, key or not), incomplete, or unattested with a key given |
 | `seatbelt reconstruct [run or ledger] [--pubkey]` | prints the run as a timeline; with no argument, the latest run | same as verify |
 | `seatbelt demo [--out runs]` | records a scripted example run | |
 | `seatbelt keygen [dir]` | writes an Ed25519 key pair | a key file exists |
 | `seatbelt attest <ledger> --key` | signs a finished ledger into `<id>.attest.json` | broken or incomplete chain, sidecar exists |
 | `seatbelt scenarios <corpus> --target m:f [--out] [--key] [--list] [--image] [--target-dir] [--timeout]` | runs the adversarial corpus | any finding (2: bad target) |
 | `seatbelt pack <runs> --out <zip> [--key] [--corpus]` | bundles a runs directory into an evidence pack | broken ledger, output exists |
-| `seatbelt verify-pack <zip> [--pubkey]` | re-checks a pack offline | forged, or a broken ledger inside |
+| `seatbelt verify-pack <zip> [--pubkey]` | re-checks a pack offline | forged, or a broken ledger inside; with a key given, an unsigned pack or a run without its signature |
 | `seatbelt erase <runs...> (--principal <id> \| --person <name> --people <file>) --case <ref> [--key \| --config] [--yes]` | removes a person's ledgers inside a signed record; lists only without `--yes` ([guide](deploy/erasure.md)) | a folder in use, a bad people file or config, no signing key |
 | `seatbelt gateway keygen --user <id> [--config]` | issues a gateway key; stores only its hash | the user already has a key |
 | `seatbelt gateway serve [--config]` | runs the recording gateway | bad config or signing key |
