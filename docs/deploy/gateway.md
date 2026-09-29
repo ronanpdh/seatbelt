@@ -75,7 +75,7 @@ The container image runs as uid 1000 and writes ledgers under `/var/lib/seatbelt
    The gateway refuses with 400, rather than forward, any request it could not record faithfully:
    - a Chat Completions request that uses legacy function calling (`functions`, `function_call`, or a `function` message; use `tools`), or asks for more than one choice (`n` above 1);
    - a Gemini or Code Assist request that uses a field's snake_case name (`system_instruction`, `generation_config`, `function_response` and the like; Google's API accepts both spellings, and the gateway reads the camelCase one), or asks for more than one candidate (`candidateCount` above 1);
-   - a request body over 64 MiB, as sent or inflated (413), or nested more than 128 levels deep.
+   - a request body over 64 MiB as sent (413), one that inflates past 64 MiB (415), or one nested more than 128 levels deep.
 
    A `GET` for one model is forwarded only when the id is a plain model id, and the request's `OpenAI-Organization`, `OpenAI-Project` and `x-goog-user-project` headers are not sent on with the gateway's provider key.
 

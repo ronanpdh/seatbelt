@@ -52,7 +52,7 @@ Start the gateway again afterwards.
   - Anyone holding a copy of an erased ledger can hash it and find it in the record, but the record does not say whose it was.
   - `seatbelt verify` checks the record, and `seatbelt report` shows erasures as a `seatbelt:erasure` row.
 - **Finishes interrupted erasures.** If an erase is interrupted, run `erase` again: it removes anything a record names that is still there.
-- **Leaves unreadable ledgers for you.** A ledger it cannot read (a line torn by a crash) is not removed. When its first lines name the person, or cannot be read at all, the listing shows it as `unreadable, may be theirs`, and `erase --yes` erases everything else, then names each such file by its full path and exits 1. Repair or remove those by hand.
+- **Leaves unreadable ledgers for you.** A ledger it cannot read (a line torn by a crash) is not removed. When its first line names the person, or cannot be read, the listing shows it as `unreadable, may be theirs, not erased`, and `erase --yes` erases everything else, then names each such file by its path and exits 1. Repair or remove those by hand.
 
 ## What it cannot reach
 

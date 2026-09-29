@@ -33,7 +33,7 @@ The design choices and their trade-offs are recorded in ADR 0001 (ledger), 0002 
 
 ### Redaction
 
-Regex scrubbing of Anthropic and OpenAI keys, AWS access keys, bearer tokens and GitHub tokens, applied recursively over dicts, lists, tuples and Pydantic models before anything is hashed. Patterns are anchored to token shapes so ordinary prose survives.
+Regex scrubbing of known secret formats (Anthropic, OpenAI, Google and Stripe API keys, seatbelt's own `sbk_` keys, AWS access key ids, GitHub and Slack tokens, bearer tokens, JWTs, private key blocks, passwords in URLs, and `…KEY=`, `…TOKEN=`, `…SECRET=` and `…PASSWORD=` lines as in `.env` files (an upper-case name and a value of 16 characters or more)), applied recursively over dicts (their keys too), lists, tuples and Pydantic models before anything is hashed. `Ledger.append` also redacts every event's actor id, version and parent id. Patterns are anchored to token shapes so ordinary prose survives; a secret in another shape is recorded as it was sent.
 
 ### Recorder
 
@@ -58,7 +58,7 @@ Adapters translate. They never interpret.
 
 ### Attestation
 
-`seatbelt keygen` writes an Ed25519 key pair (0600, never overwritten). `Recorder.start(..., signer=Signer.from_file(key))` signs a manifest (run id, schema version, event count, final hash, file digest) into `<run id>.attest.json` at run end, failed runs included. `seatbelt attest` signs after the fact and refuses a broken or incomplete chain. `seatbelt verify --pubkey` trusts only the key file you give it, never the key embedded in the manifest, and reports attested, FORGED, UNCHECKED (sidecar, no key) or UNATTESTED (exit 1 when a key was given).
+`seatbelt keygen` writes an Ed25519 key pair (0600, never overwritten). `Recorder.start(..., signer=Signer.from_file(key))` signs a manifest (run id, schema version, event count, final hash, file digest) into `<run id>.attest.json` at run end, failed runs included. `seatbelt attest` signs after the fact and refuses a broken or incomplete chain. `seatbelt verify --pubkey` trusts only the key file you give it, never the key embedded in the manifest, and reports attested, FORGED (fails the key, or without a key a sidecar that contradicts the ledger), UNCHECKED (a sidecar consistent with the ledger, no key) or UNATTESTED (exit 1 when a key was given).
 
 ### Timeline reconstruction
 
@@ -205,7 +205,7 @@ rm -rf dist && uv build && docker build -f docker/Dockerfile -t seatbelt-target 
 uv run seatbelt scenarios scenarios/ --target my_agent:target --image seatbelt-target --target-dir agent/
 ```
 
-Extend the image with your dependencies (`FROM seatbelt-target`). Keep keys, `.env` and `runs/` outside `--target-dir`; everything under it is visible to the target. Point it at the folder with your agent's code (`agent/my_agent.py` here): the default, the current directory, holds `runs/`, the default `--out`.
+Extend the image with your dependencies (`FROM seatbelt-target`). Keep keys and `.env` files outside `--target-dir`; everything under it is visible to the target, except an `--out` inside it, which is hidden. Point it at the folder with your agent's code (`agent/my_agent.py` here): the default, the current directory, exposes everything in it.
 
 ### Run it for a team
 
@@ -235,7 +235,7 @@ The recipient needs the zip, the public key and the harness. Nothing else.
 | Command | Does | Exit 1 when |
 |---|---|---|
 | `seatbelt run <cli> [--config] [--exe] [-- args]` | runs `claude`, `codex` or `gemini`, recorded on this machine or through your gateway | bad config, signing key or spawn error, or unknown CLI (127: executable not found); otherwise the CLI's own exit code, 128 + N when a signal N ended it |
-| `seatbelt report [runs...] [--pubkey] [--people] [--json]` | usage by person, model and tool; refused, failed, open and unsigned runs. Takes several folders; `--people` joins one person's ids ([guide](deploy/gateway.md#one-row-per-person)). With no `runs`, this machine's runs | a ledger is broken or forged, a signature's ledger is missing, or with a key given one ended unsigned; a bad people file |
+| `seatbelt report [runs...] [--pubkey] [--people] [--json]` | usage by person, model and tool; refused, failed, open and unsigned runs. Takes several folders; `--people` joins one person's ids ([guide](deploy/gateway.md#one-row-per-person)). With no `runs`, this machine's runs | a ledger is broken or forged, a signature's ledger is missing, or with a key given (with no `runs`, this machine's key) one ended unsigned; a bad people file |
 | `seatbelt runs [--limit]` | lists this machine's runs by name, newest first | |
 | `seatbelt verify [run or ledger] [--pubkey]` | checks the hash chain and attestation; a local run against this machine's key. With no argument, the latest run | broken, forged (a signature that does not match the ledger counts, key or not), incomplete, or unattested with a key given |
 | `seatbelt reconstruct [run or ledger] [--pubkey]` | prints the run as a timeline; with no argument, the latest run | same as verify |
@@ -243,9 +243,9 @@ The recipient needs the zip, the public key and the harness. Nothing else.
 | `seatbelt keygen [dir]` | writes an Ed25519 key pair | a key file exists |
 | `seatbelt attest <ledger> --key` | signs a finished ledger into `<id>.attest.json` | broken or incomplete chain, sidecar exists |
 | `seatbelt scenarios <corpus> --target m:f [--out] [--key] [--list] [--image] [--target-dir] [--timeout]` | runs the adversarial corpus | any finding (2: bad target) |
-| `seatbelt pack <runs> --out <zip> [--key] [--corpus]` | bundles a runs directory into an evidence pack | broken ledger, output exists |
+| `seatbelt pack <runs> --out <zip> [--key] [--corpus]` | bundles a runs directory into an evidence pack | a broken ledger, a file name that is not a run id, a signature that does not match its ledger (or, with `--key`, was made by another key), output exists |
 | `seatbelt verify-pack <zip> [--pubkey]` | re-checks a pack offline | forged, or a broken ledger inside; with a key given, an unsigned pack or a run without its signature |
-| `seatbelt erase <runs...> (--principal <id> \| --person <name> --people <file>) --case <ref> [--key \| --config] [--yes]` | removes a person's ledgers inside a signed record; lists only without `--yes` ([guide](deploy/erasure.md)) | a folder in use, a bad people file or config, no signing key |
+| `seatbelt erase <runs...> (--principal <id> \| --person <name> --people <file>) --case <ref> [--key \| --config] [--yes]` | removes a person's ledgers inside a signed record; lists only without `--yes` ([guide](deploy/erasure.md)) | a folder in use, a bad people file or config, no signing key; with `--yes`, an unreadable ledger that is or may be the person's |
 | `seatbelt gateway keygen --user <id> [--config]` | issues a gateway key; stores only its hash | the user already has a key |
 | `seatbelt gateway serve [--config]` | runs the recording gateway | bad config or signing key |
 | `seatbelt import compliance [--config]` | imports Claude Enterprise transcripts from Anthropic's Compliance API into signed ledgers ([guide](deploy/compliance-import.md)) | bad config, key or API error, or a conversation that needs a person to check |
