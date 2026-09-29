@@ -83,9 +83,10 @@ def test_an_emptied_signed_ledger_is_forged_or_broken_and_fails_the_report(tmp_p
     _run(runs, "bob-1", "bob@corp", signer).write_bytes(b"")  # emptied; signature kept
     report = fleet(runs, pub)
     assert report.forged == ["bob-1"] and "bob@corp" not in report.by_principal
-    assert fleet(runs).broken == ["bob-1"]  # no key: the leftover signature still shows it
+    # no key: the leftover signature no longer matches the ledger, which still shows it
+    assert fleet(runs).forged == ["bob-1"]
     out = CliRunner().invoke(app, ["report", str(runs)])
-    assert out.exit_code == 1 and "broken: 1 (bob-1)" in out.output
+    assert out.exit_code == 1 and "forged: 1 (bob-1)" in out.output
 
 
 def test_an_empty_ledger_with_no_signature_is_listed_as_incomplete(tmp_path: Path) -> None:
