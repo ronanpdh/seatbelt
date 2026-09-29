@@ -45,3 +45,9 @@ Signed Ed25519 attestation of each run (`seatbelt.attest`, `keygen`, `attest`, `
 - Done: central sink, shipping each signed ledger to S3-compatible object storage (Hetzner Object Storage) at run end
 - Done: OIDC sign-in for Claude Desktop (`inferenceGatewayOidc`), users identified by the provider's immutable id
 - Done: Compliance API importer (`seatbelt import compliance`) for Claude Enterprise transcripts (claude.ai chats, Cowork, and Claude Code and other app sessions) where clients are not routed through the gateway; tested against a fake of the documented API, not a live tenant; guide in `docs/deploy/compliance-import.md`
+
+## 0.4.0
+
+- Done: one row per person in `seatbelt report`: a people file joins a person's principal ids across the gateway, identity providers and the Compliance API importer; `report` takes several runs folders
+- Done: `seatbelt reconstruct` shows imported answers' text and marks unverified or unavailable messages
+- Removing one person's ledgers on request (erasure), without editing any ledger: whole ledgers are dropped and the removal itself recorded

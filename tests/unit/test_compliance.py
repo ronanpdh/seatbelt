@@ -13,6 +13,7 @@ from typing import Any
 
 import httpx2
 import pytest
+from rich.console import Console
 from tests.fake_compliance import KEY, FakeCompliance, at, error
 
 from seatbelt.attest.sign import Signer
@@ -30,6 +31,7 @@ from seatbelt.ledger.events import Event, Kind
 from seatbelt.ledger.store import read_events
 from seatbelt.record.recorder import Recorder
 from seatbelt.report.fleet import fleet
+from seatbelt.report.timeline import timeline
 from seatbelt.verify.attest import Attestation, verify_attestation
 from seatbelt.verify.chain import verify_file
 
@@ -710,3 +712,34 @@ def test_the_cli_imports_and_reports(tmp_path: Path, monkeypatch: pytest.MonkeyP
     no_block.write_text("ledgers: runs\nupstreams: {}\n")
     out = runner.invoke(app, ["import", "compliance", "--config", str(no_block)])
     assert out.exit_code == 1 and "compliance:" in out.output
+
+
+def test_reconstruct_shows_imported_answers_and_their_provenance(tmp_path: Path) -> None:
+    fake = FakeCompliance()
+    messages = [
+        *_transcript(),
+        _msg(
+            "clsm_x",
+            "assistant",
+            _text("I did it"),
+            model=None,  # the API gives no model for these
+            provenance={"type": "client_asserted"},
+        ),
+        _msg(
+            "clsm_y",
+            "assistant",
+            model=None,
+            provenance={"type": "content_unavailable", "reason": "oversize"},
+        ),
+    ]
+    fake.local["s"] = {"meta": _local_meta("s", at(10)), "messages": messages}
+    _importer(tmp_path, fake, Clock(120)).run()
+    (path,) = (tmp_path / "compliance").glob("*.jsonl")
+    console = Console(width=400, record=True)
+    timeline(path, console)
+    out = console.export_text()
+    assert "[marker] [system prompt content not shown]" in out
+    assert "<- claude-opus-5-5: I'll read the test file first." in out  # the text, not "? out"
+    assert "<- unknown: [unverified] I did it" in out
+    assert "<- unknown: [unavailable: oversize]" in out
+    assert "(? out)" not in out

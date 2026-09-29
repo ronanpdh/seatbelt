@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
+from seatbelt.gateway.formats import as_dict, as_dicts
 from seatbelt.ledger.events import Event, Kind
 from seatbelt.ledger.store import read_events
 
@@ -20,6 +22,28 @@ def _failed(error: object) -> str:
     return f"FAILED: {error}" if error else "FAILED"
 
 
+_PROVENANCE = {  # compliance.provenance types, as a reader should take them
+    "client_asserted": "unverified",
+    "synthetic_marker": "marker",
+    "content_unavailable": "unavailable",
+}
+
+
+def _provenance(attrs: dict[str, Any]) -> str:
+    """A leading mark for an imported message that is not verified model or user content."""
+    p = as_dict(attrs.get("compliance.provenance"))
+    if not p:
+        return ""
+    label = _PROVENANCE.get(str(p.get("type")), str(p.get("type")))
+    return f"[{label}: {p['reason']}] " if p.get("reason") else f"[{label}] "
+
+
+def _text(response: object) -> str:
+    """The text blocks of an imported answer, which records `{role, content: [blocks]}`."""
+    blocks = as_dicts(as_dict(response).get("content"))
+    return " ".join(str(b.get("text", "")) for b in blocks if b.get("type") == "text")
+
+
 def _describe(event: Event) -> str:
     a = event.attrs
     match event.kind:
@@ -29,12 +53,17 @@ def _describe(event: Event) -> str:
             return "ok" if a.get("run.ok") else _failed(a.get("run.error"))
         case Kind.USER_MESSAGE:
             msgs = a.get("gen_ai.input.messages", [])
-            return str(msgs[-1]["content"]) if msgs else ""
+            return _provenance(a) + (str(msgs[-1]["content"]) if msgs else "")
         case Kind.MODEL_REQUEST:
             return f"-> {a.get('gen_ai.request.model')}"
         case Kind.MODEL_RESPONSE:
+            if a.get("error"):
+                return str(a["error"])
+            if "compliance.message_id" in a:  # imported: the answer's text, not token counts
+                model = a.get("gen_ai.response.model") or "unknown"
+                return f"<- {model}: {_provenance(a)}{_text(a.get('gen_ai.response'))}"
             out = a.get("gen_ai.usage.output_tokens", "?")
-            return a.get("error") or f"<- {a.get('gen_ai.response.model')} ({out} out)"
+            return f"<- {a.get('gen_ai.response.model')} ({out} out)"
         case Kind.TOOL_CALL:
             return f"{a.get('gen_ai.tool.name')}({a.get('gen_ai.tool.call.arguments')})"
         case Kind.TOOL_RESULT:

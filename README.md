@@ -86,7 +86,7 @@ uv run seatbelt scenarios scenarios/ --target examples.scenario_target:target   
 | Command | Does | Exit 1 when |
 |---|---|---|
 | `seatbelt run <cli> [--config] [--exe] [-- args]` | runs `claude`, `codex` or `gemini`, recorded on this machine or through your gateway | bad config or unknown CLI (127: executable not found); otherwise the CLI's own exit code |
-| `seatbelt report [runs] [--pubkey] [--json]` | usage by person, model and tool; refused, failed, open and unsigned runs. With no `runs`, this machine's runs | a ledger is broken, or forged with a key given |
+| `seatbelt report [runs...] [--pubkey] [--people] [--json]` | usage by person, model and tool; refused, failed, open and unsigned runs. Takes several folders; `--people` joins one person's ids ([guide](docs/deploy/gateway.md#one-row-per-person)). With no `runs`, this machine's runs | a ledger is broken, or forged with a key given; a bad people file |
 | `seatbelt runs [--limit]` | lists this machine's runs by name, newest first | |
 | `seatbelt verify [run or ledger] [--pubkey]` | checks the hash chain and attestation; a local run against this machine's key. With no argument, the latest run | broken, forged, incomplete, or unattested with a key given |
 | `seatbelt reconstruct [run or ledger] [--pubkey]` | prints the run as a timeline; with no argument, the latest run | same as verify |
