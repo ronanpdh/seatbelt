@@ -24,8 +24,17 @@ def redact_text(text: str) -> str:
     return text
 
 
+def unique_key(key: str, taken: dict[str, Any]) -> str:
+    """`key`, or `key#2`, `key#3`, ... when rewriting keys made two equal: neither value is lost."""
+    candidate, n = key, 1
+    while candidate in taken:
+        n += 1
+        candidate = f"{key}#{n}"
+    return candidate
+
+
 def redact(value: Any) -> Any:
-    """Recursively redact strings inside dicts, lists, tuples and Pydantic models.
+    """Recursively redact strings, and dict keys, inside dicts, lists, tuples and Pydantic models.
 
     Models (e.g. SDK content blocks passed back as history) become plain JSON first,
     so their strings are redacted and the event can be hashed.
@@ -35,7 +44,10 @@ def redact(value: Any) -> Any:
     if isinstance(value, str):
         return redact_text(value)
     if isinstance(value, dict):
-        return {str(k): redact(v) for k, v in value.items()}  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
+        out: dict[str, Any] = {}
+        for k, v in value.items():  # pyright: ignore[reportUnknownVariableType]
+            out[unique_key(redact_text(str(k)), out)] = redact(v)  # pyright: ignore[reportUnknownArgumentType]
+        return out
     if isinstance(value, list | tuple):
         return [redact(v) for v in value]  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
     return value

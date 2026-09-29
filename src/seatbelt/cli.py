@@ -118,26 +118,31 @@ def _resolved(ref: str | None, pubkey: Path | None) -> tuple[Path, Path | None]:
         raise typer.Exit(code=1) from exc
 
 
+def _shown(text: str) -> str:
+    """Untrusted text (run ids, member names, reasons that quote them) made safe to print."""
+    return escape(printable(text))
+
+
 def _check(ledger: Path, pubkey: Path | None = None) -> tuple[Verdict, AttestVerdict]:
     """Exit 1 on a broken chain, a forged attestation, or none when a key was given."""
     verdict = verify_file(ledger)
     if not verdict.ok:
         where = "" if verdict.first_bad_seq is None else f" at seq {verdict.first_bad_seq}"
-        console.print(f"[red]BROKEN[/]{where}: {escape(verdict.reason or '')}")
+        console.print(f"[red]BROKEN[/]{where}: {_shown(verdict.reason or '')}")
         raise typer.Exit(code=1)
     try:
         att = verify_attestation(ledger, pubkey)
     except AttestError as exc:
-        console.print(f"[red]{escape(str(exc))}[/]")
+        console.print(f"[red]{_shown(str(exc))}[/]")
         raise typer.Exit(code=1) from exc
     if att.status is Attestation.FORGED:
-        console.print(f"[red]FORGED[/]: {escape(att.reason or '')}")
+        console.print(f"[red]FORGED[/]: {_shown(att.reason or '')}")
         raise typer.Exit(code=1)
     if att.status is Attestation.UNATTESTED and pubkey is not None:
-        console.print(f"[red]UNATTESTED[/]: no {escape(str(sidecar(ledger)))}")
+        console.print(f"[red]UNATTESTED[/]: no {_shown(str(sidecar(ledger)))}")
         raise typer.Exit(code=1)
     if att.status is Attestation.UNCHECKED:
-        console.print(f"[yellow]UNCHECKED[/] {escape(att.reason or '')}")
+        console.print(f"[yellow]UNCHECKED[/] {_shown(att.reason or '')}")
     if not verdict.complete:
         console.print(
             f"[yellow]INCOMPLETE[/] {verdict.events} events, chain intact but no matching "
@@ -208,9 +213,9 @@ def keygen(directory: Annotated[Path, typer.Argument()] = Path(".")) -> None:
     try:
         key, pub = make_keys(directory)
     except AttestError as exc:
-        console.print(f"[red]{escape(str(exc))}[/]")
+        console.print(f"[red]{_shown(str(exc))}[/]")
         raise typer.Exit(code=1) from exc
-    console.print(f"wrote {key} and {pub}")
+    console.print(f"wrote {_shown(str(key))} and {_shown(str(pub))}")
 
 
 @app.command()
@@ -219,7 +224,7 @@ def attest(
 ) -> None:
     """Sign a finished ledger into <run id>.attest.json. Refuses a broken or incomplete chain."""
     if sidecar(ledger).exists():
-        console.print(f"[red]{escape(str(sidecar(ledger)))} exists; delete it to re-sign[/]")
+        console.print(f"[red]{_shown(str(sidecar(ledger)))} exists; delete it to re-sign[/]")
         raise typer.Exit(code=1)
     verdict, _ = _check(ledger)
     if not verdict.complete:
@@ -227,9 +232,9 @@ def attest(
     try:
         out = sign_ledger(ledger, Signer.from_file(key))
     except AttestError as exc:
-        console.print(f"[red]{escape(str(exc))}[/]")
+        console.print(f"[red]{_shown(str(exc))}[/]")
         raise typer.Exit(code=1) from exc
-    console.print(f"wrote {out}")
+    console.print(f"wrote {_shown(str(out))}")
 
 
 KeyOpt = Annotated[Path | None, typer.Option(help="private key from keygen; signs the output")]
@@ -249,32 +254,38 @@ def pack(
         signer = Signer.from_file(key) if key else None
         manifest = build_pack(runs_dir, out, signer=signer, corpus=corpus)
     except (AttestError, PackError) as exc:
-        console.print(f"[red]{escape(str(exc))}[/]")
+        console.print(f"[red]{_shown(str(exc))}[/]")
         raise typer.Exit(code=1) from exc
     console.print(
-        f"wrote {escape(str(out))}: {len(manifest.runs)} runs, {len(manifest.members)} members"
+        f"wrote {_shown(str(out))}: {len(manifest.runs)} runs, {len(manifest.members)} members"
     )
 
 
 @app.command(name="verify-pack")
 def verify_pack_command(path: Path, pubkey: PubKey = None) -> None:
-    """Check an evidence pack offline: manifest, signature, members, chains, attestations."""
+    """Check an evidence pack offline: manifest, signature, members, chains, attestations.
+    With --pubkey, an unsigned pack or a run without its signature file also fails."""
     try:
         verdict = check_pack(path, pubkey)
     except AttestError as exc:
-        console.print(f"[red]{escape(str(exc))}[/]")
+        console.print(f"[red]{_shown(str(exc))}[/]")
         raise typer.Exit(code=1) from exc
     if verdict.status is PackStatus.FORGED:
-        console.print(f"[red]FORGED[/]: {escape(verdict.reason or '')}")
+        console.print(f"[red]FORGED[/]: {_shown(verdict.reason or '')}")
         raise typer.Exit(code=1)
     table = Table(Column("run", no_wrap=True), "chain", "attestation")
     for s in verdict.ledgers:
-        table.add_row(escape(s.run_id), s.chain, s.attestation)
+        table.add_row(_shown(s.run_id), s.chain, s.attestation)
     console.print(table)
-    if verdict.status is not PackStatus.ATTESTED:
+    if verdict.unsigned:
+        console.print("[red]UNSIGNED[/]: a key was given but the pack carries no signature")
+    elif verdict.status is not PackStatus.ATTESTED:
         console.print(f"[yellow]{verdict.status.upper()}[/] pack signature not checked")
-    if not verdict.ok:
+    for run_id in verdict.unattested:
+        console.print(f"[red]UNATTESTED[/]: no runs/{_shown(run_id)}.attest.json")
+    if any(s.chain == "broken" for s in verdict.ledgers):
         console.print("[red]BROKEN[/] a ledger in this pack fails its chain check")
+    if not verdict.ok:
         raise typer.Exit(code=1)
     console.print(f"[green]ok[/] {len(verdict.ledgers)} runs, pack {verdict.status}")
 
