@@ -285,4 +285,4 @@ def test_a_user_with_no_login_name_is_named_by_uid(monkeypatch: pytest.MonkeyPat
         raise OSError("no username")
 
     monkeypatch.setattr(getpass, "getuser", nobody)
-    assert local._user() == f"uid-{os.getuid()}"  # pyright: ignore[reportPrivateUsage]
+    assert local.login_name() == f"uid-{os.getuid()}"

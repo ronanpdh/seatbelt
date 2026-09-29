@@ -1,3 +1,4 @@
+import contextlib
 import importlib
 import os
 import sys
@@ -417,6 +418,127 @@ def gateway_serve(config: ConfigOpt = Path("gateway.yaml")) -> None:
         raise typer.Exit(code=1) from exc
 
 
+@app.command()
+def erase(
+    folders: Annotated[
+        list[Path], typer.Argument(help="runs folders, e.g. the gateway's and the importer's")
+    ],
+    case: Annotated[
+        str, typer.Option(help="case reference, e.g. a ticket number; never the person's name")
+    ],
+    principal: Annotated[
+        list[str] | None, typer.Option(help="a principal id to erase; repeat for several")
+    ] = None,
+    person: Annotated[str | None, typer.Option(help="a person named in --people")] = None,
+    people_file: Annotated[
+        Path | None, typer.Option("--people", help="people file, for --person")
+    ] = None,
+    key: Annotated[
+        Path | None, typer.Option(help="private key that signs the erasure record")
+    ] = None,
+    config: Annotated[
+        Path | None,
+        typer.Option(help="gateway config: its signing key, and its lines naming the person"),
+    ] = None,
+    yes: Annotated[bool, typer.Option("--yes", help="erase; without it, only list")] = False,
+) -> None:
+    """Remove every ledger recorded under a person's principal ids, with its signature and
+    shipped mark, inside a signed erasure record. Lists what it would remove unless --yes.
+    Nothing may be writing: stop the gateway, and wait for imports and local runs to end."""
+    from seatbelt.erase import erase as do_erase
+    from seatbelt.erase import live_local_runs, plan
+    from seatbelt.gateway.config import load_config
+    from seatbelt.gateway.local import login_name
+    from seatbelt.gateway.serve import load_signer
+    from seatbelt.locks import Busy, hold_folder
+
+    try:
+        ids = list(principal or [])
+        if person is not None:
+            if people_file is None:
+                raise ValueError("--person needs --people")
+            listed = People.load(people_file).ids_of(person)
+            if not listed:
+                raise ValueError(f"{people_file}: no ids listed for {person}")
+            ids += listed
+        ids = sorted(set(ids))
+        if not ids:
+            raise ValueError("name who to erase: --principal, or --person with --people")
+        if not case.strip():
+            raise ValueError("--case must not be empty")
+        cfg = load_config(config) if config is not None else None
+    except ValueError as exc:
+        console.print(f"[red]{escape(str(exc))}[/]")
+        raise typer.Exit(code=1) from exc
+    console.print(Text(f"principals: {', '.join(ids)}"))
+    try:
+        plans = [plan(folder, ids) for folder in folders]
+    except ValueError as exc:  # an unreadable importer state file
+        console.print(f"[red]{escape(str(exc))}[/]")
+        raise typer.Exit(code=1) from exc
+    for p in plans:
+        console.print(Text(f"\n{p.folder}", style="bold"))
+        for t in p.targets:
+            what = "leftover of an earlier erasure" if t.leftover else "ledger"
+            console.print(Text(f"  {what}: {t.ledger.name} ({t.ledger.stat().st_size} bytes)"))
+            for k in t.object_keys:
+                console.print(Text(f"    in the sink as {k}: not deleted by erase"))
+        for o in p.orphans:
+            console.print(Text(f"  leftover: {o.relative_to(p.folder)}"))
+        if p.state_entries:
+            console.print(Text(f"  importer state entries: {len(p.state_entries)}"))
+        if p.unmatched:
+            console.print(
+                Text(f"  {len(p.unmatched)} ledgers name no principal, or unknown: not searched")
+            )
+        if p.unreadable:
+            console.print(Text(f"  unreadable, left alone: {', '.join(p.unreadable)}"))
+        if p.empty:
+            console.print(Text("  nothing to erase"))
+    if cfg is not None:
+        for entry in cfg.principals:
+            if entry.id in ids:
+                console.print(Text(f"\n{config}: remove the key issued to {entry.id}"))
+        if cfg.oidc is not None and cfg.oidc.allow:
+            for allowed in cfg.oidc.allow:
+                if allowed in ids:
+                    console.print(Text(f"{config}: remove {allowed} from oidc.allow"))
+    if not yes:
+        console.print("\nNothing changed. Run again with --yes to erase.")
+        return
+    try:
+        if key is not None:
+            signer = Signer.from_file(key)
+        elif cfg is not None:
+            signer = load_signer(cfg, os.environ)
+        else:
+            raise ValueError("--yes needs --key, or --config with a signing key")
+        # every folder locked before anything changes: nothing may be writing to any of them
+        with contextlib.ExitStack() as held:
+            for folder in folders:
+                held.enter_context(hold_folder(folder, "erase"))
+                live = live_local_runs(folder)
+                if live:
+                    raise Busy(f"{folder}: local runs are recording: {', '.join(live)}")
+            for folder in folders:
+                r = do_erase(folder, ids, case, signer, login_name())
+                if r.closed:
+                    console.print(Text(f"{folder}: finished interrupted erasures {r.closed}"))
+                if r.record is None:
+                    console.print(Text(f"{folder}: nothing to erase"))
+                    continue
+                console.print(
+                    Text(
+                        f"{folder}: erased {r.ledgers} ledgers, {r.sidecars} signatures, "
+                        f"{r.marks} shipped marks, {r.state_entries} importer entries; "
+                        f"record {r.record.name}"
+                    )
+                )
+    except (AttestError, OSError, ValueError) as exc:
+        console.print(f"[red]{escape(str(exc))}[/]")
+        raise typer.Exit(code=1) from exc
+
+
 importer = typer.Typer(help="Import records kept elsewhere into signed ledgers.")
 app.add_typer(importer, name="import")
 
@@ -460,7 +582,7 @@ def import_compliance(config: ConfigOpt = Path("gateway.yaml")) -> None:
             signer,
             on_written=sink.ship if sink is not None else None,
         ).run()
-    except (Busy, ComplianceError) as exc:
+    except (Busy, ComplianceError, ValueError) as exc:
         console.print(f"[red]{escape(str(exc))}[/]")
         raise typer.Exit(code=1) from exc
     finally:

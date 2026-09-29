@@ -4,7 +4,7 @@
 
 **What it is not.** It does not decide whether a request must be honoured. The GDPR gives a right to erasure "without undue delay" [G1, Art. 17(1)], and also names cases where that right does not apply. Among them is processing that is necessary "for compliance with a legal obligation", or "for the establishment, exercise or defence of legal claims" [G1, Art. 17(3)(b) and (e)]. Which applies to a given request is for the organisation to decide (ours). seatbelt provides the mechanism and records the organisation's case reference.
 
-**Status:** a design for review, checked claim by claim against its sources by a second reader.
+**Status:** implemented as `seatbelt erase` (`seatbelt.erase`, `seatbelt.locks`); the guide is `docs/deploy/erasure.md`. The design was checked claim by claim against its sources by a second reader, and the maintainer's decisions are under "Decided".
 - Legal statements quote the source map.
 - Repository facts cite files at `c80a84e`.
 - Decisions that are ours are marked "(ours)".
@@ -144,13 +144,13 @@ The docs will say plainly that a bucket under COMPLIANCE retention keeps its cop
   - an unreadable `.erased` stops the import.
 - **Report:** `seatbelt report` no longer counts the person, and shows the `seatbelt:erasure` row.
 
-## Open
+## Decided (2026-09-29)
 
-1. **Signing key.** Should `erase` run without one? The record would then be unsigned. Recommendation: require it, as the gateway does.
-2. **The suppression list.** `compliance/.erased` holds `sha256(id)` for every erased person, indefinitely. The alternative is no list, accepting that the next import restores the conversations while Anthropic still holds them. Recommendation: keep it.
-3. **Deleting from the sink.** The first version lists objects only. A later version could delete them. Under Object Lock that means deleting each version, which retention refuses; in S3, a plain delete only adds a marker [S1]. Recommendation: list only, for now.
-4. **Other people's ledgers that mention the person.** They can't be reached without editing ledgers. Is a `seatbelt search <text>` worth adding, so an operator can at least find them?
-5. **The gateway lock.** It is new: `gateway serve` would hold `<ledgers>/.lock`, as the importer holds its own. It also stops two gateways from sharing a folder, which is not supported today anyway. Any objection?
+1. **Signing key: required.** `--yes` needs `--key`, or `--config` with a signing key.
+2. **Suppression list: kept.** It is `compliance/.erased`. An unreadable list stops the import.
+3. **Sink: list only.** The object keys are printed, and nothing is deleted from the bucket.
+4. **`seatbelt search`: not now.** Other people's ledgers that mention the person are a stated limit.
+5. **Gateway lock: added.** `gateway serve` holds `<ledgers>/.lock` while it runs.
 
 ## Source map
 

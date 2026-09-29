@@ -26,9 +26,9 @@ from seatbelt.compliance.client import (
 )
 from seatbelt.compliance.importer import LOCK, STATE, Busy, Importer
 from seatbelt.gateway.config import ComplianceConfig, load_config
-from seatbelt.gateway.local import try_lock
 from seatbelt.ledger.events import Event, Kind
 from seatbelt.ledger.store import read_events
+from seatbelt.locks import try_lock
 from seatbelt.record.recorder import Recorder
 from seatbelt.report.fleet import fleet
 from seatbelt.report.timeline import timeline

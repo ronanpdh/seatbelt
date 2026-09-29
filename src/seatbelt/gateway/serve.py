@@ -21,6 +21,7 @@ from seatbelt.gateway.config import GatewayConfig, read_config
 from seatbelt.gateway.reload import Reloader
 from seatbelt.gateway.sessions import Sessions, close_open_chains
 from seatbelt.gateway.sink import S3Store, Sink
+from seatbelt.locks import hold_folder
 
 SWEEP_EVERY = 30.0  # seconds; a session closes at most this long after its idle window
 DRAIN = 30  # seconds uvicorn, then close_all, wait for in-flight requests on shutdown
@@ -146,6 +147,8 @@ def serve(path: Path) -> None:
     # first wait then reloads
     with _on_sighup(hup.set) as sighup:
         cfg, loaded = read_config(path)  # the watcher compares the file against these bytes
+        # `seatbelt erase` needs the folder to itself; a second gateway on it is unsupported
+        lock = hold_folder(cfg.ledgers, "the gateway")
         signer = load_signer(cfg, os.environ)
         host, port = _host_port(cfg.listen)
         closed = close_open_chains(cfg.ledgers, signer)
@@ -213,3 +216,4 @@ def serve(path: Path) -> None:
                     unsent = sink.stop(timeout=DRAIN)
                     if unsent:
                         _log.warning("%d ledgers not shipped yet; shipped on next start", unsent)
+                lock.close()  # only now: every session is closed and signed

@@ -12,14 +12,12 @@ import getpass
 import logging
 import os
 import secrets
-import sys
 import threading
 from collections.abc import Generator, Mapping
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import IO
 
 import uvicorn
 from pydantic import ValidationError
@@ -36,6 +34,7 @@ from seatbelt.gateway.config import (
 )
 from seatbelt.gateway.serve import make_sink
 from seatbelt.gateway.sessions import Sessions, close_open_chains
+from seatbelt.locks import RUNNING, try_lock
 
 _log = logging.getLogger(__name__)
 
@@ -49,25 +48,7 @@ UPSTREAMS = {
 IDLE = 7 * 24 * 3600.0  # nothing sweeps local sessions; the run's end closes its ledger
 SHIP_WAIT = 30.0  # seconds to wait at exit for the sink; what is left ships next run
 TIDY_WAIT = 60.0  # seconds to wait at exit for the start-up tidy (below) to finish
-RUNNING = ".running"  # in the ledgers folder: one lock file per live run
 DEAD_RUN = "run ended without closing its ledger (the process was killed)"
-
-
-def try_lock(handle: IO[bytes]) -> bool:
-    """Take the OS's exclusive lock on an open file without waiting; False if it is held.
-    Held until the handle is closed, and released by the OS when the process dies."""
-    try:
-        if sys.platform == "win32":
-            import msvcrt
-
-            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-        else:
-            import fcntl
-
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        return False
-    return True
 
 
 def _lock_file(ledgers: Path, run: str) -> Path:
@@ -110,7 +91,7 @@ def local_signer(keys: Path) -> Signer:
     return Signer.from_file(keys / KEY_FILE)
 
 
-def _user() -> str:
+def login_name() -> str:
     """Who is running: the login name, or in a container with none, the numeric user id."""
     try:
         return getpass.getuser()
@@ -169,7 +150,7 @@ def local_recorder(
     except ValidationError as exc:
         raise ValueError(f"sink: {exc}") from exc
     key = KEY_PREFIX + secrets.token_urlsafe(32)
-    principal = _user()
+    principal = login_name()
     cfg = GatewayConfig(
         listen="127.0.0.1:0",
         ledgers=ledgers,
