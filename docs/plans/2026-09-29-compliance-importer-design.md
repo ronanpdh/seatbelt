@@ -4,7 +4,7 @@
 
 **What a ledger from the importer attests.** A gateway ledger says "these bytes crossed the gateway". An imported ledger says "this is what Anthropic's Compliance API returned when seatbelt asked, at this time". The transcript is Anthropic's reconstruction, with gaps Anthropic documents (below), so every imported ledger names its source and every event carries the API's own ids and timestamps. The seatbelt signature proves only that the ledger has not changed since the import.
 
-**Status:** a design for review. Every Compliance API fact below comes from the sources in the source map at the end, read on 2026-09-29. Decisions that are ours, not the API's, are marked "(ours)". Questions for the maintainer are under "Open".
+**Status:** a design for review. Every Compliance API fact below comes from the sources in the source map at the end, read on 2026-09-29. Decisions that are ours, not the API's, are marked "(ours)". The maintainer's decisions on the open questions are under "Decided".
 
 ## Scope
 
@@ -179,15 +179,15 @@ For any horizon longer than these, or a legal hold that must survive user deleti
   - a run killed after signing, then recovery;
   - a lost state file;
   - `verify`, `reconstruct` and `report` over the imported ledgers.
-- The real API needs an Enterprise tenant with the Compliance API enabled. Until someone runs against one, the docs will say it has only been tested against the fake.
+- There is no Enterprise tenant to test on (Decided, 5). The importer is tested against the fake only, and its docs say so.
 
-## Open
+## Decided (2026-09-29)
 
-1. **Who a person is.** Imported ledgers name the owner by Anthropic's `user.id`. Gateway ledgers name them by issued-key principal or OIDC subject. So `seatbelt report` shows the same person as two principals. Is a mapping file (Anthropic user id to principal) needed in the first version, or later?
-2. **`settle`.** A long-running Cowork session that goes quiet for an hour, then resumes, becomes two segments. Is an hour right?
-3. **File and artifact content.** Download it in the first version, or keep ids, names and MD5s only? Downloads add storage and rate-limit load, and the bytes are not always what the user uploaded [C3].
-4. **Deletion requests.** A signed ledger keeps content that a user later deleted in claude.ai. That is the point for a legal hold, but it may conflict with an org's data-protection duties. The docs should say so plainly. Should there also be a documented way to drop a person's ledgers?
-5. **The real API.** None of this has been run against a live tenant. Do you have an Enterprise tenant with the Compliance API enabled to test on before 0.3.0?
+1. **Who a person is: later.** Imported ledgers name the owner by Anthropic's `user.id`. Gateway ledgers name them by issued-key principal or OIDC subject, so `seatbelt report` shows the same person as two principals. A mapping from Anthropic user id to principal is a later change.
+2. **`settle`: 1 hour.** A long-running session that goes quiet for an hour, then resumes, becomes two segments.
+3. **File and artifact content: metadata only.** The first version records ids, names, sizes and MD5s, and downloads nothing.
+4. **Deletion: documented, no tooling yet.** A signed ledger keeps content that a user later deleted in claude.ai. That is the point for a legal hold, but it may conflict with an org's data-protection duties, and the user docs say so plainly. There is no tool yet for dropping a person's ledgers.
+5. **The real API: not tested.** There is no Enterprise tenant to test on. The importer is built and tested against a fake of the documented API. Its docs and the changelog say it has not been run against a live tenant.
 
 ## Source map
 
