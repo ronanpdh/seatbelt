@@ -55,3 +55,7 @@ Signed Ed25519 attestation of each run (`seatbelt.attest`, `keygen`, `attest`, `
 ## 0.5.0 (released)
 
 - Done: published to PyPI as `seatbelt-ai` (`uv tool install seatbelt-ai`) from the release workflow through Trusted Publishing, with PyPI's attestations; module and command stay `seatbelt`
+
+## 0.5.1 (released)
+
+- Done: fixes from a review of the whole project, each checked by a second reader: gateway probe routes, request shapes and body limits, redaction, tamper evidence in `verify-pack` and `report`, the sandbox, `seatbelt run`, the importer and erase, and a release workflow that builds without the dev dependencies
