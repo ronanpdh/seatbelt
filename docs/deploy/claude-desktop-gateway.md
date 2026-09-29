@@ -27,6 +27,7 @@ Claude Desktop signs the user in with your provider in the system browser (autho
 1. Register Claude Desktop with the provider as a public client.
    - Entra ID: an app registration with the redirect URI `http://127.0.0.1/callback` under "Mobile and desktop applications" (any port is allowed) [1].
    - Okta: a Native app, with the exact loopback port you set as `redirectPort` [1].
+   - Auth0: see [Auth0](#auth0) below.
 2. Point the gateway at the provider, in `gateway.yaml`:
 
    ```yaml
@@ -39,7 +40,7 @@ Claude Desktop signs the user in with your provider in the system browser (autho
    ```
 
    The keys are found from the issuer's discovery document (`<issuer>/.well-known/openid-configuration`), kept for 5 minutes, and fetched again early when a token names a key the gateway does not hold, which is how a provider's key rotation shows. `jwks_url` overrides discovery. Only asymmetric signature algorithms can be configured (`algorithms`, default `[RS256]`), so an unsigned or HMAC-signed token is never accepted; `leeway` allows up to 60 seconds of clock skew by default.
-3. Configure the app (MDM, or the in-app configuration) [1][3]:
+3. Configure the app (MDM, or the in-app configuration) [1][3]. To use the in-app configuration on one machine, enable **Help → Troubleshooting → Enable Developer Mode** in the menu bar (on Windows, the ☰ menu of the sign-in screen). Then open **Developer → Configure Third-Party Inference…**, fill in **Connection**, and choose **Apply Changes** [5]. It is not in the Settings window.
 
    | Key | Value |
    |---|---|
@@ -51,6 +52,28 @@ Claude Desktop signs the user in with your provider in the system browser (autho
    From Desktop 2.7032.0 the same settings are also spelled `inferenceCredentialKind: "external-idp"` with `inferenceIdpOidc`; the older spelling keeps working [1][3].
 
 Users are identified by `principal_claim`, not by e-mail: the provider's own guidance is to key on the immutable id (Entra `oid`, Okta `sub`), because `email` and `preferred_username` can change or be absent [1][4]. A signed-in user's sessions are keyed by issuer and user id, so a token refresh continues the same ledger; `run.start` records `principal.auth: oidc`, `principal.issuer` and, if the token has it, `principal.name`. Revocation is the provider's: disable the user there, or take them off `allow` (a config reload applies it to their next request). A token already issued stays valid until it expires.
+
+#### Auth0
+
+Tested on 2026-09-29 with an Auth0 dev tenant, Claude Desktop 2.9939.4 on macOS, and this gateway: sign-in, a reply, and a ledger recording the user as `principal.auth: oidc` with their Auth0 `sub` and email.
+
+1. In the Auth0 dashboard, create an application of type **Native**. Native is a public client, and its token endpoint authentication method is **None**. A Regular Web application expects a client secret, which Claude Desktop does not send [1].
+   - **Allowed Callback URLs:** `http://127.0.0.1:53180/callback`. Auth0 allows wildcards only for subdomains [6], so the port is fixed, as for Okta. Any free port works if the same one goes in `redirectPort`.
+   - **Grant types:** Authorization Code and Refresh Token.
+   - **ID token expiration:** the gateway cannot revoke a token before it expires, so keep it short, for example 3600 seconds, and let the app refresh it.
+2. In `gateway.yaml`, the issuer is the tenant domain **with a trailing slash**, exactly as the tenant's discovery document gives it (`https://<tenant>/.well-known/openid-configuration`) [7]. The gateway compares `iss` exactly, so without the slash every token is refused.
+
+   ```yaml
+   oidc:
+     issuer: https://<tenant>.<region>.auth0.com/
+     audience: <the app's client id>
+     principal_claim: sub        # e.g. auth0|abc123, or google-oauth2|… for a social login
+     name_claim: email
+   ```
+
+3. In Claude Desktop, set **Issuer URL** to the same value (trailing slash included; it worked in the test), **Client ID** to the app's client ID, **Redirect port** to `53180`, and leave **Scopes** empty. As one MDM value: `{"issuer":"https://<tenant>.<region>.auth0.com/","clientId":"<client id>","redirectPort":53180}`.
+
+Not yet confirmed with Auth0: that the app refreshes the ID token silently. Auth0's docs also mention enabling offline access on an API for refresh tokens [8], and this setup requests none. If users are asked to sign in again when the ID token expires, that is the place to look.
 
 Keep `offline_access` in the scopes (it is in the default) so the app can refresh the ID token silently; with explicit `scopes` in `id_token` mode it is not added for you [1]. Google Workspace does not return an ID token on refresh, so Anthropic's docs recommend `access_token` mode there [1]; whether Google's access tokens can be checked offline as above is not established, so Google is not a tested provider for this gateway yet.
 
@@ -125,3 +148,7 @@ Desktop does not name its runs, so each user's Desktop and Cowork traffic goes i
 2. Anthropic, "Deploy with MDM": https://claude.com/docs/third-party/claude-desktop/mdm
 3. Anthropic, Claude Desktop configuration reference (`inferenceProvider`, `inferenceCredentialHelper`, `inferenceGatewayOidc`, value types): https://claude.com/docs/third-party/claude-desktop/configuration
 4. Anthropic, bootstrap server guidance (checking `iss`, `aud`, `exp` against the provider's keys; keying on immutable ids): https://claude.com/docs/third-party/claude-desktop/bootstrap; Microsoft, ID token claims reference: https://learn.microsoft.com/en-us/entra/identity-platform/id-token-claims-reference
+5. Anthropic, Claude Desktop in-app configuration (Developer Mode, **Configure Third-Party Inference…**, **Apply Changes**): https://claude.com/docs/third-party/claude-desktop/in-app-configuration
+6. Auth0, Application Settings ("Allowed Callback URLs … Wildcards: Use * for subdomains"): https://auth0.com/docs/get-started/applications/application-settings
+7. Auth0's sample tenant discovery document, read 2026-09-29 (https://samples.auth0.com/.well-known/openid-configuration): `"issuer": "https://samples.auth0.com/"`; the tenant in the test gave the same form
+8. Auth0, Get Refresh Tokens ("you must include the offline_access scope … Be sure to initiate Offline Access in your API"): https://auth0.com/docs/secure/tokens/refresh-tokens/get-refresh-tokens

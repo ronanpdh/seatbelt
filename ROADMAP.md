@@ -36,7 +36,7 @@ Signed Ed25519 attestation of each run (`seatbelt.attest`, `keygen`, `attest`, `
 - Done: fleet report, `seatbelt report`
 - Done: gateway Docker image (`docker/Dockerfile.gateway`) and deployment docs, including Claude Desktop and Cowork via MDM (`docs/deploy/`)
 
-## 0.3.0
+## 0.3.0 (released)
 
 - Done: OpenAI Responses format (current Codex, the OpenAI Agents SDK) and a `codex` launcher preset
 - Done: local recording, `seatbelt run` with no gateway: the CLI keeps its own sign-in (subscriptions included) and each run is signed on the machine
