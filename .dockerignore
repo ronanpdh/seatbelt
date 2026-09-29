@@ -5,4 +5,5 @@
 !LICENSE
 !src
 !docker/requirements-gateway.txt
+!docker/requirements-build.txt
 src/**/__pycache__

@@ -10,9 +10,14 @@
 # the digest pins the image; Dependabot keeps it current
 FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS build
 WORKDIR /src
+# the build backend pinned by hash, then the wheel built with it and nothing fetched; the check
+# fails the build if the pin falls outside pyproject's [build-system] range
+COPY docker/requirements-build.txt /tmp/requirements-build.txt
+RUN pip install --no-cache-dir --require-hashes --only-binary :all: -r /tmp/requirements-build.txt
 COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
-RUN pip wheel --no-cache-dir --no-deps --wheel-dir /dist .
+RUN pip wheel --no-cache-dir --no-deps --no-build-isolation --check-build-dependencies \
+    --wheel-dir /dist .
 
 FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1

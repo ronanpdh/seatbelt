@@ -14,7 +14,7 @@ Seatbelt is built so the record proves itself:
 
 - **Attributable.** Every event names its actor (agent, user, model, tool, policy) and its parent, so lineage is explicit: a response links to its request, a tool result to its call, a policy check to the call it judged, an action to the decision that authorised it.
 - **Reconstructable.** One JSONL file per run, one event per line, in order. A timeline can be rebuilt with nothing but the file.
-- **Provable.** Each event carries the SHA-256 of the previous one and of its own canonical form. Any edit, reorder, insertion or deletion inside the file breaks the chain at a named sequence number. A signed manifest pins the final hash and file digest, so a rewritten or truncated tail is caught too.
+- **Provable.** Each event carries the SHA-256 of the previous one and of its own canonical form. Any edit, reorder, insertion or deletion inside the file breaks the chain at a named sequence number. A signed manifest pins the final hash and file digest, so a re-chained ledger or a truncated tail is caught too, when the signature is checked with the public key.
 - **Redacted before it is provable.** Secrets are scrubbed before hashing and writing, so the stored, signed content never contained them.
 - **Self-contained.** No database and no network to verify. The process being observed, or the organisation's recording gateway, writes the files, and the reviewer checks them with the CLI and a public key.
 
@@ -102,11 +102,11 @@ Which clients it records:
 
 ### Fleet report
 
-`seatbelt report <runs>` sums a runs directory by employee, model and tool: runs, model calls, tokens, policy refusals, and the failed, open, unsigned, forged and broken runs. Only chains that verify are counted.
+`seatbelt report [runs...]` sums one or more runs directories (with none, this machine's runs) by person, model and tool: runs, model calls, tokens, policy refusals, and the failed, open, unsigned, forged and broken runs. `--people` joins one person's ids across sources. Only chains that verify are counted.
 
 ### Supply chain
 
-Tagged releases attach the wheel, sdist, a CycloneDX SBOM and the Sigstore-signed SLSA build provenance (`seatbelt_ai-<version>.intoto.jsonl`) and publish the wheel and sdist to PyPI as `seatbelt-ai` through Trusted Publishing, with PyPI's attestations. CI runs ruff, pyright strict and pytest on Python 3.12 and 3.13, CodeQL and Hadolint; Docker base images are pinned by digest and the gateway image's dependencies by hash. OpenSSF Scorecard and Best Practices evidence are in the repository.
+Tagged releases attach the wheel, sdist, a CycloneDX SBOM and the Sigstore-signed SLSA build provenance (`seatbelt_ai-<version>.intoto.jsonl`) and publish the wheel and sdist to PyPI as `seatbelt-ai` through Trusted Publishing, with PyPI's attestations. The job that builds and attests them installs no dev dependencies and runs no project code; the tests run in a separate job with a read-only token, and the gateway image is pushed only after the reviewer-approved PyPI upload. CI runs ruff, pyright strict and pytest on Python 3.12 and 3.13, CodeQL and Hadolint; uv is pinned to one version, Docker base images are pinned by digest, and the gateway image's dependencies and build backend by hash. OpenSSF Scorecard and Best Practices evidence are in the repository.
 
 ## How to use it
 
@@ -119,6 +119,14 @@ uv tool install seatbelt-ai   # the `seatbelt` command, in its own environment
 The package is `seatbelt-ai` on PyPI; `seatbelt` there is an unrelated project. To work on seatbelt itself, `git clone https://github.com/ronanpdh/seatbelt && cd seatbelt && uv sync`.
 
 ### Record your own agent
+
+Install the library into your agent's environment, with the extra for your SDK:
+
+```sh
+pip install "seatbelt-ai[anthropic]"      # or: uv add "seatbelt-ai[openai-agents]"
+```
+
+The import name is `seatbelt`, which the unrelated `seatbelt` project on PyPI also uses: install `seatbelt-ai`, never `seatbelt`, and don't install both in one environment. The `uv tool install` above puts the CLI in its own environment, where your code can't import it.
 
 ```python
 from pathlib import Path
@@ -194,10 +202,10 @@ Sandboxed:
 
 ```sh
 rm -rf dist && uv build && docker build -f docker/Dockerfile -t seatbelt-target .
-uv run seatbelt scenarios scenarios/ --target my_agent:target --image seatbelt-target --target-dir .
+uv run seatbelt scenarios scenarios/ --target my_agent:target --image seatbelt-target --target-dir agent/
 ```
 
-Extend the image with your dependencies (`FROM seatbelt-target`). Keep keys, `.env` and `runs/` outside `--target-dir`; everything under it is visible to the target.
+Extend the image with your dependencies (`FROM seatbelt-target`). Keep keys, `.env` and `runs/` outside `--target-dir`; everything under it is visible to the target. Point it at the folder with your agent's code (`agent/my_agent.py` here): the default, the current directory, holds `runs/`, the default `--out`.
 
 ### Run it for a team
 
@@ -207,7 +215,7 @@ uv run seatbelt keygen keys
 # write gateway.yaml: signing_key: keys/seatbelt.key, ledgers: runs, upstreams (see docs/deploy/gateway.md)
 uv run seatbelt gateway keygen --user alice@corp --config gateway.yaml
 uv run seatbelt gateway serve --config gateway.yaml
-seatbelt run claude                          # on alice's machine, with ~/.config/seatbelt/gateway.toml
+seatbelt run claude                          # on alice's machine, with gateway and key in ~/.config/seatbelt/config.toml
 uv run seatbelt report runs --pubkey keys/seatbelt.pub
 ```
 
@@ -226,18 +234,23 @@ The recipient needs the zip, the public key and the harness. Nothing else.
 
 | Command | Does | Exit 1 when |
 |---|---|---|
+| `seatbelt run <cli> [--config] [--exe] [-- args]` | runs `claude`, `codex` or `gemini`, recorded on this machine or through your gateway | bad config or unknown CLI (127: executable not found); otherwise the CLI's own exit code |
+| `seatbelt report [runs...] [--pubkey] [--people] [--json]` | usage by person, model and tool; refused, failed, open and unsigned runs. Takes several folders; `--people` joins one person's ids ([guide](deploy/gateway.md#one-row-per-person)). With no `runs`, this machine's runs | a ledger is broken, or forged with a key given; a bad people file |
+| `seatbelt runs [--limit]` | lists this machine's runs by name, newest first | |
+| `seatbelt verify [run or ledger] [--pubkey]` | checks the hash chain and attestation; a local run against this machine's key. With no argument, the latest run | broken, forged, incomplete, or unattested with a key given |
+| `seatbelt reconstruct [run or ledger] [--pubkey]` | prints the run as a timeline; with no argument, the latest run | same as verify |
 | `seatbelt demo [--out runs]` | records a scripted example run | |
-| `seatbelt verify <ledger> [--pubkey]` | checks chain and attestation | broken, forged, incomplete, or unattested with a key given |
-| `seatbelt reconstruct <ledger> [--pubkey]` | prints the run as a timeline | same as verify |
 | `seatbelt keygen [dir]` | writes an Ed25519 key pair | a key file exists |
-| `seatbelt attest <ledger> --key` | signs a finished ledger | broken or incomplete chain, sidecar exists |
+| `seatbelt attest <ledger> --key` | signs a finished ledger into `<id>.attest.json` | broken or incomplete chain, sidecar exists |
 | `seatbelt scenarios <corpus> --target m:f [--out] [--key] [--list] [--image] [--target-dir] [--timeout]` | runs the adversarial corpus | any finding (2: bad target) |
-| `seatbelt pack <runs> --out <zip> [--key] [--corpus]` | builds an evidence pack | broken ledger, output exists |
+| `seatbelt pack <runs> --out <zip> [--key] [--corpus]` | bundles a runs directory into an evidence pack | broken ledger, output exists |
 | `seatbelt verify-pack <zip> [--pubkey]` | re-checks a pack offline | forged, or a broken ledger inside |
+| `seatbelt erase <runs...> (--principal <id> \| --person <name> --people <file>) --case <ref> [--key \| --config] [--yes]` | removes a person's ledgers inside a signed record; lists only without `--yes` ([guide](deploy/erasure.md)) | a folder in use, a bad people file or config, no signing key |
 | `seatbelt gateway keygen --user <id> [--config]` | issues a gateway key; stores only its hash | the user already has a key |
 | `seatbelt gateway serve [--config]` | runs the recording gateway | bad config or signing key |
-| `seatbelt run <cli> [--config] [--exe] [-- args]` | launches `claude` or `codex` through the gateway | bad config or unknown CLI (127: executable not found); otherwise the CLI's exit code |
-| `seatbelt report <runs> [--pubkey] [--json]` | usage by employee, model and tool | a ledger is broken, forged with a key given, or the key is unreadable |
+| `seatbelt import compliance [--config]` | imports Claude Enterprise transcripts from Anthropic's Compliance API into signed ledgers ([guide](deploy/compliance-import.md)) | bad config, key or API error, or a conversation that needs a person to check |
+
+The README has the same table; keep the two in step.
 
 ## What it does not do
 
