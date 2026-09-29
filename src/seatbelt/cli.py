@@ -31,6 +31,7 @@ from seatbelt.scenarios.model import OWASP_AGENTIC, ScenarioError, load_corpus
 from seatbelt.scenarios.runner import Target
 from seatbelt.scenarios.runner import run as run_corpus
 from seatbelt.scenarios.sandbox import SandboxError, run_sandboxed
+from seatbelt.terminal import printable
 from seatbelt.verify.attest import Attestation, AttestVerdict, verify_attestation
 from seatbelt.verify.chain import Verdict, verify_file
 
@@ -182,7 +183,7 @@ def runs(
         try:
             events = list(read_events(path))
         except (OSError, UnicodeDecodeError, LedgerError):
-            table.add_row(Text(path.stem), "", "", "[red]unreadable[/]")
+            table.add_row(Text(printable(path.stem)), "", "", "[red]unreadable[/]")
             continue
         first = events[0] if events else None
         name = first.attrs.get("run.name") if first is not None else None
@@ -190,7 +191,7 @@ def runs(
         calls = sum(e.kind is Kind.MODEL_REQUEST for e in events)
         ended = bool(events) and events[-1].kind is Kind.RUN_END
         table.add_row(
-            Text(name if isinstance(name, str) else path.stem),
+            Text(printable(name if isinstance(name, str) else path.stem)),
             started,
             str(calls),
             "ended" if ended else "[yellow]open[/]",
@@ -481,19 +482,23 @@ def erase(
         console.print(Text(f"\n{p.folder}", style="bold"))
         for t in p.targets:
             what = "leftover of an earlier erasure" if t.leftover else "ledger"
-            console.print(Text(f"  {what}: {t.ledger.name} ({t.ledger.stat().st_size} bytes)"))
+            size = t.ledger.stat().st_size
+            console.print(Text(f"  {what}: {printable(t.ledger.name)} ({size} bytes)"))
             for k in t.object_keys:
-                console.print(Text(f"    in the sink as {k}: not deleted by erase"))
+                console.print(Text(f"    in the sink as {printable(k)}: not deleted by erase"))
         for o in p.orphans:
-            console.print(Text(f"  leftover: {o.relative_to(p.folder)}"))
+            console.print(Text(f"  leftover: {printable(str(o.relative_to(p.folder)))}"))
         if p.state_entries:
             console.print(Text(f"  importer state entries: {len(p.state_entries)}"))
         if p.unmatched:
             console.print(
                 Text(f"  {len(p.unmatched)} ledgers name no principal, or unknown: not searched")
             )
-        if p.unreadable:
-            console.print(Text(f"  unreadable, left alone: {', '.join(p.unreadable)}"))
+        if others := [u for u in p.unreadable if u not in p.to_check]:
+            console.print(Text(f"  unreadable, left alone: {', '.join(map(printable, others))}"))
+        if p.to_check:
+            names = ", ".join(map(printable, p.to_check))
+            console.print(Text(f"  unreadable, may be theirs, not erased: {names}", style="red"))
         if p.empty:
             console.print(Text("  nothing to erase"))
     if cfg is not None:
@@ -507,6 +512,7 @@ def erase(
     if not yes:
         console.print("\nNothing changed. Run again with --yes to erase.")
         return
+    to_check: list[str] = []
     try:
         if key is not None:
             signer = Signer.from_file(key)
@@ -523,8 +529,10 @@ def erase(
                     raise Busy(f"{folder}: local runs are recording: {', '.join(live)}")
             for folder in folders:
                 r = do_erase(folder, ids, case, signer, login_name())
+                to_check += [str(folder / name) for name in r.to_check]
                 if r.closed:
-                    console.print(Text(f"{folder}: finished interrupted erasures {r.closed}"))
+                    closed = ", ".join(map(printable, r.closed))
+                    console.print(Text(f"{folder}: finished interrupted erasures {closed}"))
                 if r.record is None:
                     console.print(Text(f"{folder}: nothing to erase"))
                     continue
@@ -538,6 +546,14 @@ def erase(
     except (AttestError, OSError, ValueError) as exc:
         console.print(f"[red]{escape(str(exc))}[/]")
         raise typer.Exit(code=1) from exc
+    if to_check:
+        console.print(
+            "[red]Not erased: these ledgers cannot be read, and are, or may be, theirs. Repair "
+            "or remove each by hand:[/]"
+        )
+        for name in to_check:
+            console.print(Text(f"  {printable(name)}"))
+        raise typer.Exit(code=1)
 
 
 importer = typer.Typer(help="Import records kept elsewhere into signed ledgers.")
@@ -600,11 +616,15 @@ def import_compliance(config: ConfigOpt = Path("gateway.yaml")) -> None:
     console.print(f"started {summary.started}; last request-id {summary.last_request_id}")
     console.print(f"ledgers: {root}")
     for closed in summary.closed:
-        console.print(f"[yellow]closed {escape(closed)}, left open by a killed import[/]")
+        console.print(
+            f"[yellow]closed {escape(printable(closed))}, left open by a killed import[/]"
+        )
     for skipped in summary.skipped:
-        console.print(f"[yellow]skipped {escape(skipped)}; retried next run[/]")
+        console.print(f"[yellow]skipped {escape(printable(skipped))}; retried next run[/]")
     for stuck in summary.stuck:
-        console.print(f"[red]{escape(stuck)}: needs a person to check; see the log above[/]")
+        console.print(
+            f"[red]{escape(printable(stuck))}: needs a person to check; see the log above[/]"
+        )
     if not summary.ok:
         raise typer.Exit(code=1)
 
@@ -652,7 +672,9 @@ def report(
     json_out: Annotated[bool, typer.Option("--json", help="print the report as JSON")] = False,
 ) -> None:
     """Usage across runs directories by person, model and tool, with refused, failed, open and
-    unsigned runs. Exit 1 if any ledger is broken or, with --pubkey, forged. With no
+    unsigned runs. Exit 1 if any ledger is broken or missing (its signature left without it)
+    or, with --pubkey, forged or ended but unsigned; those are not counted. A ledger deleted
+    together with its signature leaves no trace, so no report can find it. With no
     directory: the runs `seatbelt run` recorded here, checked against this machine's key."""
     if not runs:
         try:
@@ -676,29 +698,33 @@ def report(
         by_person = Table(Column("person", no_wrap=True), "runs", "calls", "in", "out", "denied")
         for name, u in fleet.by_principal.items():
             by_person.add_row(
-                Text(name), *map(str, (u.runs, u.calls, u.input_tokens, u.output_tokens, u.denials))
+                Text(printable(name)),
+                *map(str, (u.runs, u.calls, u.input_tokens, u.output_tokens, u.denials)),
             )
         models = Table(Column("model", no_wrap=True), "runs", "calls", "in", "out", "denied")
         for name, u in fleet.by_model.items():
             models.add_row(
-                Text(name), *map(str, (u.runs, u.calls, u.input_tokens, u.output_tokens, u.denials))
+                Text(printable(name)),
+                *map(str, (u.runs, u.calls, u.input_tokens, u.output_tokens, u.denials)),
             )
         tools = Table(Column("tool", no_wrap=True), "calls")
         for name, n in fleet.by_tool.items():
-            tools.add_row(Text(name), str(n))
+            tools.add_row(Text(printable(name)), str(n))
         for table in (by_person, models, tools):
             console.print(table)
         for person, ids in fleet.people.items():
-            console.print(Text(f"{person}: {', '.join(ids)}"))
+            console.print(Text(printable(f"{person}: {', '.join(ids)}")))
         console.print(f"{fleet.runs} runs")
         for label, ids in (
             ("failed", fleet.failed),
             ("incomplete", fleet.incomplete),
             ("unattested", fleet.unattested),
             ("forged", fleet.forged),
+            ("ended but unsigned", fleet.unsigned),
             ("broken", fleet.broken),
+            ("missing", fleet.missing),
         ):
             if ids:
-                console.print(Text(f"{label}: {len(ids)} ({', '.join(ids)})"))
-    if fleet.broken or fleet.forged:
+                console.print(Text(printable(f"{label}: {len(ids)} ({', '.join(ids)})")))
+    if fleet.broken or fleet.forged or fleet.unsigned or fleet.missing:
         raise typer.Exit(code=1)

@@ -12,10 +12,12 @@ from rich.text import Text
 from seatbelt.gateway.formats import as_dict, as_dicts
 from seatbelt.ledger.events import Event, Kind
 from seatbelt.ledger.store import read_events
+from seatbelt.terminal import printable
 
 
 def _summary(event: Event) -> str:
-    return " ".join(_describe(event).split())[:80]
+    # escaped before it is cut: a cut escape sequence would leave the terminal inside it
+    return " ".join(printable(_describe(event)).split())[:80]
 
 
 def _failed(error: object) -> str:
@@ -82,7 +84,7 @@ def _describe(event: Event) -> str:
 
 def timeline(path: Path, console: Console | None = None) -> None:
     console = console or Console()
-    table = Table(title=Text(f"run {path.stem}"), show_lines=False)
+    table = Table(title=Text(f"run {printable(path.stem)}"), show_lines=False)
     table.add_column("seq", justify="right", style="dim")
     table.add_column("time", style="dim")
     table.add_column("kind")
@@ -99,5 +101,6 @@ def timeline(path: Path, console: Console | None = None) -> None:
             _summary(e),
             e.hash[:10],
         )
-        table.add_row(*(Text(c) for c in cells))  # ledger text is data, never Rich markup
+        # ledger text is data: never Rich markup, nor terminal control sequences
+        table.add_row(*(Text(printable(c)) for c in cells))
     console.print(table)

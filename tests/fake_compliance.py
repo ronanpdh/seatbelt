@@ -123,8 +123,9 @@ class FakeCompliance:
         messages = chat["messages"]
         if chat["meta"].get("deleted_at"):
             messages = [{**m, "content": []} for m in messages]
+        more = chat.get("has_more", False)  # a server that cut the chat short
         return httpx2.Response(
-            200, json={**chat["meta"], "chat_messages": messages, "has_more": False}
+            200, json={**chat["meta"], "chat_messages": messages, "has_more": more}
         )
 
 
