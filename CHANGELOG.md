@@ -4,6 +4,8 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-09-29
+
 ### Changed
 - Dependency floors are the lowest releases the tests pass with, and never below the first release from which no later one has a known advisory. So `seatbelt-ai` now installs beside frameworks that cap them, such as CrewAI 1.x, which could not be installed with 0.5.1:
   - pydantic 2.12.2, rich 13.8, typer 0.17, uvicorn 0.34 and pyyaml 6.0.2;
@@ -236,7 +238,8 @@ A review of the whole project, with every finding checked by a second reader. Up
 - Tests: hash determinism, chain link and resume, property test that any edit breaks the chain, deletion detection, redaction, recorder lineage and failure path, CLI round trip and tamper detection.
 - Project scaffolding: uv, ruff, pyright strict, pytest, Hypothesis, pre-commit, CI, Dependabot, Scorecard, SECURITY.md, CONTRIBUTING.md, STANDARDS.md, ROADMAP.md.
 
-[Unreleased]: https://github.com/ronanpdh/seatbelt/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/ronanpdh/seatbelt/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.5.2
 [0.5.1]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.5.1
 [0.5.0]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.5.0
 [0.4.0]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.4.0

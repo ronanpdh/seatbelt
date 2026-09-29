@@ -61,3 +61,7 @@ Signed Ed25519 attestation of each run (`seatbelt.attest`, `keygen`, `attest`, `
 ## 0.5.1 (released)
 
 - Done: fixes from a review of the whole project, each checked by a second reader: gateway probe routes, request shapes and body limits, redaction, tamper evidence in `verify-pack` and `report`, the sandbox, `seatbelt run`, the importer and erase, and a release workflow that builds without the dev dependencies
+
+## 0.5.2 (released)
+
+- Done: dependency floors that are tested and free of known advisories, so `seatbelt-ai` installs beside frameworks such as CrewAI 1.x; a `lowest` workflow that tests and audits them weekly; lockfile-only Dependabot; the gateway image builds its requirements from `uv.lock`
