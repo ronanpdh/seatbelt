@@ -4,6 +4,9 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 
 ## [Unreleased]
 
+### Added
+- The OpenSSF Best Practices badge (bestpractices.dev project 15081) in the README; `docs/openssf-best-practices.md` names CodeQL among the static analysis tools.
+
 ## [0.3.0] - 2026-09-29
 
 ### Added
