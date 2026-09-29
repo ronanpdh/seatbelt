@@ -16,10 +16,11 @@ import signal
 import stat
 import subprocess
 import sys
+import threading
 import tomllib
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
@@ -102,9 +103,24 @@ _PROVIDER_KEYS = (
     "GOOGLE_GENAI_USE_VERTEXAI",
     "GOOGLE_GENAI_USE_GCA",
 )
+# these switch Claude Code to Bedrock or Vertex AI, which do not use the base URL, or are a
+# subscription login it could use itself: removed, not set to a value it may read as false
+_AROUND_GATEWAY = (
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "ANTHROPIC_BEDROCK_BASE_URL",
+    "ANTHROPIC_VERTEX_BASE_URL",
+    "ANTHROPIC_VERTEX_PROJECT_ID",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+)
+# seatbelt's own secrets, already read by this process: never the CLI's or its tools'
+_SIGNING_KEY_ENV = "SEATBELT_SIGNING_KEY"
+_SINK_ENV_PREFIX = "SEATBELT_SINK_"
 _HEADER_SEPARATOR = {"ANTHROPIC_CUSTOM_HEADERS": "\n", "GEMINI_CLI_CUSTOM_HEADERS": ", "}
 
-EndRun = Callable[[str, str, str], None]  # (gateway url, key, run name)
+# (gateway url, key, run name) -> the gateway's HTTP status, None if it was not reached
+EndRun = Callable[[str, str, str], int | None]
 
 
 def data_dir(env: Mapping[str, str] = os.environ, platform: str = sys.platform) -> Path:
@@ -149,10 +165,13 @@ _CLIENT_KEYS = {"gateway", "url", "key", "ledgers", "upstreams", "sink"}
 def load_client_config(path: Path | None = None) -> ClientConfig:
     """The config at `path`; with none given, `config.toml`, else 0.2.0's `gateway.toml`
     (`url` is read as `gateway`), else none: record locally."""
+    ignored: Path | None = None
     if path is None:
         path = next((p for p in (DEFAULT_CONFIG, LEGACY_CONFIG) if p.exists()), None)
         if path is None:
             return ClientConfig()
+        if path == DEFAULT_CONFIG and LEGACY_CONFIG.exists():
+            ignored = LEGACY_CONFIG
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as exc:
@@ -173,6 +192,12 @@ def load_client_config(path: Path | None = None) -> ClientConfig:
     if sink is not None and not isinstance(sink, dict):
         raise ValueError(f"{path}: [sink] is a table")
     ledgers = data.get("ledgers")
+    if ignored is not None and gateway is None:
+        print(
+            f"warning: {ignored} is ignored, since {path} is read instead and names no "
+            f'gateway: runs are recorded on this machine. Put gateway = "..." and key in {path}',
+            file=sys.stderr,
+        )
     return ClientConfig(
         gateway=gateway.rstrip("/") if isinstance(gateway, str) else None,
         key=key if isinstance(key, str) else None,
@@ -187,18 +212,38 @@ def readable_by_others(path: Path) -> bool:
     return bool(path.stat().st_mode & (stat.S_IRWXG | stat.S_IRWXO))
 
 
+def own_secrets(cfg: ClientConfig) -> list[str]:
+    """The environment variables the config names for seatbelt's own secrets: the sink's
+    credentials, which may be renamed from their defaults."""
+    sink = cfg.sink or {}
+    return [v for k in ("access_key_env", "secret_key_env") if isinstance(v := sink.get(k), str)]
+
+
+def _seatbelts(name: str, drop: Collection[str]) -> bool:
+    return name == _SIGNING_KEY_ENV or name.startswith(_SINK_ENV_PREFIX) or name in drop
+
+
 def environment(
-    cli: str, url: str, key: str, run: str, base: Mapping[str, str], local: bool = False
+    cli: str,
+    url: str,
+    key: str,
+    run: str,
+    base: Mapping[str, str],
+    local: bool = False,
+    drop: Collection[str] = (),
 ) -> dict[str, str]:
     """The CLI's environment. Through a gateway, its own provider credentials are removed,
-    so it cannot go around the gateway by accident; locally they are what it signs in with."""
+    so it cannot go around the gateway by accident; locally they are what it signs in with.
+    Seatbelt's own secrets (a signing key, the sink's credentials, and the names in `drop`)
+    are removed either way."""
     presets = LOCAL_PRESETS if local else PRESETS
     if cli in NOT_YET:
         raise ValueError(f"{cli} is not supported yet: {NOT_YET[cli]}")
     if cli not in presets:
         where = "locally" if local else "through a gateway"
         raise ValueError(f"no preset to record {cli} {where}; known: {', '.join(presets)}")
-    env = dict(base) if local else {k: v for k, v in base.items() if k not in _PROVIDER_KEYS}
+    around = () if local else (*_PROVIDER_KEYS, *_AROUND_GATEWAY)
+    env = {k: v for k, v in base.items() if k not in around and not _seatbelts(k, drop)}
     for name, template in presets[cli].items():
         value = template.format(url=url, key=key, run=run)
         if name in _HEADER_SEPARATOR and base.get(name):
@@ -325,17 +370,50 @@ def gemini_warnings(
     return warnings
 
 
-def end_run(url: str, key: str, run: str) -> None:
+_CLAUDE_SWITCHES = ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX")
+
+
+def claude_warnings(config_dir: Path, cwd: Path) -> list[str]:
+    """What in Claude Code's settings would take its traffic around the gateway: an `env`
+    block, which Claude Code applies over the environment it is given, switching it to
+    Bedrock or Vertex AI, neither of which uses the base URL."""
+    warnings: list[str] = []
+    project = cwd / ".claude"
+    for path in (
+        config_dir / "settings.json",
+        project / "settings.json",
+        project / "settings.local.json",
+    ):
+        env = _setting(_settings(path) or {}, "env")
+        if not isinstance(env, dict):
+            continue
+        values = cast(dict[str, Any], env)
+        off = ("", "0", "false")  # which values it reads as false is not known here: a guess
+        found = [n for n in _CLAUDE_SWITCHES if str(values.get(n, "")).lower() not in off]
+        if found:
+            warnings.append(
+                f"{path} sets {', '.join(found)}, which sends Claude Code to Bedrock or Vertex "
+                "AI directly, unrecorded. Remove it from that file's env block"
+            )
+    return warnings
+
+
+def end_run(url: str, key: str, run: str) -> int | None:
+    """End the run at the gateway: 204 if it recorded any of it, 404 if none, None if the
+    gateway was not reached (its idle sweeper then closes the run)."""
     request = urllib.request.Request(  # noqa: S310 - the org's configured gateway URL
         f"{url}/seatbelt/runs/{run}/end",
         method="POST",
         headers={"authorization": f"Bearer {key}"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=10):  # noqa: S310
-            pass
+        with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310
+            return cast(int, response.status)
+    except urllib.error.HTTPError as exc:
+        exc.close()
+        return exc.code
     except (urllib.error.URLError, OSError):
-        pass  # 404 (nothing was sent) or unreachable: the idle sweeper closes it
+        return None
 
 
 def _gemini_warnings(local: bool) -> None:
@@ -348,15 +426,43 @@ def _gemini_warnings(local: bool) -> None:
         print(f"warning: {warning}", file=sys.stderr)
 
 
+def _claude_warnings() -> None:
+    config_dir = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+    for warning in claude_warnings(config_dir, Path.cwd()):
+        print(f"warning: {warning}", file=sys.stderr)
+
+
+GRACE = 10.0  # seconds the CLI has to exit after seatbelt passes it SIGTERM or SIGHUP
+_PASSED_ON = tuple(getattr(signal, n) for n in ("SIGTERM", "SIGHUP") if hasattr(signal, n))
+
+
 def _spawn(command: list[str], env: dict[str, str]) -> int:
+    """Run the CLI; its exit status as a shell gives it: 128 + the signal's number if a signal
+    killed it. SIGTERM and SIGHUP sent to seatbelt are passed on to the CLI, which is killed
+    if it has not exited GRACE seconds later: seatbelt outlives it to close the run."""
     child = subprocess.Popen(command, env=env)  # noqa: S603 - the user's CLI
     # Ctrl-C belongs to the child (Claude Code cancels a response with it); the terminal
     # sends it to both. Ignore it only after the spawn: an ignored signal is inherited.
     previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    killer: list[threading.Timer] = []
+
+    def pass_on(signum: int, _frame: object) -> None:
+        child.send_signal(signum)
+        if not killer:
+            killer.append(threading.Timer(GRACE, child.kill))
+            killer[0].daemon = True
+            killer[0].start()
+
+    handlers = {s: signal.signal(s, pass_on) for s in _PASSED_ON}
     try:
-        return child.wait()
+        code = child.wait()
     finally:
+        for s, handler in handlers.items():
+            signal.signal(s, handler)
         signal.signal(signal.SIGINT, previous)
+        for timer in killer:
+            timer.cancel()
+    return 128 - code if code < 0 else code
 
 
 def run_cli(
@@ -377,15 +483,38 @@ def run_cli(
     if gateway is None:
         return _run_local(cli, args, cfg, exe, run)
     url, key = gateway
-    env = environment(cli, url, key, run, os.environ)
+    env = environment(cli, url, key, run, os.environ, drop=own_secrets(cfg))
+    removed = [n for n in _AROUND_GATEWAY if os.environ.get(n)]
+    if removed:
+        print(
+            f"warning: {', '.join(removed)} removed from {cli}'s environment: they would take "
+            "it around the gateway, or give it a login of its own",
+            file=sys.stderr,
+        )
+    if cli == "claude":
+        _claude_warnings()
+    print(f"seatbelt: recording {cli} through the gateway at {url}", file=sys.stderr)
     try:
-        return _spawn([exe or cli, *arguments(cli, url, run), *args], env)
+        code = _spawn([exe or cli, *arguments(cli, url, run), *args], env)
     finally:
-        end(url, key, run)
+        status = end(url, key, run)
+    if status == 204:
+        print(f"seatbelt: recorded run {run} at {url}", file=sys.stderr)
+    elif status == 404:
+        print(f"seatbelt: nothing recorded ({cli} sent no model requests)", file=sys.stderr)
+    else:
+        print(
+            f"seatbelt: could not end run {run} at {url} (status {status or 'none'}); the "
+            "gateway closes it when idle, if it recorded anything",
+            file=sys.stderr,
+        )
+    return code
 
 
 def _run_local(cli: str, args: list[str], cfg: ClientConfig, exe: str | None, run: str) -> int:
     environment(cli, "", "", run, {}, local=True)  # an unsupported CLI fails before any start
+    where = f"no gateway in {cfg.path}" if cfg.path is not None else "no client config"
+    print(f"seatbelt: recording {cli} on this machine ({where})", file=sys.stderr)
     try:
         from seatbelt.gateway.local import local_recorder
     except ImportError as exc:  # a broken install: the server packages are dependencies
@@ -395,7 +524,7 @@ def _run_local(cli: str, args: list[str], cfg: ClientConfig, exe: str | None, ru
     upstreams = {**chained_upstreams(os.environ), **cfg.upstreams}
     with local_recorder(ledgers, root / "keys", run, cfg.sink, upstreams) as recorder:
         url = local_url(recorder.url, recorder.key, run)
-        env = environment(cli, url, recorder.key, run, os.environ, local=True)
+        env = environment(cli, url, recorder.key, run, os.environ, True, own_secrets(cfg))
         try:
             extra = arguments(cli, recorder.url, run, local=True)
             code = _spawn([exe or cli, *extra, *args], env)

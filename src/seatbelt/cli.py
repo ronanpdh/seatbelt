@@ -1,6 +1,7 @@
 import contextlib
 import importlib
 import os
+import shlex
 import sys
 from pathlib import Path
 from typing import Annotated, cast
@@ -290,7 +291,10 @@ def demo(out: Path = Path("runs")) -> None:
         d = rec.decision("issue full refund", authority="agent:auto-under-100", basis=[u.id, p.id])
         rec.action("POST /refunds", target="payments-api", decision_id=d.id)
         rec.outcome("refund issued", success=True)
-        console.print(f"wrote {rec.ledger.path}")
+    console.print(f"wrote {escape(str(rec.ledger.path))}")
+    path = escape(shlex.quote(str(rec.ledger.path)))  # `seatbelt runs` lists only local runs
+    console.print(f"Check it with:  seatbelt verify {path}", highlight=False)
+    console.print(f"Replay it with: seatbelt reconstruct {path}", highlight=False)
 
 
 def _import_target(spec: str) -> Target:
@@ -632,6 +636,9 @@ def run(
     except FileNotFoundError as exc:
         console.print(f"[red]{escape(str(exc))}[/]")
         raise typer.Exit(code=127) from exc
+    except (AttestError, OSError) as exc:  # a bad signing key, a CLI that cannot be run
+        console.print(f"[red]{escape(str(exc))}[/]")
+        raise typer.Exit(code=1) from exc
     raise typer.Exit(code=code)
 
 

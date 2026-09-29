@@ -87,6 +87,8 @@ class SeatbeltProcessor(TracingProcessor):
                     name, basis = self._parent_agent(span, None)
                     outcome = "triggered" if data.triggered else "passed"
                     self._rec.decision(f"guardrail {data.name} {outcome}", name, basis)
+                case AgentSpanData():
+                    self._agents.pop(span.span_id, None)  # its handoffs and guardrails ended
                 case _:
                     pass
 

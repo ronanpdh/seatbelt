@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -34,6 +35,7 @@ HARDENING = [
 ]
 _VERSION_PROBE = "import importlib.metadata as m; print(m.version('seatbelt-ai'))"
 _PROBE_TIMEOUT = 30
+MAX_LEDGER = 64 * 1024 * 1024  # bytes read of a scenario's ledger, which the container wrote
 
 
 class SandboxError(Exception):
@@ -111,10 +113,32 @@ class Docker:
         self.cli("kill", name, timeout=_PROBE_TIMEOUT)
 
 
+def _hidden_in(target_dir: Path, runs: Path) -> str | None:
+    """Where `runs` is under /target in the container, if it is inside the target directory."""
+    target, inside = target_dir.resolve(), runs.resolve()
+    if not inside.is_relative_to(target):
+        return None
+    if inside == target:
+        raise SandboxError(f"--out {runs} is --target-dir, which is mounted into the sandbox")
+    rel = inside.relative_to(target).as_posix()
+    if any(c in rel for c in ',"\n'):  # would break docker's --mount field list
+        raise SandboxError(f"--out {runs} is inside --target-dir; move it out of {target_dir}")
+    return f"{TARGET_DIR}/{rel}"
+
+
 def run_args(
-    scenario: Scenario, image: str, target_dir: Path, out: Path, spec_json: str, name: str
+    scenario: Scenario,
+    image: str,
+    target_dir: Path,
+    out: Path,
+    spec_json: str,
+    name: str,
+    hide: str | None = None,
 ) -> list[str]:
+    """`hide`, a folder under /target, is covered with an empty read-only tmpfs: the ledgers
+    folder, when it is inside the target directory."""
     network = "bridge" if scenario.egress else "none"
+    hidden = ["--mount", f"type=tmpfs,dst={hide},readonly"] if hide is not None else []
     return [
         "run",
         "--rm",
@@ -131,6 +155,7 @@ def run_args(
         "PYTHONDONTWRITEBYTECODE=1",
         "-v",
         f"{target_dir.resolve()}:{TARGET_DIR}:ro",
+        *hidden,
         "-v",
         f"{out.resolve()}:{OUT_DIR}",
         image,
@@ -166,6 +191,7 @@ def run_sandboxed(
     if version != __version__:
         raise SandboxError(f"image {image!r} has seatbelt {version}, this host has {__version__}")
     digest = corpus_sha256(corpus)
+    hide = _hidden_in(target_dir, out)  # earlier runs' ledgers, and this run's, stay unseen
     out.mkdir(parents=True, exist_ok=True)
 
     def one(s: Scenario) -> Path:
@@ -185,17 +211,14 @@ def run_sandboxed(
             with stderr_file.open("w", encoding="utf-8") as fh:
                 try:
                     docker.cli(
-                        *run_args(s, image, target_dir, scratch, spec, name),
+                        *run_args(s, image, target_dir, scratch, spec, name, hide),
                         timeout=timeout,
                         output=fh,
                     )
                 except SandboxTimeout:
                     docker.kill(name)
                     fh.write(f"\n[seatbelt] timeout after {timeout}s, container killed\n")
-            produced = scratch / path.name
-            if not produced.exists():
-                raise SandboxError(f"{s.id}: container exited without a ledger; see {stderr_file}")
-            shutil.move(produced, path)
+            _take(s.id, scratch / path.name, path, stderr_file)
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
         if signer is not None:
@@ -203,3 +226,30 @@ def run_sandboxed(
         return path
 
     return collect(scenarios, digest, out, one)
+
+
+def _take(scenario: str, produced: Path, path: Path, stderr_file: Path) -> None:
+    """Copy the ledger a container left in its /out to `path`. Code in the container chose
+    what that name is, so only a plain file is read, never through a link, and only so much."""
+    try:
+        before = os.lstat(produced)
+    except FileNotFoundError:
+        raise SandboxError(
+            f"{scenario}: container exited without a ledger; see {stderr_file}"
+        ) from None
+    refused = SandboxError(f"{scenario}: the container's ledger is not a plain file; refused")
+    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+        raise refused
+    try:
+        fd = os.open(produced, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as exc:  # swapped for a link since
+        raise refused from exc
+    with os.fdopen(fd, "rb") as src:
+        now = os.fstat(src.fileno())
+        if (now.st_dev, now.st_ino) != (before.st_dev, before.st_ino) or now.st_nlink != 1:
+            raise refused
+        data = src.read(MAX_LEDGER + 1)
+    if len(data) > MAX_LEDGER:
+        raise SandboxError(f"{scenario}: the container's ledger is over {MAX_LEDGER} bytes")
+    with path.open("xb") as dst:
+        dst.write(data)
