@@ -95,11 +95,13 @@ class Recorder:
     ) -> Event:
         return self.ledger.append(kind, actor, redact(attrs or {}), parent_id)
 
-    def user_message(self, user_id: str, content: str) -> Event:
+    def user_message(
+        self, user_id: str, content: Any, attrs: dict[str, Any] | None = None
+    ) -> Event:
         return self._emit(
             Kind.USER_MESSAGE,
             Actor(type=ActorType.USER, id=user_id),
-            {"gen_ai.input.messages": [{"role": "user", "content": content}]},
+            {"gen_ai.input.messages": [{"role": "user", "content": content}], **(attrs or {})},
         )
 
     def model_requested(
@@ -116,6 +118,17 @@ class Recorder:
             },
         )
         return ModelCall(self, req, model)
+
+    def model_responded(
+        self, model: str | None, response: dict[str, Any], attrs: dict[str, Any] | None = None
+    ) -> Event:
+        """A model's answer seen with no request, as a transcript exported after the fact
+        shows it. `model` is None when the source does not say which model answered."""
+        return self._emit(
+            Kind.MODEL_RESPONSE,
+            Actor(type=ActorType.MODEL, id=model or "unknown"),
+            {"gen_ai.response.model": model, "gen_ai.response": response, **(attrs or {})},
+        )
 
     @contextmanager
     def model_call(
@@ -151,13 +164,22 @@ class Recorder:
             parent_id=parent_id,
         )
 
-    def tool_returned(self, call: Event, result: Any, error: str | None = None) -> Event:
-        """Record the tool's answer, linked to the call it answers."""
+    def tool_returned(
+        self,
+        call: Event | None,
+        result: Any,
+        error: str | None = None,
+        attrs: dict[str, Any] | None = None,
+        name: str | None = None,
+    ) -> Event:
+        """Record the tool's answer, linked to the call it answers. `call` is None only for
+        an answer whose call is not in this ledger; `name` then names the tool."""
+        tool = str(call.attrs.get("gen_ai.tool.name")) if call is not None else str(name)
         return self._emit(
             Kind.TOOL_RESULT,
-            Actor(type=ActorType.TOOL, id=str(call.attrs.get("gen_ai.tool.name"))),
-            {"gen_ai.tool.call.result": result, "error": error},
-            parent_id=call.id,
+            Actor(type=ActorType.TOOL, id=tool),
+            {"gen_ai.tool.call.result": result, "error": error, **(attrs or {})},
+            parent_id=call.id if call is not None else None,
         )
 
     @contextmanager

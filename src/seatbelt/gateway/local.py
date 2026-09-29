@@ -53,7 +53,7 @@ RUNNING = ".running"  # in the ledgers folder: one lock file per live run
 DEAD_RUN = "run ended without closing its ledger (the process was killed)"
 
 
-def _try_lock(handle: IO[bytes]) -> bool:
+def try_lock(handle: IO[bytes]) -> bool:
     """Take the OS's exclusive lock on an open file without waiting; False if it is held.
     Held until the handle is closed, and released by the OS when the process dies."""
     try:
@@ -85,7 +85,7 @@ def _alive(ledgers: Path, run: object) -> bool:
     except OSError:
         return False
     with handle:
-        if not _try_lock(handle):
+        if not try_lock(handle):
             return True
     path.unlink(missing_ok=True)  # stale: its run died
     return False
@@ -138,7 +138,7 @@ def _run_lock(ledgers: Path, run: str) -> Generator[None]:
     path = _lock_file(ledgers, run)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("wb") as handle:
-        if not _try_lock(handle):
+        if not try_lock(handle):
             raise ValueError(f"run {run} is already recording")
         try:
             yield

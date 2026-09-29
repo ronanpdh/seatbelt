@@ -5,12 +5,18 @@ from __future__ import annotations
 import hashlib
 import os
 import secrets
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+)
 
 KEY_PREFIX = "sbk_"
 
@@ -92,6 +98,32 @@ class OidcConfig(_Strict):
         return value
 
 
+ComplianceSource = Literal["local_sessions", "remote_sessions", "chats"]
+
+
+class ComplianceConfig(_Strict):
+    """`seatbelt import compliance`: pull a Claude Enterprise org's transcripts from
+    Anthropic's Compliance API into signed ledgers (docs/deploy/compliance-import.md)."""
+
+    key_env: str = "ANTHROPIC_COMPLIANCE_ACCESS_KEY"  # env var name; never the key
+    ledgers: Path | None = None  # default: compliance/ in the gateway's ledgers folder
+    sources: list[ComplianceSource] = Field(
+        default_factory=lambda: ["local_sessions", "remote_sessions", "chats"], min_length=1
+    )
+    surfaces: list[str] | None = None  # product_surface values to import; unset: every one
+    since: datetime | None = None  # first run only; unset: everything Anthropic still keeps
+    settle: int = Field(default=3600, ge=0)  # seconds a conversation must be quiet
+    overlap: int = Field(default=900, ge=0)  # seconds each local-session window reaches back
+    url: str = "https://api.anthropic.com"
+
+    @field_validator("since")
+    @classmethod
+    def _aware(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            raise ValueError("since needs a UTC offset, e.g. 2026-09-01T00:00:00Z")
+        return value
+
+
 class Principal(_Strict):
     id: str
     key_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -103,14 +135,21 @@ class GatewayConfig(_Strict):
     signing_key: Path | None = None  # or SEATBELT_SIGNING_KEY in the environment
     ledgers: Path
     session_idle: int = Field(default=900, gt=0)  # seconds
-    upstreams: dict[str, Upstream]
+    # none needed in a file only `seatbelt import compliance` reads
+    upstreams: dict[str, Upstream] = Field(default_factory=dict[str, Upstream])
     policy: PolicyConfig = Field(default_factory=PolicyConfig)
     principals: list[Principal] = Field(default_factory=list[Principal])
     sink: SinkConfig | None = None
     oidc: OidcConfig | None = None
+    compliance: ComplianceConfig | None = None
 
     _principals = field_validator("principals", mode="before")(_none_is_empty)
     _policy = field_validator("policy", mode="before")(_none_is_no_keys)
+
+    @property
+    def compliance_ledgers(self) -> Path:
+        c = self.compliance
+        return c.ledgers if c is not None and c.ledgers is not None else self.ledgers / "compliance"
 
     def lookup(self, key: str) -> Principal | None:
         if not key:
@@ -146,6 +185,8 @@ def load_config(path: Path, text: str | None = None) -> GatewayConfig:
     if cfg.signing_key is not None:
         cfg.signing_key = base / cfg.signing_key.expanduser()
     cfg.ledgers = base / cfg.ledgers.expanduser()
+    if cfg.compliance is not None and cfg.compliance.ledgers is not None:
+        cfg.compliance.ledgers = base / cfg.compliance.ledgers.expanduser()
     return cfg
 
 
