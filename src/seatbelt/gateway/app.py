@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import zlib
@@ -35,11 +36,13 @@ from seatbelt.gateway.formats.anthropic import AnthropicFormat
 from seatbelt.gateway.formats.gemini import CodeAssistFormat, GeminiFormat
 from seatbelt.gateway.formats.openai_chat import OpenAIChatFormat
 from seatbelt.gateway.formats.openai_responses import OpenAIResponsesFormat
-from seatbelt.gateway.oidc import OidcError, OidcVerifier, looks_like_jwt
+from seatbelt.gateway.oidc import OidcError, OidcUnavailable, OidcVerifier, looks_like_jwt
 from seatbelt.gateway.sessions import Session, Sessions
 from seatbelt.ledger.events import Event
 from seatbelt.policy.engine import Policy, denylist, max_output_tokens, models
 from seatbelt.record.recorder import ModelCall
+
+_log = logging.getLogger(__name__)
 
 RUN_HEADER = "x-seatbelt-run"
 RUN_END_HEADER = "x-seatbelt-run-end"
@@ -67,7 +70,14 @@ _STRIP_REQUEST = _HOP | {
     RUN_HEADER,
     RUN_END_HEADER,
     KEY_HEADER,
+    # an upstream that honours one would run another method than the one routed and recorded
+    "x-http-method-override",
+    "x-http-method",
+    "x-method-override",
 }
+# with the gateway's provider key: headers that pick which of the org's projects, and so whose
+# quota, billing and stored objects, that key acts on
+_STRIP_WITH_KEY = _STRIP_REQUEST | {"openai-organization", "openai-project", "x-goog-user-project"}
 _AUTH_HEADERS = frozenset({"authorization", "x-api-key", "x-goog-api-key"})
 # to a pass-through upstream the client's own credentials go on as sent
 _STRIP_PASSTHROUGH = _STRIP_REQUEST - _AUTH_HEADERS
@@ -100,6 +110,10 @@ _GEMINI_RECORDED = frozenset({"generateContent", "streamGenerateContent"})
 # Any other method is refused rather than let through unrecorded
 _GEMINI_FORWARDED = frozenset({"countTokens", "embedContent", "batchEmbedContents"})
 _GEMINI_MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # e.g. gemini-2.5-pro
+# a model looked up with GET: one path segment, never a dot segment. An OpenAI fine-tuned
+# model's id has colons (ft:gpt-4o-mini:org::id); a Google-style id must match _GEMINI_MODEL,
+# where a colon would name a method
+_MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]*")
 # the query parameters Google reads as an API key (cloud.google.com/apis/docs/system-parameters)
 _KEY_PARAMS = frozenset({"key", "$key"})
 # Gemini CLI signed in with Google: POST /v1internal:{method} on Google's Code Assist service
@@ -123,11 +137,15 @@ _CODE_ASSIST_FORWARDED = frozenset(
         "recordCodeAssistMetrics",
     }
 )
+# GET /v1internal/{name}: the long-running operation Gemini CLI polls while onboarding
+_CODE_ASSIST_OPERATION = re.compile(r"operations/[A-Za-z0-9][A-Za-z0-9._-]*")
 # Codex signed in with ChatGPT sends its account id beside the token; its Responses traffic
 # goes to ChatGPT's backend, not the public API (codex-rs model-provider-info, chatgpt base)
 _CHATGPT_ACCOUNT = "chatgpt-account-id"
 _CHATGPT_PREFIX = "/backend-api/codex"
-_MAX_BODY = 64 * 1024 * 1024  # a decompressed request body larger than this is refused
+_MAX_BODY = 64 * 1024 * 1024  # a request body larger than this, as sent or inflated, is refused
+# of a stream the gateway could not record as a response, this much is kept in its place
+_MAX_UNASSEMBLED = 1024 * 1024
 # google.rpc.Code names, which Google's clients read beside the HTTP status. 502 has no code
 # of its own; UNAVAILABLE is the nearest
 _GOOGLE_STATUS = {
@@ -159,6 +177,8 @@ class Identity:
 def _oidc_identity(request: Request, verifier: OidcVerifier, token: str) -> Identity | Response:
     try:
         claims = verifier.verify(token)
+    except OidcUnavailable:  # logged by the verifier; nothing about the provider goes out
+        return _error(request, 401, "authentication_error", "sign-in token refused")
     except OidcError as exc:
         return _error(request, 401, "authentication_error", f"sign-in token refused: {exc}")
     cfg = verifier.cfg
@@ -295,7 +315,7 @@ def _upstream_headers(request: Request, upstream: Upstream, auth_header: str) ->
             if k.lower() not in _STRIP_PASSTHROUGH
             and not (k.lower() in _AUTH_HEADERS and _is_seatbelt_key(v))
         }
-    headers = {k: v for k, v in request.headers.items() if k.lower() not in _STRIP_REQUEST}
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in _STRIP_WITH_KEY}
     real_key = os.environ.get(upstream.key_env, "")
     headers[auth_header] = f"Bearer {real_key}" if auth_header == "authorization" else real_key
     return headers
@@ -305,12 +325,30 @@ def _relay_headers(resp: httpx2.Response) -> dict[str, str]:
     return {k: v for k, v in resp.headers.items() if k.lower() not in _STRIP_RESPONSE}
 
 
+async def _body(request: Request) -> bytes | None:
+    """The request body, or None when it is larger than `_MAX_BODY`: by its Content-Length
+    before any of it is read, else as soon as that much has arrived."""
+    length = request.headers.get("content-length", "").strip()
+    if length.isdigit() and int(length) > _MAX_BODY:
+        return None
+    body = bytearray()
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > _MAX_BODY:
+            return None
+    return bytes(body)
+
+
+def _too_large(request: Request) -> Response:
+    return _error(request, 413, "request_too_large", "request body too large")
+
+
 def _decoded(raw: bytes, encoding: str) -> bytes | None:
     """A request body as sent before its content-encoding (gzip or deflate), or None for an
-    encoding the gateway cannot read or a body that inflates past `_MAX_BODY`."""
+    encoding the gateway cannot read or a body past `_MAX_BODY`, as sent or inflated."""
     encoding = encoding.strip().lower()
     if encoding in ("", "identity"):
-        return raw
+        return raw if len(raw) <= _MAX_BODY else None
     wbits = {"gzip": 31, "x-gzip": 31, "deflate": 15}.get(encoding)
     if wbits is None:
         return None
@@ -346,8 +384,8 @@ def _json_object(raw: bytes) -> dict[str, Any] | None:
     return cast(dict[str, Any], value) if isinstance(value, dict) else None
 
 
-def _with_query(request: Request, upstream: Upstream) -> str:
-    """The path and query to send upstream, less any key parameter: a seatbelt key given as
+def _with_query(request: Request, upstream: Upstream, path: str) -> str:
+    """`path` and the query to send upstream, less any key parameter: a seatbelt key given as
     `?key=` goes no further than the gateway, and a client's own provider key is not used
     unless the upstream passes the client's credentials through (a seatbelt key never is)."""
 
@@ -358,7 +396,7 @@ def _with_query(request: Request, upstream: Upstream) -> str:
         return upstream.key_env is None and not _is_seatbelt_key(unquote_plus(value))
 
     query = "&".join(p for p in request.url.query.split("&") if p and kept(p))
-    return request.url.path + (f"?{query}" if query else "")
+    return path + (f"?{query}" if query else "")
 
 
 def _meta(request: Request) -> dict[str, Any]:
@@ -517,8 +555,10 @@ def _stream(
     call: ModelCall,
     assemble: Assemble,
     finish: Finish,
+    fallback: Callable[[ModelCall, dict[str, Any], str], None],
     settle: Callable[[], Awaitable[None]],
 ) -> Response:
+    """`fallback` records a response as given, for a stream `finish` failed to record."""
     received = bytearray()
     outcome: list[str | None] = ["stream ended early"]  # cleared when the upstream completes
 
@@ -534,6 +574,26 @@ def _stream(
 
     chunks = relay()
 
+    def recorded() -> None:
+        """In the threadpool: parsing a long stream would hold up every other request. The
+        client has the stream already, so one that cannot be recorded as the format's response
+        is recorded as the text received, not left an empty response."""
+        try:
+            finish(call, assemble(sse_events(bytes(received))), outcome[0])
+        except Exception as exc:
+            if call.response is not None:
+                raise
+            _log.exception("recording a streamed response failed; recording the stream as sent")
+            error = f"stream not recorded: {type(exc).__name__}: {exc}"
+            fallback(
+                call,
+                {
+                    "unassembled_sse": bytes(received[:_MAX_UNASSEMBLED]).decode(errors="replace"),
+                    "received_bytes": len(received),
+                },
+                error if outcome[0] is None else f"{outcome[0]}; {error}",
+            )
+
     async def on_close() -> None:
         try:
             await chunks.aclose()
@@ -541,8 +601,7 @@ def _stream(
             await client.aclose()
         finally:
             try:  # never raises by contract; if one does, the session must still be released
-                assembled = assemble(sse_events(bytes(received)))
-                await run_in_threadpool(finish, call, assembled, outcome[0])
+                await run_in_threadpool(recorded)
             finally:
                 await settle()
 
@@ -550,8 +609,14 @@ def _stream(
 
 
 def create_app(
-    cfg: GatewayConfig, sessions: Sessions, transport: httpx2.AsyncBaseTransport | None = None
+    cfg: GatewayConfig,
+    sessions: Sessions,
+    transport: httpx2.AsyncBaseTransport | None = None,
+    path_credentials: bool = True,
 ) -> Starlette:
+    """`path_credentials` takes a run's key and name from `/_seatbelt/{key}/{run}/`, for the
+    local recorder; `gateway serve` turns it off, as a key in a path ends up in access logs."""
+
     async def relay(request: Request) -> Response:
         return await record(request, _FORMATS[request.url.path])
 
@@ -562,7 +627,8 @@ def create_app(
             return await record(request, _GEMINI, model)
         # a strict model name: nothing Google could read as another method goes unrecorded
         if _GEMINI_MODEL.fullmatch(model) and method in _GEMINI_FORWARDED:
-            return await forward(request)
+            version = request.url.path.split("/", 2)[1]  # the route's: one of _GEMINI_VERSIONS
+            return await forward(request, path=f"/{version}/models/{model}:{method}")
         return _error(request, 400, "invalid_request_error", f"{method or 'this'} is not recorded")
 
     async def record(request: Request, spec: Spec, path_model: str | None = None) -> Response:
@@ -578,7 +644,9 @@ def create_app(
         upstream = cfg.upstreams.get(upstream_name)
         if upstream is None:
             return _error(request, 404, "not_found_error", f"no {upstream_name} upstream")
-        raw = await request.body()  # sent on as it came, encoding and all
+        raw = await _body(request)  # sent on as it came, encoding and all
+        if raw is None:
+            return _too_large(request)
         encoding = request.headers.get("content-encoding", "")
         plain = _decoded(raw, encoding)
         if plain is None:
@@ -616,6 +684,9 @@ def create_app(
 
             _locked(session, run)
 
+        def fallback(call: ModelCall, payload: dict[str, Any], error: str) -> None:
+            _locked(session, lambda: call.respond(payload, error=error))
+
         def admit() -> tuple[ModelCall, str | None]:
             """Record the request, then the policy verdicts on it. Returns a refusal reason."""
             f = fmt()
@@ -642,7 +713,7 @@ def create_app(
             outgoing = client.build_request(
                 "POST",
                 # Claude Code posts /v1/messages?beta=true
-                _routed(_with_query(request, upstream), prefix),
+                _routed(_with_query(request, upstream, request.url.path), prefix),
                 content=raw,
                 headers=_upstream_headers(request, upstream, auth_header),
             )
@@ -660,7 +731,7 @@ def create_app(
                 return _error(request, 502, "api_error", error)
             if streaming:
                 handed_off = True
-                return _stream(resp, client, call, assemble, finish, settle)
+                return _stream(resp, client, call, assemble, finish, fallback, settle)
             await client.aclose()
             value = _json(resp.content)
             if isinstance(value, list) and issubclass(format_cls, GeminiFormat):
@@ -683,10 +754,11 @@ def create_app(
                 with anyio.CancelScope(shield=True):
                     await settle()
 
-    async def forward(request: Request, to: str | None = None) -> Response:
+    async def forward(request: Request, to: str | None = None, path: str | None = None) -> Response:
         """Probes a client makes besides inference: authenticated and forwarded, not recorded.
         A token count or a model list is nothing an auditor needs. `to` names the upstream;
-        by default the request's style picks it."""
+        by default the request's style picks it. `path` is the path to send, built from a
+        route's checked parts; by default the route's own, for a route with a fixed path."""
         live = _live(request)
         cfg = live.cfg
         principal = await _identify(live, request)
@@ -711,15 +783,20 @@ def create_app(
         upstream = cfg.upstreams.get(name)
         if upstream is None:
             return _error(request, 404, "not_found_error", f"no {name} upstream")
-        path = _routed(_with_query(request, upstream), prefix)
+        target = _routed(_with_query(request, upstream, path or request.url.path), prefix)
+        content: bytes | None = None  # a GET or HEAD carries none upstream, whatever was sent
+        if request.method not in ("GET", "HEAD"):
+            content = await _body(request)
+            if content is None:
+                return _too_large(request)
         async with httpx2.AsyncClient(
             base_url=upstream.url, transport=request.app.state.transport, timeout=60
         ) as client:
             try:
                 resp = await client.request(
                     request.method,
-                    path,
-                    content=await request.body(),
+                    target,
+                    content=content,
                     headers=_upstream_headers(request, upstream, auth_header),
                 )
             except httpx2.HTTPError as exc:
@@ -736,11 +813,25 @@ def create_app(
         if method in _GEMINI_RECORDED and request.method == "POST":
             return await record(request, _CODE_ASSIST)
         if method in _CODE_ASSIST_FORWARDED:
-            return await forward(request, "codeassist")
+            return await forward(request, "codeassist", f"/v1internal:{method}")
         return _error(request, 400, "invalid_request_error", f"{method} is not recorded")
 
     async def code_assist_operation(request: Request) -> Response:
-        return await forward(request, "codeassist")  # GET /v1internal/{operation}: onboarding
+        """GET /v1internal/operations/{id}: onboarding. Nothing else under /v1internal/."""
+        name = str(request.path_params["name"])
+        if not _CODE_ASSIST_OPERATION.fullmatch(name):
+            return _error(request, 400, "invalid_request_error", "not an operation")
+        return await forward(request, "codeassist", f"/v1internal/{name}")
+
+    async def model_lookup(request: Request) -> Response:
+        """GET /{version}/models/{id}: one model. The id is checked and the path sent built
+        from it, so no other resource of an upstream is reached with the gateway's key."""
+        model = str(request.path_params["id"])
+        pattern = _GEMINI_MODEL if _google_style(request) else _MODEL_ID
+        if not pattern.fullmatch(model):
+            return _error(request, 400, "invalid_request_error", "not a model id")
+        version = request.url.path.split("/", 2)[1]  # the route's
+        return await forward(request, path=f"/{version}/models/{model}")
 
     async def hello(_: Request) -> Response:
         return Response(status_code=200)
@@ -760,22 +851,23 @@ def create_app(
             Route("/v1/responses", relay, methods=["POST"]),
             Route("/v1/messages/count_tokens", forward, methods=["POST"]),
             Route("/v1/models", forward, methods=["GET"]),
-            Route("/v1/models/{id:path}", forward, methods=["GET"]),
+            Route("/v1/models/{id:path}", model_lookup, methods=["GET"]),
             *(
                 Route(f"/{v}/models/{{target:path}}", gemini_method, methods=["POST"])
                 for v in _GEMINI_VERSIONS
             ),
             Route("/v1beta/models", forward, methods=["GET"]),
-            Route("/v1beta/models/{id:path}", forward, methods=["GET"]),
+            Route("/v1beta/models/{id:path}", model_lookup, methods=["GET"]),
             Route("/v1alpha/models", forward, methods=["GET"]),
-            Route("/v1alpha/models/{id:path}", forward, methods=["GET"]),
+            Route("/v1alpha/models/{id:path}", model_lookup, methods=["GET"]),
             Route("/v1internal:{method}", code_assist, methods=["GET", "POST"]),
             Route("/v1internal/{name:path}", code_assist_operation, methods=["GET"]),
             Route("/api/hello", hello, methods=["GET", "HEAD"]),
             Route("/seatbelt/runs/{name}/end", end_run, methods=["POST"]),
         ]
     )
-    app.add_middleware(_PathCredentials)
+    if path_credentials:
+        app.add_middleware(_PathCredentials)
     app.state.live = Live.of(cfg)  # replaced by a config reload
     app.state.transport = transport  # read per request so tests can swap upstreams
     return app

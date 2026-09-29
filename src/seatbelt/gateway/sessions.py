@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
 import re
 import secrets
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Generator, Iterable
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -21,11 +23,14 @@ from seatbelt.attest.sign import Signer, attest
 from seatbelt.gateway.formats import Format
 from seatbelt.ledger.events import Actor, ActorType, Event, Kind
 from seatbelt.ledger.store import Ledger, LedgerError, read_events
+from seatbelt.locks import try_lock
 from seatbelt.record.recorder import Recorder
 from seatbelt.verify.chain import verify_events
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9_-]+")
 _GATEWAY = "gateway"  # the agent id on every ledger the gateway writes
+# in the ledgers folder: a lock per open ledger while a process closes it, removed after
+CLOSING = ".closing"
 _log = logging.getLogger(__name__)
 
 
@@ -162,8 +167,7 @@ class Sessions:
         with self._lock:
             sessions = [self._open.pop(k) for k in [k for k in self._open if k[0] == principal]]
             ready = [s for s in sessions if self._retire(s)]
-        for s in ready:
-            self._close(s)
+        self._close_each(ready)
         return len(sessions)
 
     def sweep(self) -> int:
@@ -173,8 +177,7 @@ class Sessions:
             sessions = [self._open.pop(k) for k in stale]
             for s in sessions:
                 s.closing = True
-        for s in sessions:
-            self._close(s)
+        self._close_each(sessions)
         return len(sessions)
 
     def close_all(self, timeout: float = 30.0) -> int:
@@ -184,8 +187,7 @@ class Sessions:
             sessions = list(self._open.values())
             self._open.clear()
             ready = [s for s in sessions if self._retire(s)]
-        for s in ready:
-            self._close(s)
+        self._close_each(ready)
         with self._changed:
             self._changed.wait_for(lambda: not self._draining, timeout)
             return len(self._draining)
@@ -197,6 +199,13 @@ class Sessions:
             self._draining.append(session)
             return False
         return True
+
+    def _close_each(self, sessions: Iterable[Session]) -> None:
+        for s in sessions:
+            try:
+                self._close(s)
+            except Exception:  # one ledger that fails to close must not leave the rest open
+                _log.exception("closing %s failed", s.rec.ledger.path)
 
     def _close(self, session: Session) -> None:
         try:
@@ -214,6 +223,38 @@ class Sessions:
                 self._changed.notify_all()
 
 
+def _events(path: Path) -> list[Event] | None:
+    """A ledger's events, or None, logged, when it cannot be read."""
+    try:
+        return list(read_events(path))
+    except (OSError, UnicodeDecodeError, LedgerError) as exc:
+        _log.warning("skipping unreadable ledger %s: %s", path, exc)
+        return None
+
+
+@contextlib.contextmanager
+def _closing(root: Path, path: Path) -> Generator[bool]:
+    """Hold `<root>/.closing/<ledger>.lock` while the block closes `path`, so two processes
+    tidying one folder never both append a run.end. Yields False when another process holds
+    it. The file is removed while still held: one who opened it before then finds, once it
+    has the lock, that it no longer names that file, and yields False as well."""
+    lock = root / CLOSING / f"{path.name}.lock"
+    lock.parent.mkdir(exist_ok=True)
+    with lock.open("ab") as handle:
+        try:
+            mine = try_lock(handle) and os.path.samestat(os.fstat(handle.fileno()), lock.stat())
+        except FileNotFoundError:  # removed by its holder since it was opened
+            mine = False
+        if not mine:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            with contextlib.suppress(OSError):  # Windows cannot remove an open file
+                lock.unlink()
+
+
 def close_open_chains(
     root: Path,
     signer: Signer | None,
@@ -227,14 +268,11 @@ def close_open_chains(
     put a signature over evidence of tampering, and refusing to start would let one bad file
     stop all recording. A closed ledger is never signed here, even one of the gateway's with
     no signature: a process killed between run.end and signing looks the same as a ledger
-    rewritten and its signature deleted, so it is logged for a person to check."""
+    rewritten and its signature deleted, so it is logged for a person to check. A ledger
+    another process is closing at the same time is left to it."""
     closed: list[Path] = []
     for path in sorted(root.glob("*.jsonl")):
-        try:
-            events = list(read_events(path))
-        except (OSError, UnicodeDecodeError, LedgerError) as exc:
-            _log.warning("skipping unreadable ledger %s: %s", path, exc)
-            continue
+        events = _events(path)
         if not events:
             continue
         if events[-1].kind is Kind.RUN_END:
@@ -249,21 +287,26 @@ def close_open_chains(
             continue
         if only is not None and not only(events):
             continue
-        verdict = verify_events(events)
-        if not verdict.ok:
-            _log.warning(
-                "skipping broken ledger %s at seq %s: %s",
-                path,
-                verdict.first_bad_seq,
-                verdict.reason,
+        with _closing(root, path) as mine:
+            # read again under the lock: another process may have closed it meanwhile
+            events = _events(path) if mine else None
+            if not events or events[-1].kind is Kind.RUN_END:
+                continue
+            verdict = verify_events(events)
+            if not verdict.ok:
+                _log.warning(
+                    "skipping broken ledger %s at seq %s: %s",
+                    path,
+                    verdict.first_bad_seq,
+                    verdict.reason,
+                )
+                continue
+            Ledger(path, events[0].run_id).append(
+                Kind.RUN_END,
+                Actor(type=ActorType.AGENT, id=_GATEWAY, version=__version__),
+                {"run.ok": False, "run.error": reason, "run.events": len(events) + 1},
             )
-            continue
-        Ledger(path, events[0].run_id).append(
-            Kind.RUN_END,
-            Actor(type=ActorType.AGENT, id=_GATEWAY, version=__version__),
-            {"run.ok": False, "run.error": reason, "run.events": len(events) + 1},
-        )
-        if signer is not None and not sidecar(path).exists():
-            attest(path, signer)
-        closed.append(path)
+            if signer is not None and not sidecar(path).exists():
+                attest(path, signer)
+            closed.append(path)
     return closed
