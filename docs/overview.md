@@ -106,7 +106,7 @@ Which clients it records:
 
 ### Supply chain
 
-Tagged releases attach the wheel, sdist, a CycloneDX SBOM and the Sigstore-signed SLSA build provenance (`seatbelt_ai-<version>.intoto.jsonl`) and publish the wheel and sdist to PyPI as `seatbelt-ai` through Trusted Publishing, with PyPI's attestations. The job that builds and attests them installs no dev dependencies and runs no project code; the tests run in a separate job with a read-only token, and the gateway image is pushed only after the reviewer-approved PyPI upload. CI runs ruff, pyright strict and pytest on Python 3.12 and 3.13, CodeQL and Hadolint; uv is pinned to one version, Docker base images are pinned by digest, and the gateway image's dependencies and build backend by hash. OpenSSF Scorecard and Best Practices evidence are in the repository.
+Tagged releases attach the wheel, sdist, a CycloneDX SBOM and the Sigstore-signed SLSA build provenance (`seatbelt_ai-<version>.intoto.jsonl`) and publish the wheel and sdist to PyPI as `seatbelt-ai` through Trusted Publishing, with PyPI's attestations. The job that builds and attests them installs no dev dependencies and runs no project code; the tests run in a separate job with a read-only token, and the gateway image is pushed only after the reviewer-approved PyPI upload. CI runs ruff, pyright strict and pytest on Python 3.12 and 3.13, CodeQL and Hadolint; a `lowest` job runs the tests and `pip-audit` at every direct dependency's floor, weekly too; uv is pinned to one version, Docker base images and the gateway image's uv are pinned by digest, and the gateway image builds its hash-pinned requirements from `uv.lock`, offline. OpenSSF Scorecard and Best Practices evidence are in the repository.
 
 ## How to use it
 

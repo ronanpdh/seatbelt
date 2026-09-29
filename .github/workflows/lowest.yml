@@ -1,0 +1,37 @@
+name: lowest
+# The tests at every direct dependency's floor, and an audit of those versions: users may get
+# them, so they must work and carry no known advisory. Weekly as well, as a new advisory against
+# a floor appears without any change here.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  lowest:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version: "0.12.20"  # same as ci.yml and release.yml
+          enable-cache: false
+          python-version: ${{ matrix.python }}
+      - name: Direct dependencies at their floors, the rest at their latest
+        run: uv lock --resolution lowest-direct
+      - run: uv sync --frozen
+      # no pyright here: older releases' type information differs, the locked ones are checked
+      - run: uv run --frozen pytest -m "not integration"
+      - name: No known advisory at the floors
+        run: |
+          uv export --frozen --no-dev --all-extras --no-emit-project -o "$RUNNER_TEMP/lowest.txt"
+          uvx pip-audit==2.10.1 -r "$RUNNER_TEMP/lowest.txt" --require-hashes --disable-pip

@@ -4,6 +4,15 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 
 ## [Unreleased]
 
+### Changed
+- Dependency floors are the lowest releases the tests pass with, and never below the first release from which no later one has a known advisory. So `seatbelt-ai` now installs beside frameworks that cap them, such as CrewAI 1.x, which could not be installed with 0.5.1:
+  - pydantic 2.12.2, rich 13.8, typer 0.17, uvicorn 0.34 and pyyaml 6.0.2;
+  - on the gateway's security path: anyio 4.14.2, cryptography 50.0.0, httpx2 2.12.0, pyjwt 2.13.0 and starlette 1.3.1;
+  - the extras: anthropic 1.0.0 and openai-agents 0.19.
+- A new `lowest` workflow runs the tests at those floors on Python 3.12 and 3.13, and audits them with `pip-audit`, on every push and pull request and weekly.
+- Dependabot updates `uv.lock` only (`versioning-strategy: lockfile-only`); floors move by hand.
+- The gateway image builds its hash-pinned requirements from `uv.lock` and its wheel with the build backend inside uv, offline, in a build stage with uv pinned by digest. `docker/requirements-gateway.txt`, `docker/requirements-build.txt` and CI's drift check are gone, so a Dependabot PR no longer needs a hand-made commit.
+
 ### Added
 - `docs/BUILD.md`: how each release from 0.0.1 to 0.5.1 was built, where it differs from the original build plan, and commands that check it. `log/`: a learning-log entry per release.
 
