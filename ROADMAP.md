@@ -51,3 +51,7 @@ Signed Ed25519 attestation of each run (`seatbelt.attest`, `keygen`, `attest`, `
 - Done: one row per person in `seatbelt report`: a people file joins a person's principal ids across the gateway, identity providers and the Compliance API importer; `report` takes several runs folders
 - Done: `seatbelt reconstruct` shows imported answers' text and marks unverified or unavailable messages
 - Done: `seatbelt erase` removes one person's ledgers on request, without editing any ledger: whole ledgers are removed inside a signed record of hashes, with every writer locked out
+
+## 0.5.0
+
+- Done (repository side): published to PyPI as `seatbelt-ai` (`uv tool install seatbelt-ai`) from the release workflow through Trusted Publishing, with PyPI's attestations; module and command stay `seatbelt`. Needs the pending publisher on PyPI and the `pypi` environment on GitHub before the tag

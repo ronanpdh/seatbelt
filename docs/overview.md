@@ -106,16 +106,17 @@ Which clients it records:
 
 ### Supply chain
 
-Tagged releases attach the wheel, sdist, a CycloneDX SBOM and the Sigstore-signed SLSA build provenance (`seatbelt-<version>.intoto.jsonl`). CI runs ruff, pyright strict and pytest on Python 3.12 and 3.13, CodeQL and Hadolint; Docker base images are pinned by digest and the gateway image's dependencies by hash. OpenSSF Scorecard and Best Practices evidence are in the repository.
+Tagged releases attach the wheel, sdist, a CycloneDX SBOM and the Sigstore-signed SLSA build provenance (`seatbelt_ai-<version>.intoto.jsonl`) and publish the wheel and sdist to PyPI as `seatbelt-ai` through Trusted Publishing, with PyPI's attestations. CI runs ruff, pyright strict and pytest on Python 3.12 and 3.13, CodeQL and Hadolint; Docker base images are pinned by digest and the gateway image's dependencies by hash. OpenSSF Scorecard and Best Practices evidence are in the repository.
 
 ## How to use it
 
 ### Install
 
 ```sh
-git clone https://github.com/ronanpdh/seatbelt && cd seatbelt
-uv sync
+uv tool install seatbelt-ai   # the `seatbelt` command, in its own environment
 ```
+
+The package is `seatbelt-ai` on PyPI; `seatbelt` there is an unrelated project. To work on seatbelt itself, `git clone https://github.com/ronanpdh/seatbelt && cd seatbelt && uv sync`.
 
 ### Record your own agent
 

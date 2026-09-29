@@ -32,7 +32,7 @@ HARDENING = [
     "--memory-swap",
     "1g",
 ]
-_VERSION_PROBE = "import importlib.metadata as m; print(m.version('seatbelt'))"
+_VERSION_PROBE = "import importlib.metadata as m; print(m.version('seatbelt-ai'))"
 _PROBE_TIMEOUT = 30
 
 
@@ -101,7 +101,10 @@ class Docker:
             timeout=_PROBE_TIMEOUT,
         )
         if probe.returncode != 0:
-            raise SandboxError(f"image {image!r} cannot import seatbelt: {probe.stderr.strip()}")
+            raise SandboxError(
+                f"image {image!r} cannot report its seatbelt-ai version (an image built before "
+                f"0.5.0 needs rebuilding, see docs/scenarios.md): {probe.stderr.strip()}"
+            )
         return probe.stdout.strip()
 
     def kill(self, name: str) -> None:

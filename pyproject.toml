@@ -1,5 +1,5 @@
 [project]
-name = "seatbelt"
+name = "seatbelt-ai"
 version = "0.4.0"
 description = "Seatbelt is a model-agnostic harness for AI agents."
 readme = "README.md"
@@ -9,6 +9,19 @@ authors = [
     { name = "ronanpdh", email = "ronan@rpdh.uk" }
 ]
 requires-python = ">=3.12"
+keywords = ["ai-agents", "audit", "llm", "gateway", "tamper-evident", "ledger", "claude-code"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Operating System :: POSIX",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: System :: Logging",
+]
 dependencies = [
     # the recording gateway, which `seatbelt run` also starts in-process to record locally
     "anyio>=4.15",
@@ -23,6 +36,12 @@ dependencies = [
     "uvicorn>=0.54.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/ronanpdh/seatbelt"
+Source = "https://github.com/ronanpdh/seatbelt"
+Changelog = "https://github.com/ronanpdh/seatbelt/blob/main/CHANGELOG.md"
+Issues = "https://github.com/ronanpdh/seatbelt/issues"
+
 [project.scripts]
 seatbelt = "seatbelt.cli:app"
 
@@ -33,7 +52,7 @@ anthropic = [
 openai-agents = [
     "openai-agents>=0.22.3",
 ]
-# kept so `seatbelt[gateway]` still installs; its packages are now core dependencies
+# kept so `seatbelt-ai[gateway]` still installs; its packages are now core dependencies
 gateway = [
     "anyio>=4.15",
     "httpx2>=2.13.1",
@@ -45,6 +64,10 @@ gateway = [
 [build-system]
 requires = ["uv_build>=0.12.19,<0.13.0"]
 build-backend = "uv_build"
+
+[tool.uv.build-backend]
+# the distribution is `seatbelt-ai` (`seatbelt` on PyPI is another project); the module stays
+module-name = "seatbelt"
 
 [dependency-groups]
 dev = [

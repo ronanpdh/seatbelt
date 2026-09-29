@@ -407,7 +407,8 @@ def gateway_serve(config: ConfigOpt = Path("gateway.yaml")) -> None:
         from seatbelt.gateway.serve import serve  # server deps load only here
     except ImportError as exc:
         hint = (
-            "install the gateway extra: pip install 'seatbelt[gateway]' or uv sync --extra gateway"
+            "install the gateway extra: pip install 'seatbelt-ai[gateway]'"
+            " or uv sync --extra gateway"
         )
         console.print(f"[red]{escape(str(exc))}[/]; {escape(hint)}")
         raise typer.Exit(code=1) from exc
