@@ -4,12 +4,14 @@ The gateway host then no longer holds the only copy of the evidence. Uploads run
 background thread, so a slow or unreachable store never delays a request; a failed upload is
 retried with backoff, and anything not shipped by shutdown is shipped at the next start.
 
-Requests are signed with AWS Signature Version 4 over the whole payload, with no checksum
-headers, and address the bucket in the host name, as Hetzner Object Storage documents for
-plain HTTP clients (docs.hetzner.com/storage/object-storage/getting-started/using-curl)."""
+Requests are signed with AWS Signature Version 4 over the whole payload, carry a signed
+Content-MD5 (which S3 requires of uploads to a bucket with Object Lock retention), and address
+the bucket in the host name, as Hetzner Object Storage documents for plain HTTP clients
+(docs.hetzner.com/storage/object-storage/getting-started/using-curl)."""
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -19,7 +21,7 @@ import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol, cast
 from urllib.parse import quote, urlsplit
 
 import httpx2
@@ -31,6 +33,8 @@ from seatbelt.ledger.store import LedgerError, read_events
 _log = logging.getLogger(__name__)
 
 BACKOFF = (5.0, 30.0, 120.0, 300.0)  # seconds between attempts; the last repeats
+ATTEMPTS = 5  # failed attempts in a row before a ledger goes to the back of the queue
+_DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
 class StoreError(Exception):
@@ -43,6 +47,17 @@ class Store(Protocol):
 
 def _hmac(key: bytes, msg: str) -> bytes:
     return hmac.new(key, msg.encode(), hashlib.sha256).digest()
+
+
+def _host(url: str) -> str:
+    """The Host header an HTTP client sends for `url`: lower case, without a default port."""
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    if ":" in host:
+        host = f"[{host}]"  # IPv6
+    if parts.port is not None and parts.port != _DEFAULT_PORTS.get(parts.scheme):
+        host = f"{host}:{parts.port}"
+    return host
 
 
 def sigv4_headers(
@@ -63,7 +78,7 @@ def sigv4_headers(
     date = amz_date[:8]
     payload_hash = hashlib.sha256(payload).hexdigest()
     signed = {k.lower(): " ".join(v.split()) for k, v in headers.items()}
-    signed |= {"host": parts.netloc, "x-amz-date": amz_date, "x-amz-content-sha256": payload_hash}
+    signed |= {"host": _host(url), "x-amz-date": amz_date, "x-amz-content-sha256": payload_hash}
     names = sorted(signed)
     canonical = "\n".join(
         [
@@ -96,7 +111,9 @@ def sigv4_headers(
 
 class S3Store:
     """PUT objects into one bucket of an S3-compatible service, e.g. Hetzner Object Storage:
-    endpoint `https://fsn1.your-objectstorage.com`, region `fsn1`."""
+    endpoint `https://fsn1.your-objectstorage.com`, region `fsn1`. The endpoint is https
+    (http only with `allow_http`) and names only the host and port: the bucket goes in the
+    host name, so a path would be dropped."""
 
     def __init__(
         self,
@@ -107,9 +124,26 @@ class S3Store:
         secret_key: str,
         transport: httpx2.BaseTransport | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        allow_http: bool = False,
     ) -> None:
-        parts = urlsplit(endpoint)
-        self._base = f"{parts.scheme}://{bucket}.{parts.netloc}"  # the bucket in the host
+        # the message never quotes the URL: user info in it may be a credential
+        shape = "sink url must be https://<host>[:<port>], with no path, query or user info"
+        try:
+            parts = urlsplit(endpoint)
+            host = _host(endpoint)  # as it is sent and signed, without a default port
+        except ValueError:  # a bad port
+            raise ValueError(shape) from None
+        schemes = ("https", "http") if allow_http else ("https",)
+        if (
+            parts.scheme not in schemes
+            or not parts.hostname
+            or parts.path not in ("", "/")
+            or parts.query
+            or parts.fragment
+            or "@" in parts.netloc
+        ):
+            raise ValueError(shape)
+        self._base = f"{parts.scheme}://{bucket}.{host}"  # the bucket in the host
         self._region = region
         self._access_key = access_key
         self._secret_key = secret_key
@@ -118,11 +152,12 @@ class S3Store:
 
     def put(self, key: str, data: bytes, content_type: str) -> None:
         url = f"{self._base}/{quote(key, safe='/-_.~')}"
+        md5 = hashlib.md5(data, usedforsecurity=False).digest()  # an integrity check S3 asks for
         headers = sigv4_headers(
             "PUT",
             url,
             data,
-            {"content-type": content_type},
+            {"content-type": content_type, "content-md5": base64.b64encode(md5).decode()},
             self._region,
             self._access_key,
             self._secret_key,
@@ -149,7 +184,9 @@ def _closed(path: Path) -> bool:
 
 class Sink:
     """Ships closed ledgers, each with its signature, once. What has shipped is recorded in
-    `<ledgers>/.shipped/<run id>` (the object keys and the SHA-256 of what was sent)."""
+    `<ledgers>/.shipped/<run id>` (the object keys and the SHA-256 of what was sent). A ledger
+    shipped before its signature existed (signed later with `seatbelt attest`) is not shipped
+    until the signature is too."""
 
     def __init__(
         self,
@@ -157,11 +194,13 @@ class Sink:
         root: Path,
         prefix: str = "",
         backoff: tuple[float, ...] = BACKOFF,
+        attempts: int = ATTEMPTS,
     ) -> None:
         self._store = store
         self._root = root
         self._prefix = prefix
         self._backoff = backoff
+        self._attempts = attempts
         self._marks = root / ".shipped"
         self._marks.mkdir(parents=True, exist_ok=True)
         self._queue: queue.Queue[Path | None] = queue.Queue()
@@ -169,8 +208,22 @@ class Sink:
         self._thread: threading.Thread | None = None
         self._current: Path | None = None  # being uploaded
 
+    def _mark(self, path: Path) -> dict[str, str] | None:
+        """What was sent of this ledger: object key -> SHA-256. None if nothing was."""
+        try:
+            mark: Any = json.loads((self._marks / path.stem).read_text())
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError):
+            return {}  # unreadable: shipped, but not known to include the signature
+        return cast(dict[str, str], mark) if isinstance(mark, dict) else {}
+
     def shipped(self, path: Path) -> bool:
-        return (self._marks / path.stem).exists()
+        """The ledger has shipped, and so has its signature if it has one now."""
+        mark = self._mark(path)
+        if mark is None:
+            return False
+        return self._prefix + sidecar(path).name in mark or not sidecar(path).exists()
 
     def ship(self, path: Path) -> None:
         """Queue a closed ledger. Returns at once."""
@@ -214,8 +267,25 @@ class Sink:
                     break
                 except Exception as exc:  # the store's failures, and any bug, are retried
                     delay = self._backoff[min(attempt, len(self._backoff) - 1)]
-                    _log.warning("could not ship %s (retry in %.0fs): %s", path.name, delay, exc)
                     attempt += 1
+                    requeued = attempt >= self._attempts
+                    if requeued:  # a ledger the store keeps refusing must not hold up the rest
+                        _log.error(
+                            "could not ship %s in %d attempts; back of the queue: %s",
+                            path.name,
+                            attempt,
+                            exc,
+                        )
+                        self._current = None
+                        self._queue.put(path)
+                    else:
+                        _log.warning(
+                            "could not ship %s (retry in %.0fs): %s", path.name, delay, exc
+                        )
+                    if requeued:  # the next ledger goes now; this one waits its turn
+                        if self._stop.is_set():
+                            return
+                        break
                     if self._stop.wait(delay):
                         return  # stopping: this ledger and the queue are left for catch_up
             self._current = None
@@ -223,7 +293,7 @@ class Sink:
     def _upload(self, path: Path) -> None:
         if self.shipped(path):
             return
-        sent: dict[str, str] = {}
+        sent = self._mark(path) or {}
         for file, content_type in (
             (path, "application/x-ndjson"),
             (sidecar(path), "application/json"),
@@ -232,7 +302,10 @@ class Sink:
                 continue  # a gateway without a signing key writes no sidecar
             data = file.read_bytes()
             key = self._prefix + file.name
+            digest = hashlib.sha256(data).hexdigest()
+            if sent.get(key) == digest:
+                continue  # shipped before its signature was
             self._store.put(key, data, content_type)
-            sent[key] = hashlib.sha256(data).hexdigest()
+            sent[key] = digest
         (self._marks / path.stem).write_text(json.dumps(sent, indent=1) + "\n")
         _log.info("shipped %s", path.name)

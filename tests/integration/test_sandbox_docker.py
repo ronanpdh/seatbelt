@@ -76,3 +76,29 @@ def test_egress_is_off_unless_declared(
         corpus, "probe:target", image, tmp_path / f"runs-{egress}", target_dir=tdir
     )
     assert report.results[0].run_ok is expect_ok
+
+
+LOOK_TARGET = """
+import os
+from seatbelt.record.recorder import Recorder
+from seatbelt.scenarios.model import Inputs
+
+def target(rec: Recorder, inputs: Inputs) -> None:
+    seen = os.listdir("/target/runs")
+    if seen:
+        raise RuntimeError(f"the results folder is visible: {seen}")
+    rec.outcome("the results folder is hidden", success=True)
+"""
+
+
+def test_a_results_folder_inside_the_target_dir_is_hidden(tmp_path: Path, image: str) -> None:
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "look.yaml").write_text(NET_SCENARIO.format(id="look", egress="false"))
+    tdir = tmp_path / "t"
+    (tdir / "runs").mkdir(parents=True)
+    (tdir / "runs" / "earlier.txt").write_text("an earlier run's results")
+    (tdir / "look.py").write_text(LOOK_TARGET)
+    report = run_sandboxed(corpus, "look:target", image, tdir / "runs", target_dir=tdir)
+    assert report.results[0].run_ok is True  # the container saw an empty folder
+    assert (tdir / "runs" / "earlier.txt").exists()

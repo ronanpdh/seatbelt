@@ -4,6 +4,40 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 
 ## [Unreleased]
 
+A review of the whole project, with every finding checked by a second reader. Upgrade gateways promptly.
+
+### Security
+- **Gateway probes.** A model lookup (`GET /v1/models/{id}` and the Gemini equivalents) and a Code Assist operation read are forwarded only when the id has the expected shape, and the path sent upstream is built from it. Before, an authenticated employee could reach other provider endpoints through those routes with the gateway's provider key, unrecorded. `GET` and `HEAD` carry no body upstream, and method-override headers are never forwarded.
+- **Request shapes the gateway could not record faithfully are refused with 400:** Gemini and Code Assist fields in their snake_case spelling (which escaped the record, the output-token cap and the tool denylist), Gemini `candidateCount` above 1, Chat Completions legacy function calling (`functions`, `function_call`, `function` messages) and `n` above 1. `Format.unrecordable` names the reason.
+- **The output-token cap** reads an integral float or an integer in a string as the number it is, and refuses any other value instead of ignoring it.
+- **Redaction** also removes seatbelt's own `sbk_` keys, Google API keys, AWS `ASIA` keys, private key blocks, JWTs, Stripe and Slack tokens, passwords in URLs and `…KEY=`, `…TOKEN=`, `…SECRET=` and `…PASSWORD=` lines as in `.env` files (an upper-case name and a value of 16 characters or more), dict keys, and the actor ids and `parent_id` of every event (in `Ledger.append`, so no caller can skip it). Keys that collide after redaction keep both values (`#2`).
+- **`verify-pack --pubkey`** fails an unsigned pack and a run without its signature, as `verify --pubkey` does. Pack reading is bounded (sizes, compression ratio, one streamed pass), refuses encrypted or unusual members and run ids that are not plain names, and reports a hostile pack as FORGED instead of crashing.
+- **`seatbelt pack`** refuses a signature file that contradicts its ledger and, with `--key`, one another key made, so a pack signature never covers a sidecar the signer did not check. It also refuses a ledger whose file name is not a run id.
+- **Without a key,** `verify`, `verify-pack` and `report` compare a signature file with its ledger and fail on a mismatch. This is a consistency check, not tamper evidence: only a key proves a ledger unchanged.
+- **Terminal output** shows control characters in ledger and pack text as visible escapes (`seatbelt.terminal.printable`), in the tables, verdicts and errors of `reconstruct`, `report`, `runs`, `verify`, `verify-pack` and `erase`, so recorded text cannot move the cursor, hide lines or write the clipboard.
+- **Sandbox:** a scenario's ledger is taken from the container only as a plain file of at most 64 MiB, never through a link. A results folder inside `--target-dir` is hidden from the container.
+- **`seatbelt run`** keeps seatbelt's own secrets (`SEATBELT_SIGNING_KEY`, the sink's credentials) out of the CLI's environment, and through a gateway also removes Claude Code's Bedrock and Vertex AI switches and `CLAUDE_CODE_OAUTH_TOKEN`, which would take it around the gateway.
+- **Gateway logs:** keys in `?key=` are redacted from the access log, the `/_seatbelt/<key>/` path is served only by the local recorder, and HTTP client request lines are no longer logged. Sign-in errors caused by the identity provider no longer show its URLs or network errors to clients.
+- **Release workflow:** the job that builds, attests and uploads the release never installs the dev dependencies or runs the tests, which run in their own read-only job. The tagged commit must be on `main`, uv is pinned by version everywhere and by checksum in the job that builds the release, the gateway image pins its build backend by hash, and the GHCR image (`:latest` included) is pushed only after the PyPI approval.
+
+### Fixed
+- A request body over 64 MiB as sent is refused with 413, one that inflates past 64 MiB with 415, and one nested more than 128 levels deep with 400.
+- An identity-provider outage no longer signs every Claude Desktop user out: the keys held stay in use for up to an hour, a failed fetch is retried at most every 30 seconds, and one request fetches while the others go on.
+- A streamed response the gateway cannot assemble is recorded as the text received, with the error, not as an empty response. A lone surrogate in a model's tool arguments is kept as the text `\ud800` instead of losing the event.
+- Streamed Anthropic responses keep thinking, signatures and citations; streamed Chat responses keep refusals; GPT-5 custom tool calls in Chat Completions are recorded and checked. A stream that ends without a stop reason, or with a provider error, is recorded with an error. Gemini tool results are matched to calls whose arguments held a redacted secret.
+- A failed write rolls the ledger back to its last whole line. One ledger that fails to close no longer leaves the other sessions in the same sweep open. Two processes never both close the same dead ledger (a lock in `.closing/`), and a local run closes only ledgers that name a run, as local runs' do, whose run is gone: never an erasure record, or a ledger whose run name is not a plain name.
+- Signatures and keys are written atomically and fsynced, as is a new ledger's folder entry.
+- The sink sends `Content-MD5` (S3 requires it with Object Lock), signs the host it actually sends, refuses an endpoint with a path, query or user name, and accepts `http://` only with `allow_http: true`. A ledger that keeps failing goes to the back of the queue with an error, and a signature added after its ledger shipped is shipped at the next start.
+- `seatbelt report` fails on a signature whose ledger is gone (`missing`) and, with `--pubkey`, on a ledger that ended without a signature (`unsigned`), and never adds forged or unsigned ledgers to the totals. An emptied ledger is no longer skipped. `--json` has the new `unsigned` and `missing` lists.
+- `seatbelt erase` names, and exits 1 for, an unreadable ledger that is or may be the person's, instead of reporting success. `.erased` is created mode 0600.
+- The Compliance importer re-imports a message a killed or failed run may have left partly written, reports a local session it cannot read again for 3 runs as needing a person without stopping the other sources, and refuses a chat returned as partial (`has_more`).
+- The Anthropic SDK adapter records a streamed response when the caller's code raises inside `stream()`. The OpenAI Agents processor no longer keeps every agent span.
+- `seatbelt run` prints whether it records locally or through a gateway, says afterwards whether a gateway run was recorded (or was not open, which also happens after the gateway closed it for going idle), warns when Claude Code's settings switch it to Bedrock or Vertex AI and when a `gateway.toml` is ignored beside a `config.toml`, exits 128 + N when signal N ended the CLI, passes SIGTERM and SIGHUP on to the CLI, and prints a key or spawn error as one line.
+- `seatbelt demo` prints the commands that check and replay its run.
+
+### Changed
+- Docs: the library install (`pip install "seatbelt-ai[anthropic]"`), the employee config in `config.toml` everywhere, the gateway image by `<version>` and digest, `FORWARDED_ALLOW_IPS` behind an appending proxy, what a local signature does and does not prove, the scenarios quick start with `--target-dir examples/`, and SECURITY.md's scope (the gateway, its image, the importer and the release workflow).
+
 ## [0.5.0] - 2026-09-29
 
 ### Added

@@ -2,11 +2,11 @@
 
 ## Supported versions
 
-Only the latest minor release receives fixes while the project is pre-1.0.
+Only the latest minor release receives fixes while the project is pre-1.0. A fix ships in a new release: on PyPI as `seatbelt-ai`, and as a new gateway image tag, `ghcr.io/ronanpdh/seatbelt-gateway:<version>` (`:latest` moves to it). Images already published are not rebuilt, so run the latest tag to get fixes, those in the image's base and dependencies included.
 
 ## Reporting a vulnerability
 
-Email connect@rpdh.uk with the subject "harness security". Include steps to reproduce and the version or commit.
+Email connect@rpdh.uk with the subject "harness security", or, if it is enabled on the repository, use GitHub's private vulnerability reporting (the Security tab, "Report a vulnerability"). Include steps to reproduce and the version, image tag or commit.
 
 You will get an acknowledgement within 3 working days and a target fix date within 10. We will credit you in the changelog unless you ask us not to.
 
@@ -14,7 +14,14 @@ Please do not open public issues for security problems, and do not test against 
 
 ## Scope
 
-In scope: the harness code, its CLI, the ledger, attestation and evidence pack formats, and the shipped scenarios.
+In scope:
+- the harness code and its CLI;
+- the recording gateway (`seatbelt gateway serve`), a network service that holds the provider keys: issued keys and OIDC sign-in, policy, recording, and shipping to object storage;
+- the gateway container image published to GHCR, built from `docker/Dockerfile.gateway`;
+- the Compliance API importer (`seatbelt import compliance`);
+- the ledger, attestation and evidence pack formats;
+- the release workflow and what it publishes;
+- the shipped scenarios.
 
 Out of scope: vulnerabilities in target agents or third-party frameworks the harness tests. Report those to their maintainers.
 

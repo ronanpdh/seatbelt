@@ -87,11 +87,21 @@ def _call_id(item: dict[str, Any]) -> str | None:
     return str(call_id) if call_id else None
 
 
+def _type(item: dict[str, Any]) -> str | None:
+    """The item's type; None when it is not a string, which could not be looked up."""
+    kind = item.get("type")
+    return kind if isinstance(kind, str) else None
+
+
 def _is_call(item: dict[str, Any]) -> bool:
     """A tool call the client runs and answers. A tool search can run at either end."""
-    if item.get("type") == "tool_search_call" and item.get("execution") != "client":
+    if _type(item) == "tool_search_call" and item.get("execution") != "client":
         return False
-    return item.get("type") in _CALLS and bool(item.get("call_id"))
+    return _type(item) in _CALLS and bool(item.get("call_id"))
+
+
+def _is_result(item: dict[str, Any]) -> bool:
+    return _type(item) in _RESULTS
 
 
 def _arguments(item: dict[str, Any]) -> dict[str, Any]:
@@ -121,7 +131,7 @@ class OpenAIResponsesFormat:
         the whole history each turn (Codex) repeat old results; each is recorded once."""
         for item in _items(body):
             call_id = _call_id(item)
-            if item.get("type") not in _RESULTS or call_id is None:
+            if not _is_result(item) or call_id is None:
                 continue
             call = self._open.pop(call_id, None)
             if call is not None:
@@ -139,8 +149,15 @@ class OpenAIResponsesFormat:
         return [
             (call_id, names.get(call_id))
             for i in items
-            if i.get("type") in _RESULTS and (call_id := _call_id(i)) is not None
+            if _is_result(i) and (call_id := _call_id(i)) is not None
         ]
+
+    @staticmethod
+    def unrecordable(body: dict[str, Any]) -> str | None:
+        if body.get("background") is True:
+            # its output is fetched later with GET /v1/responses/{id}, which is not recorded
+            return "background responses are not recorded"
+        return None
 
     def finish(
         self, call: ModelCall, response: dict[str, Any] | None, error: str | None = None

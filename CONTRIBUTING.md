@@ -39,13 +39,15 @@ New functionality comes with tests, and a bug fix comes with a test that fails w
 
 The maintainer tags; `.github/workflows/release.yml` does the rest.
 
-1. By pull request, set the version in `pyproject.toml` (`uv version <x.y.z>`), move `[Unreleased]` in CHANGELOG.md to `## [x.y.z] - <date>`, and merge.
-2. Tag the merge commit: `git tag vx.y.z <sha> && git push origin vx.y.z`. The workflow refuses a tag that does not match the version.
-3. The `release` job tests, builds, attests and creates the GitHub release. The `image` job pushes the gateway image to GHCR. The `pypi` job publishes the wheel and sdist to PyPI as `seatbelt-ai`, after a required reviewer approves it in the Actions tab.
+1. By pull request, set the version in `pyproject.toml` (`uv version <x.y.z>`) and move `[Unreleased]` in CHANGELOG.md to `## [x.y.z] - <date>`. Check the docs for versions this release makes stale: `git grep -n '<previous x.y.z>' -- README.md SECURITY.md docs ':!docs/plans' ':!docs/adr'` should find only history. Copy-paste commands use `<version>` rather than a number (the image in docs/deploy/gateway.md, for one). Merge.
+2. Tag the merge commit: `git tag vx.y.z <sha> && git push origin vx.y.z`. The workflow refuses a tag that does not match the version, or whose commit is not on `main`.
+3. The `build` job builds the wheel and sdist without installing the dev dependencies, attests them and writes the SBOM. The `test` job runs the tests separately, with a read-only token. When both pass, the `release` job creates the GitHub release, and the `pypi` job publishes the wheel and sdist to PyPI as `seatbelt-ai` after a required reviewer approves it in the Actions tab. The `image` job pushes the gateway image to GHCR (`:<version>` and `:latest`) only after that.
+4. The workflows pin uv (`version:` in ci.yml and release.yml, with the release binary's checksum) and the gateway image pins its build backend (`docker/requirements-build.txt`). Dependabot does not update these; bump them together, inside pyproject's `[build-system]` range.
 
 **Once, before the first PyPI release:**
 - On GitHub, Settings → Environments → New environment `pypi`, with yourself as a required reviewer.
 - On PyPI, Account settings → Publishing → add a pending GitHub publisher: project `seatbelt-ai`, owner `ronanpdh`, repository `seatbelt`, workflow `release.yml`, environment `pypi`. A pending publisher does not reserve the name, so add it just before tagging.
+- On GitHub, Settings → Rules → Rulesets → New ruleset → New tag ruleset: target `v*`, turn on "Restrict creations", "Restrict updates" and "Restrict deletions", and put only the maintainer in the bypass list, so no one else can start a release.
 
 Design and sources: [docs/plans/2026-09-29-pypi-design.md](docs/plans/2026-09-29-pypi-design.md).
 

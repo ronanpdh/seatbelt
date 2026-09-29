@@ -1,0 +1,23 @@
+# The build backend for docker/Dockerfile.gateway, pinned by hash. Keep the version inside
+# pyproject's [build-system] range and equal to the uv version in the workflows. Regenerate with:
+#    echo "uv_build==<version>" | uv pip compile - --generate-hashes --no-header
+uv-build==0.12.20 \
+    --hash=sha256:00368fcedeb4fa43b6762fc13ef4ea71f17fe47f731038498b819fcfdbedee89 \
+    --hash=sha256:027917a0562583e2b5624fb1a589079a51ad5b0c8d2e87a99c3a913cfa5d3096 \
+    --hash=sha256:0a8a64dbfbebab2bc7dc143d76db2614ce02452dcba8d697ddf41e4b133a7aab \
+    --hash=sha256:0fb09a6348b1443115da28ba1710b330a212e2e0d1a7689fda774754fbe34157 \
+    --hash=sha256:1d6906511beb61469ca638e1cd97472c9e887c4d03495eba91bab14fd68920c7 \
+    --hash=sha256:31f8ab14c3a281fec55728e1bc8e8c8d4986335b5293e6d698d3d63df70046b8 \
+    --hash=sha256:39e6aed51faf31058b319b8219562895082639a1ab262c526bf3ab37effbfbf0 \
+    --hash=sha256:4595440a17e6a6c62878b41248a3cce9ef3231e14784c77d9a6cef4cb8059273 \
+    --hash=sha256:63c2c68715401740bfa7739a1d349160de93ea06061a4c057d59597147ae637e \
+    --hash=sha256:6db7c2c482a831b166acd2bcfd6e0a4bad5206d8f8a2dd3192f5caf6c8d97ea4 \
+    --hash=sha256:8dd48990737791307a74e00aecf438c3c426de1d326b5de5b9a3e94954095808 \
+    --hash=sha256:8dee6ce83ab88bf8f7426c8da23d51cf9c7e4ed3d5ec35a96a5261e654ef9654 \
+    --hash=sha256:9cb838da8c6cfe287b0c4c4c4907fae9d45959a7f6f4f87334bdcba40c8fda13 \
+    --hash=sha256:9ecc96cc3820deab3bfdfcd504b3cca6c6ddf24a7a0c37476f8099b2fb94587b \
+    --hash=sha256:b7a417f15a18c11f1d381e726da01e030e6855d46ca3c26bb1984f315f660246 \
+    --hash=sha256:be88a77bd88e81e66d4bbe817774e5d68fef1ce5c17b98001cacf36fed63b94b \
+    --hash=sha256:cec7913accf4e58769fb6770d08c0403c1bb75fab58566a62503d703b7fee6f3 \
+    --hash=sha256:ef233693532da3f0aebcab57618f813ee073bf65db246bf7575d3b44d9d23f2f \
+    --hash=sha256:f26d7e64f3a26ae92a98e597b7c3ad4fbaa2aecaa71579b59d9554d287e9c5f6

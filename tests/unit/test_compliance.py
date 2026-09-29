@@ -288,9 +288,10 @@ def test_a_run_killed_before_signing_is_closed_and_carried_on_from(tmp_path: Pat
     ledgers = _ledgers(root)
     first = ledgers["cowork-clls_01-1"]
     assert first[-1].kind is Kind.RUN_END and first[-1].attrs["run.error"] == "importer killed"
-    second = ledgers["cowork-clls_01-2"]  # only what the killed run had not recorded
+    # what the killed run had not recorded, from its last message on: that one may be partial
+    second = ledgers["cowork-clls_01-2"]
     ids = [e.attrs["compliance.message_id"] for e in second if "compliance.message_id" in e.attrs]
-    assert ids[0] == "clsm_2" and "clsm_1" not in ids
+    assert ids[:2] == ["clsm_1", "clsm_2"] and "clsm_marker" not in ids
 
 
 def test_a_lost_state_file_records_nothing_twice(tmp_path: Path) -> None:

@@ -11,8 +11,10 @@ from __future__ import annotations
 import getpass
 import logging
 import os
+import re
 import secrets
 import threading
+import time
 from collections.abc import Generator, Mapping
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
@@ -22,7 +24,9 @@ from pathlib import Path
 import uvicorn
 from pydantic import ValidationError
 
+from seatbelt.attest.manifest import AttestError
 from seatbelt.attest.sign import KEY_FILE, Signer, keygen
+from seatbelt.erase import is_record
 from seatbelt.gateway.app import create_app
 from seatbelt.gateway.config import (
     KEY_PREFIX,
@@ -34,6 +38,7 @@ from seatbelt.gateway.config import (
 )
 from seatbelt.gateway.serve import make_sink
 from seatbelt.gateway.sessions import Sessions, close_open_chains
+from seatbelt.ledger.events import Event
 from seatbelt.locks import RUNNING, try_lock
 
 _log = logging.getLogger(__name__)
@@ -49,6 +54,10 @@ IDLE = 7 * 24 * 3600.0  # nothing sweeps local sessions; the run's end closes it
 SHIP_WAIT = 30.0  # seconds to wait at exit for the sink; what is left ships next run
 TIDY_WAIT = 60.0  # seconds to wait at exit for the start-up tidy (below) to finish
 DEAD_RUN = "run ended without closing its ledger (the process was killed)"
+KEY_WAIT = 1.0  # seconds to wait for a key another run's first start is still writing
+
+
+_PLAIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # a run name local runs give; no path in it
 
 
 def _lock_file(ledgers: Path, run: str) -> Path:
@@ -58,7 +67,7 @@ def _lock_file(ledgers: Path, run: str) -> Path:
 def _alive(ledgers: Path, run: object) -> bool:
     """Whether the run that opened a ledger is still running: its lock file is locked. A run
     takes its lock before it opens any ledger, so a ledger without one is a dead run's."""
-    if not isinstance(run, str) or not run:
+    if not isinstance(run, str) or not _PLAIN.fullmatch(run):
         return False
     path = _lock_file(ledgers, run)
     try:
@@ -72,23 +81,42 @@ def _alive(ledgers: Path, run: object) -> bool:
     return False
 
 
+def _dead_run(ledgers: Path, events: list[Event]) -> bool:
+    """A ledger a local run opened (they all name their run) and whose run is gone. Any other
+    writer's, such as an erasure record or an import, is left to that writer."""
+    name = events[0].attrs.get("run.name")
+    if not isinstance(name, str) or not _PLAIN.fullmatch(name) or is_record(events):
+        return False
+    return not _alive(ledgers, name)
+
+
 def close_dead_runs(ledgers: Path, signer: Signer) -> list[Path]:
     """Close and sign the open ledgers of runs that died (killed, or crashed) and leave every
     live run's alone: several runs can record into the same folder at once."""
     return close_open_chains(
-        ledgers,
-        signer,
-        only=lambda events: not _alive(ledgers, events[0].attrs.get("run.name")),
-        reason=DEAD_RUN,
+        ledgers, signer, only=lambda events: _dead_run(ledgers, events), reason=DEAD_RUN
     )
 
 
 def local_signer(keys: Path) -> Signer:
-    """This machine's signing key, made on first use (mode 0600) beside its public key."""
+    """This machine's signing key, made on first use (mode 0600) beside its public key. Two
+    first runs at once both try to make it: the one that loses reads the winner's, which may
+    not be written yet, so an unreadable key is read again for up to KEY_WAIT seconds."""
     if not (keys / KEY_FILE).exists():
-        keygen(keys)
-        _log.info("made a signing key for local runs in %s", keys)
-    return Signer.from_file(keys / KEY_FILE)
+        try:
+            keygen(keys)
+            _log.info("made a signing key for local runs in %s", keys)
+        except AttestError:  # another run made it first
+            if not (keys / KEY_FILE).exists():
+                raise
+    deadline = time.monotonic() + KEY_WAIT
+    while True:
+        try:
+            return Signer.from_file(keys / KEY_FILE)
+        except AttestError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
 
 
 def login_name() -> str:
@@ -164,11 +192,20 @@ def local_recorder(
         shipper.start()
 
     def tidy() -> None:  # reads every open ledger: off the path of the CLI's start
-        closed = close_dead_runs(ledgers, signer)
-        if closed:
-            _log.warning("closed %d ledgers that runs left open when they were killed", len(closed))
+        try:
+            closed = close_dead_runs(ledgers, signer)
+        except Exception:  # e.g. another run closing the same ledger: shipping still runs
+            _log.exception("could not close the ledgers killed runs left open")
+        else:
+            if closed:
+                _log.warning(
+                    "closed %d ledgers that runs left open when they were killed", len(closed)
+                )
         if shipper is not None:
-            shipper.catch_up()  # earlier runs' ledgers a sink missed, and those just closed
+            try:
+                shipper.catch_up()  # earlier runs' ledgers a sink missed, and those just closed
+            except Exception:
+                _log.exception("could not queue earlier runs' ledgers for the sink")
 
     written: list[Path] = []
 
@@ -180,7 +217,11 @@ def local_recorder(
     sessions = Sessions(ledgers, signer, idle=IDLE, on_close=closed)
     server = uvicorn.Server(
         uvicorn.Config(
-            create_app(cfg, sessions), host="127.0.0.1", port=0, log_level="warning", lifespan="off"
+            create_app(cfg, sessions, path_credentials=True),  # the key in the base URL's path
+            host="127.0.0.1",
+            port=0,
+            log_level="warning",
+            lifespan="off",
         )
     )
     thread = threading.Thread(target=server.run, name="seatbelt-local", daemon=True)

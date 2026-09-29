@@ -4,23 +4,33 @@ on:
     tags: ["v*"]
 permissions:
   contents: read
+# build -> test -> release (GitHub release) -> pypi (reviewer approval) -> image (GHCR).
+# The job that builds, attests and uploads never installs the dev group or runs project code;
+# the tests run in their own job with a read-only token.
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write      # create the GitHub release
+      contents: read       # checkout
       id-token: write      # Sigstore signing
       attestations: write  # provenance and SBOM attestations
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         with:
           persist-credentials: false
+          fetch-depth: 0  # all branches and history, for the on-main check
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          # inside pyproject's uv_build range, so `uv build` uses the backend bundled in this
+          # binary and fetches none; bump both together (and docker/requirements-build.txt)
+          version: "0.12.20"
+          checksum: "6590717592ace991ff83a63fef799e3ad9d33ecc8f96c5d6bdd732496e79337f"  # uv-x86_64-unknown-linux-gnu.tar.gz
+          enable-cache: false
       - name: Tag matches package version
         run: test "${GITHUB_REF_NAME#v}" = "$(uv version --short)"
-      - run: uv sync --locked
-      - run: uv run pytest
-      - run: uv build
+      - name: Tagged commit is on main
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - run: uv build  # no `uv sync`: nothing from the lock file is installed or run here
       - name: CycloneDX SBOM
         run: uv export --locked --format cyclonedx1.5 --no-dev --all-extras -o dist/sbom.cdx.json
       - name: Build provenance attestation
@@ -41,6 +51,43 @@ jobs:
         env:
           BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
         run: cp "$BUNDLE" "dist/seatbelt_ai-${GITHUB_REF_NAME#v}.intoto.jsonl"
+      - name: Keep the release files for the later jobs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: dist
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+            dist/sbom.cdx.json
+            dist/*.intoto.jsonl
+          if-no-files-found: error
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version: "0.12.20"
+          enable-cache: false
+      - run: uv sync --locked
+      - run: uv run pytest
+  release:
+    needs: [build, test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # create the GitHub release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: dist
+          path: dist
       - name: GitHub release with changelog notes
         env:
           GH_TOKEN: ${{ github.token }}
@@ -49,19 +96,11 @@ jobs:
           awk -v v="$version" '$0 ~ "^## \\[" v "\\]" {f=1; next} /^## \[/ {f=0} f' CHANGELOG.md > notes.md
           test -s notes.md
           gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --notes-file notes.md
-      - name: Keep the wheel and sdist for the pypi job
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        with:
-          name: dist
-          path: |
-            dist/*.whl
-            dist/*.tar.gz
-          if-no-files-found: error
   pypi:
     # Trusted Publishing: PyPI trusts this workflow in the `pypi` environment, so no token is
-    # stored. The environment is what guards the upload: the release job can mint an OIDC token
-    # too, but the PyPI publisher accepts only this job's. Building stays in the release job.
-    needs: release  # tests passed and the GitHub release exists
+    # stored. The environment is what guards the upload: the build job can mint an OIDC token
+    # too, but the PyPI publisher accepts only this job's. Building stays in the build job.
+    needs: [build, test, release]
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -72,10 +111,17 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: dist
-          path: dist
+          path: release-files
+      - name: Only the wheel and sdist go to PyPI
+        # the action uploads everything in dist/, and the SBOM and provenance bundle are not
+        # distributions
+        run: |
+          mkdir dist
+          mv release-files/*.whl release-files/*.tar.gz dist/
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
   image:
-    needs: release  # tests passed and the release exists
+    # after the PyPI approval, so the reviewer also gates the GHCR push, :latest included
+    needs: [build, test, pypi]
     runs-on: ubuntu-latest
     permissions:
       contents: read

@@ -6,7 +6,7 @@ Every ``Any`` here is provider JSON: untyped because the wire shape is not ours 
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, cast
 
 from seatbelt.gateway.formats import as_dict, as_dicts
 from seatbelt.ledger.events import Event
@@ -57,6 +57,10 @@ class AnthropicFormat:
         }
         return [(tid, names.get(tid)) for tid, _, _ in tool_results(body)]
 
+    @staticmethod
+    def unrecordable(body: dict[str, Any]) -> str | None:
+        return None
+
     def finish(
         self, call: ModelCall, response: dict[str, Any] | None, error: str | None = None
     ) -> list[Event]:
@@ -64,6 +68,8 @@ class AnthropicFormat:
         if response is None:
             call.respond({}, error=error)
             return []
+        if error is None and response.get("stop_reason") is None:
+            error = _stream_error(response)
         usage = as_dict(response.get("usage"))
         model = response.get("model")
         answer = call.respond(
@@ -87,6 +93,14 @@ class AnthropicFormat:
             self._open[str(block["id"])] = event
             calls.append(event)
         return calls
+
+
+def _stream_error(response: dict[str, Any]) -> str:
+    """A response that ended without a stop reason: the stream's error event, if it sent one."""
+    err = as_dict(response.get("error"))
+    if err:
+        return f"{err.get('type')}: {err.get('message')}"
+    return "response ended without a stop reason"
 
 
 def tool_results(body: dict[str, Any]) -> list[tuple[str, Any, bool]]:
@@ -117,10 +131,24 @@ def assemble_sse(events: list[dict[str, Any]]) -> dict[str, Any]:
             case "content_block_delta":
                 block = blocks.setdefault(i, {})
                 delta = as_dict(ev.get("delta"))
-                if delta.get("type") == "text_delta":
-                    block["text"] = str(block.get("text", "")) + str(delta.get("text", ""))
-                elif delta.get("type") == "input_json_delta":
-                    partial[i] = partial.get(i, "") + str(delta.get("partial_json", ""))
+                match delta.get("type"):
+                    case "text_delta":
+                        block["text"] = str(block.get("text", "")) + str(delta.get("text", ""))
+                    case "thinking_delta":
+                        thinking = str(delta.get("thinking", ""))
+                        block["thinking"] = str(block.get("thinking", "")) + thinking
+                    case "signature_delta":
+                        block["signature"] = str(delta.get("signature", ""))
+                    case "citations_delta":
+                        cited = block.get("citations")
+                        block["citations"] = [
+                            *(cast(list[Any], cited) if isinstance(cited, list) else []),
+                            delta.get("citation"),
+                        ]
+                    case "input_json_delta":
+                        partial[i] = partial.get(i, "") + str(delta.get("partial_json", ""))
+                    case _:
+                        pass
             case "content_block_stop":
                 if i in partial:
                     try:
@@ -130,6 +158,8 @@ def assemble_sse(events: list[dict[str, Any]]) -> dict[str, Any]:
             case "message_delta":
                 message.update(as_dict(ev.get("delta")))
                 message["usage"] = {**as_dict(message.get("usage")), **as_dict(ev.get("usage"))}
+            case "error":  # mid-stream, e.g. overloaded_error; `finish` records the last one
+                message["error"] = as_dict(ev.get("error"))
             case _:
                 pass
     message["content"] = [blocks[i] for i in sorted(blocks)]

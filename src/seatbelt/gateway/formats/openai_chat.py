@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from seatbelt.gateway.formats import as_dict, as_dicts, parse_arguments
+from seatbelt.gateway.formats import as_dict, as_dicts, integer, parse_arguments
 from seatbelt.ledger.events import Event
 from seatbelt.record.recorder import ModelCall, Recorder
 
@@ -23,6 +23,7 @@ KEEP = (
     "n",
 )
 _USAGE = {"prompt_tokens": "input_tokens", "completion_tokens": "output_tokens"}
+_FUNCTION = ("function", "arguments")
 
 
 class OpenAIChatFormat:
@@ -51,7 +52,7 @@ class OpenAIChatFormat:
         """(tool_call id, tool name the history gives it) for every tool message in the request."""
         messages = as_dicts(body.get("messages"))
         names = {
-            str(tc.get("id")): str(as_dict(tc.get("function")).get("name"))
+            str(tc.get("id")): _call(tc)[0]
             for m in messages
             for tc in as_dicts(m.get("tool_calls"))
         }
@@ -61,6 +62,19 @@ class OpenAIChatFormat:
             if m.get("role") == "tool"
         ]
 
+    @staticmethod
+    def unrecordable(body: dict[str, Any]) -> str | None:
+        """Legacy function calling has no call ids, so its calls and results would not be
+        recorded as tool calls or checked against the policy; and the record holds one choice."""
+        if body.get("functions") is not None or body.get("function_call") is not None:
+            return "legacy `functions`/`function_call` are not recorded; use `tools`"
+        if any(m.get("role") == "function" for m in as_dicts(body.get("messages"))):
+            return "legacy `function` messages are not recorded; use `tools`"
+        n, count = body.get("n"), integer(body.get("n"))
+        if n is not None and (count is None or count > 1):
+            return f"n {n!r} is not recorded: one choice per request"
+        return None
+
     def finish(
         self, call: ModelCall, response: dict[str, Any] | None, error: str | None = None
     ) -> list[Event]:
@@ -68,6 +82,15 @@ class OpenAIChatFormat:
         if response is None:
             call.respond({}, error=error)
             return []
+        choices = as_dicts(response.get("choices"))
+        ended = bool(choices) and choices[0].get("finish_reason") is not None
+        if error is None and not ended:
+            err = as_dict(response.get("error"))  # an error chunk mid-stream
+            error = (
+                f"{err.get('type') or err.get('code')}: {err.get('message')}"
+                if err
+                else "response ended without a finish reason"
+            )
         model = response.get("model")
         answer = call.respond(
             response,
@@ -75,23 +98,31 @@ class OpenAIChatFormat:
             response_model=model if isinstance(model, str) else None,
             error=error,
         )
-        choices = as_dicts(response.get("choices"))
-        if not choices or choices[0].get("finish_reason") is None:
+        if not ended:
             return []  # abandoned stream: tool arguments may be truncated
         calls: list[Event] = []
         for tc in as_dicts(as_dict(choices[0].get("message")).get("tool_calls")):
-            fn = as_dict(tc.get("function"))
-            if not tc.get("id") or not fn.get("name"):
+            name, arguments = _call(tc)
+            if not tc.get("id") or name is None:
                 continue
             event = self._rec.tool_called(
-                str(fn["name"]),
-                parse_arguments(fn.get("arguments")),
-                call_id=str(tc["id"]),
-                parent_id=answer.id,
+                name, arguments, call_id=str(tc["id"]), parent_id=answer.id
             )
             self._open[str(tc["id"])] = event
             calls.append(event)
         return calls
+
+
+def _call(tc: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
+    """A tool call's name and arguments. A custom tool (`type: custom`) takes free-form
+    input, recorded as `{"input": ...}` as the Responses format records `custom_tool_call`."""
+    if tc.get("type") == "custom":
+        custom = as_dict(tc.get("custom"))
+        name, arguments = custom.get("name"), {"input": custom.get("input")}
+    else:
+        fn = as_dict(tc.get("function"))
+        name, arguments = fn.get("name"), parse_arguments(fn.get("arguments"))
+    return (str(name) if name else None), arguments
 
 
 def _usage(raw: dict[str, Any]) -> dict[str, int]:
@@ -124,25 +155,31 @@ def assemble_sse(chunks: list[dict[str, Any]]) -> dict[str, Any]:
             delta = as_dict(choice.get("delta"))
             if isinstance(delta.get("role"), str):
                 message["role"] = delta["role"]
-            if isinstance(delta.get("content"), str):
-                message["content"] = str(message.get("content") or "") + delta["content"]
+            for field in ("content", "refusal"):
+                if isinstance(delta.get(field), str):
+                    message[field] = str(message.get(field) or "") + delta[field]
             for tc in as_dicts(delta.get("tool_calls")):
                 i = tc.get("index", 0)
                 if not isinstance(i, int):
                     continue  # malformed proxy output
-                slot = tool_calls.setdefault(
-                    i, {"id": None, "type": "function", "function": {"name": "", "arguments": ""}}
-                )
+                slot = tool_calls.setdefault(i, {"id": None, "type": "function"})
                 if tc.get("id"):
                     slot["id"] = tc["id"]
-                fn = as_dict(tc.get("function"))
-                if fn.get("name"):
-                    slot["function"]["name"] = fn["name"]
-                slot["function"]["arguments"] += str(fn.get("arguments") or "")
+                if tc.get("type") == "custom":
+                    slot["type"] = "custom"
+                # a custom tool's input streams as custom.input, a function's as arguments
+                kind, field = ("custom", "input") if slot["type"] == "custom" else _FUNCTION
+                part = slot.setdefault(kind, {"name": "", field: ""})
+                fresh = as_dict(tc.get(kind))
+                if fresh.get("name"):
+                    part["name"] = fresh["name"]
+                part[field] = str(part.get(field) or "") + str(fresh.get(field) or "")
             if isinstance(choice.get("finish_reason"), str):
                 finish = choice["finish_reason"]
+        if as_dict(chunk.get("error")):  # an error chunk mid-stream; `finish` records it
+            out["error"] = chunk["error"]
     if tool_calls:
         message["tool_calls"] = [tool_calls[i] for i in sorted(tool_calls)]
-    # n > 1 collapses into one choice; the request records n
+    # one choice: the gateway refuses n > 1 (`unrecordable`)
     out["choices"] = [{"index": 0, "finish_reason": finish, "message": message}]
     return out

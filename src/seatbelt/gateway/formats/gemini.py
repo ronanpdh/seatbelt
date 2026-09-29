@@ -11,8 +11,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from seatbelt.gateway.formats import as_dict, as_dicts
+from seatbelt.gateway.formats import as_dict, as_dicts, integer
 from seatbelt.ledger.events import Event
+from seatbelt.ledger.redact import redact
+from seatbelt.ledger.store import writable
 from seatbelt.record.recorder import ModelCall, Recorder
 
 KEEP = (
@@ -27,6 +29,27 @@ KEEP = (
     "serviceTier",
     "store",
 )
+# The API reads proto3 JSON, which also takes each field's original snake_case name. Where
+# the gateway reads or records a field by its camelCase name, a request that uses the other
+# spelling is refused, not forwarded with that field unchecked and unrecorded. Keys inside
+# functionCall.args, functionResponse.response and schemas are the caller's own and are left
+# alone.
+_SNAKE_TOP = (
+    "system_instruction",
+    "generation_config",
+    "tool_config",
+    "safety_settings",
+    "cached_content",
+)
+_SNAKE_PART = (
+    "function_call",
+    "function_response",
+    "inline_data",
+    "file_data",
+    "executable_code",
+    "code_execution_result",
+)
+_SNAKE_GENERATION = ("max_output_tokens", "candidate_count")
 # usageMetadata -> usage, named as the other formats name them. Gemini counts thinking apart
 # from the answer (total = prompt + thoughts + candidates); OpenAI's output_tokens includes its
 # reasoning tokens, so output_tokens here is candidates + thoughts, with the thoughts beside
@@ -106,8 +129,8 @@ class GeminiFormat:
         """Record tool results carried in the contents, then the request. Clients resend the
         whole history each turn; each result is recorded once."""
         seen: dict[str, int] = {}
-        history = {
-            str(fc["id"]): as_dict(fc.get("args"))
+        history = {  # as the recorded arguments `_match` compares them with are written
+            str(fc["id"]): writable(redact(as_dict(fc.get("args"))))
             for content in as_dicts(body.get("contents"))
             for part in _parts(content)
             if (fc := as_dict(part.get("functionCall"))).get("id")
@@ -143,6 +166,27 @@ class GeminiFormat:
             for fr in _responses(body)
         ]
 
+    @staticmethod
+    def unrecordable(body: dict[str, Any]) -> str | None:
+        generation = as_dict(body.get("generationConfig"))
+        snake = [
+            *(k for k in _SNAKE_TOP if k in body),
+            *(f"generationConfig.{k}" for k in _SNAKE_GENERATION if k in generation),
+            *(
+                f"contents[].parts[].{k}"
+                for content in as_dicts(body.get("contents"))
+                for part in _parts(content)
+                for k in _SNAKE_PART
+                if k in part
+            ),
+        ]
+        if snake:
+            return f"{snake[0]} is not recorded; use the camelCase field name"
+        count = generation.get("candidateCount")
+        if count is not None and ((n := integer(count)) is None or n > 1):
+            return f"candidateCount {count!r} is not recorded: one candidate per request"
+        return None
+
     def finish(
         self, call: ModelCall, response: dict[str, Any] | None, error: str | None = None
     ) -> list[Event]:
@@ -154,8 +198,13 @@ class GeminiFormat:
             return []
         candidates = as_dicts(response.get("candidates"))
         block = as_dict(response.get("promptFeedback")).get("blockReason")
+        err = as_dict(response.get("error"))  # an error chunk mid-stream
         if error is None and not candidates and block:
             error = f"prompt blocked: {block}"
+        elif error is None and err:
+            error = f"{err.get('status') or err.get('code')}: {err.get('message')}"
+        elif error is None and not any(c.get("finishReason") for c in candidates):
+            error = "response ended without a finish reason"
         model = response.get("modelVersion")
         answer = call.respond(
             response,
@@ -249,6 +298,10 @@ class CodeAssistFormat(GeminiFormat):
     @staticmethod
     def tool_result_calls(body: dict[str, Any]) -> list[tuple[str, str | None]]:
         return GeminiFormat.tool_result_calls(CodeAssistFormat.inner(body))
+
+    @staticmethod
+    def unrecordable(body: dict[str, Any]) -> str | None:
+        return GeminiFormat.unrecordable(CodeAssistFormat.inner(body))
 
     def finish(
         self, call: ModelCall, response: dict[str, Any] | None, error: str | None = None

@@ -41,6 +41,7 @@ from seatbelt.erase import id_hash, read_erased
 from seatbelt.gateway.config import ComplianceConfig
 from seatbelt.gateway.formats import as_dict, as_dicts
 from seatbelt.gateway.sessions import close_open_chains
+from seatbelt.ledger.events import Kind
 from seatbelt.ledger.store import LedgerError, read_events
 from seatbelt.locks import try_lock
 from seatbelt.record.recorder import Recorder
@@ -54,6 +55,7 @@ FULL = -1  # the server's maximum for tool inputs and results, instead of the 10
 FINAL = {"archived", "failed"}  # remote statuses after which a session is not followed (ours)
 FOLLOW = timedelta(days=30)  # how long a quiet, unfinished remote session is still followed
 KILLED = "importer killed"
+STUCK_AFTER = 3  # runs in a row a pending session cannot be read before a person must look
 STATE = ".state.json"
 LOCK = ".lock"
 _UNSAFE = re.compile(r"[^A-Za-z0-9_.-]")
@@ -88,6 +90,7 @@ class Conversation:
     last_ledger: dict[str, Any] | None = None  # run id and ledger_sha256 of the last segment
     pending: bool = True  # seen, and not imported since
     deleted_recorded: bool = False  # a chat's deletion has its own segment
+    failures: int = 0  # runs in a row it could not be read again
 
     @property
     def key(self) -> str:
@@ -128,6 +131,10 @@ class Summary:
 
 class Busy(Exception):
     """Another import is running on the same folder."""
+
+
+class Partial(Exception):
+    """The API returned only part of a transcript."""
 
 
 class Importer:
@@ -272,6 +279,27 @@ class Importer:
                 except TryLater:
                     summary.skipped.append(c.key)
                     continue
+                except ContentUnavailable as exc:
+                    org = str(c.meta.get("organization_uuid"))
+                    _log.warning("org %s: sessions unavailable (%s); skipped this run", org, exc)
+                    self._blocked_orgs.add(org)
+                    summary.skipped.append(c.key)
+                    continue
+                except ComplianceError as exc:
+                    c.failures += 1
+                    if c.failures < STUCK_AFTER:
+                        _log.warning("%s: %s; retried next run", c.key, exc)
+                        summary.skipped.append(c.key)
+                    else:
+                        _log.warning(
+                            "%s: %s, %d runs in a row; retried each run. Check it by hand",
+                            c.key,
+                            exc,
+                            c.failures,
+                        )
+                        summary.stuck.append(c.key)
+                    continue
+            c.failures = 0  # listed, or read again
             if self._settled(c.meta, start):
                 self._import(c, summary)
         if complete:
@@ -375,6 +403,8 @@ class Importer:
         params = {"tool_use_input_max_chars": FULL, "tool_result_max_chars": FULL}
         self._fetched = (f"{CHATS}/{c.id}/messages", params)
         chat = self.client.get(f"{CHATS}/{c.id}/messages", params)
+        if chat.get("has_more"):  # the whole chat is documented to come back in one response
+            raise Partial(f"{CHATS}/{c.id}/messages returned has_more: true")
         fresh = {k: v for k, v in chat.items() if k not in ("chat_messages", "has_more")}
         c.meta = {**c.meta, **fresh}  # the chat's metadata, as of these messages
         return [chat_message(m) for m in as_dicts(chat.get("chat_messages"))]
@@ -409,13 +439,19 @@ class Importer:
             except (OSError, LedgerError) as exc:
                 raise LedgerError(f"{path}: {exc}") from exc
             c.segment += 1
-            last = [
-                e.attrs["compliance.message_id"]
+            ids = [
+                str(e.attrs["compliance.message_id"])
                 for e in events
                 if "compliance.message_id" in e.attrs
             ]
-            if last:
-                c.last_message = str(last[-1])
+            end = events[-1] if events else None
+            ok = end is not None and end.kind is Kind.RUN_END and end.attrs.get("run.ok") is True
+            if ids and not ok:
+                # killed or failed: its last message may be only partly written (one message
+                # is several events), so the next segment records that message again, whole
+                ids = [m for m in ids if m != ids[-1]]
+            if ids:
+                c.last_message = ids[-1]
             c.last_ledger = _ledger_ref(path)
             if any(e.attrs.get("compliance.deleted_at") for e in events[:1]):
                 c.deleted_recorded = True
@@ -441,6 +477,10 @@ class Importer:
             messages = self._messages(c)
         except LedgerError as exc:
             _log.warning("%s: a segment on disk cannot be read (%s). Check it by hand", c.key, exc)
+            summary.stuck.append(c.key)
+            return
+        except Partial as exc:
+            _log.warning("%s: %s; nothing written, retried next run. Check it by hand", c.key, exc)
             summary.stuck.append(c.key)
             return
         except NotFound:

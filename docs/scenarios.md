@@ -28,7 +28,7 @@ This runs the corpus with the target in a container that has no network unless a
 
 ```sh
 rm -rf dist && uv build && docker build -f docker/Dockerfile -t seatbelt-target .
-uv run seatbelt scenarios scenarios/ --target examples.scenario_target:target --image seatbelt-target
+uv run seatbelt scenarios scenarios/ --target scenario_target:target --image seatbelt-target --target-dir examples/
 ```
 
 To add your agent's dependencies, extend the image (`FROM seatbelt-target`, then `pip install ...`).
@@ -36,7 +36,10 @@ To add your agent's dependencies, extend the image (`FROM seatbelt-target`, then
 What the container can see:
 - **Your code** is mounted read-only at `/target`.
 - **The signing key** never leaves the host.
-- **Everything under `--target-dir`** is visible to the target. Keep keys, `.env` and `runs/` outside it. The CLI refuses a `--key` inside it.
+- **Everything under `--target-dir`** is visible to the target. Keep keys and `.env` files outside it. The CLI refuses a `--key` inside it.
+- **The results folder (`--out`) is hidden** when it is inside `--target-dir`: the container sees an empty read-only folder in its place, so no scenario reads earlier runs' ledgers or those of the scenarios before it. `--out` equal to `--target-dir` is refused.
+- **Give `--target-dir` the folder with your agent's code**, as `examples/` above, and name the target relative to it. The default is the current directory, so everything in it is visible.
+- **A scenario's ledger is taken only as a plain file** of at most 64 MiB. A link, a folder or anything else the container leaves under that name is refused.
 
 ## Handing the results over
 

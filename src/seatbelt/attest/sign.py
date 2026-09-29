@@ -5,12 +5,14 @@ from __future__ import annotations
 import base64
 import os
 from pathlib import Path
+from uuid import uuid4
 
 from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
 from seatbelt.attest.manifest import AttestError, Signed, build, sidecar
+from seatbelt.ledger.store import fsync_dir
 
 KEY_FILE = "seatbelt.key"
 PUB_FILE = "seatbelt.pub"
@@ -49,6 +51,9 @@ class Signer:
         signature = base64.b64encode(self._key.sign(unsigned.canonical())).decode()
         return unsigned.model_copy(update={"signature": signature})
 
+    def public_key(self) -> Ed25519PublicKey:
+        return self._key.public_key()
+
     def private_pem(self) -> bytes:
         return self._key.private_bytes(
             _PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
@@ -70,13 +75,35 @@ def load_public_key(path: Path) -> Ed25519PublicKey:
     return key
 
 
-def _write_private(path: Path, data: bytes) -> None:
+def _create(path: Path, data: bytes) -> None:
+    """Create `path` (mode 0600, never over an existing file) holding `data`, fsynced."""
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError as exc:
         raise AttestError(f"{path} exists; refusing to overwrite") from exc
     with os.fdopen(fd, "wb") as fh:
         fh.write(data)
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
+def _write_private(path: Path, data: bytes) -> None:
+    """Write `path` whole or not at all: a sidecar cut short by a crash would read as FORGED.
+    The data goes to a temp file first; a hard link to the final name keeps no-overwrite."""
+    if path.exists():
+        raise AttestError(f"{path} exists; refusing to overwrite")
+    tmp = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        _create(tmp, data)
+        try:
+            os.link(tmp, path)
+        except FileExistsError as exc:
+            raise AttestError(f"{path} exists; refusing to overwrite") from exc
+        except OSError:  # no hard links on this filesystem: create in place, as before
+            _create(path, data)
+    finally:
+        tmp.unlink(missing_ok=True)
+    fsync_dir(path.parent)
 
 
 def keygen(directory: Path) -> tuple[Path, Path]:

@@ -7,7 +7,7 @@ The project is registered as [bestpractices.dev project 15081](https://www.bestp
 | Criterion | Status | Evidence |
 |---|---|---|
 | description_good | Met | README first paragraph |
-| interact | Met | README "Try it in five minutes", "Project" section: issues, CONTRIBUTING.md |
+| interact | Met | README "Quick start" and "Project" sections: issues, CONTRIBUTING.md |
 | contribution | Met | CONTRIBUTING.md: setup, checks, pull request rules |
 | contribution_requirements | Met | CONTRIBUTING.md "Changes" and "Tests"; STANDARDS.md |
 | floss_license, floss_license_osi | Met | Apache-2.0, `LICENSE`, `pyproject.toml` `license` |
