@@ -45,7 +45,10 @@ class _Recording:
             yield final
         except BaseException as exc:
             if call.response is None:
-                self._fmt.finish(call, None, error=describe_exception(exc))
+                # a stream the caller's code raised in: what it received, and the error
+                got = final[0] if final else None
+                body = got.model_dump(mode="json") if got is not None else None
+                self._fmt.finish(call, body, error=describe_exception(exc))
             raise
         response = final[0] if final else None
         if response is None:
@@ -70,7 +73,11 @@ class RecordedMessages(_Recording):
     @contextmanager
     def stream(self, **kwargs: Any) -> Generator[MessageStream]:
         with self._turn(kwargs) as final, self._client.messages.stream(**kwargs) as stream:
-            yield cast("MessageStream", stream)
+            try:
+                yield cast("MessageStream", stream)
+            except BaseException:
+                final.append(_snapshot(stream))
+                raise
             final.append(_snapshot(stream))
 
 
@@ -91,7 +98,11 @@ class AsyncRecordedMessages(_Recording):
     async def stream(self, **kwargs: Any) -> AsyncGenerator[AsyncMessageStream]:
         with self._turn(kwargs) as final:
             async with self._client.messages.stream(**kwargs) as stream:
-                yield cast("AsyncMessageStream", stream)
+                try:
+                    yield cast("AsyncMessageStream", stream)
+                except BaseException:
+                    final.append(_snapshot(stream))
+                    raise
                 final.append(_snapshot(stream))
 
 

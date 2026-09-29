@@ -119,8 +119,8 @@ def test_agent_and_handoff_are_decisions_in_the_authority_chain(
     proc = SeatbeltProcessor(rec)
     triage = span(AgentSpanData("triage"), "span_triage")
     proc.on_span_start(triage)
-    proc.on_span_end(triage)
     proc.on_span_end(span(HandoffSpanData("triage", "refunds"), "span_h", "span_triage"))
+    proc.on_span_end(triage)  # a child span ends before its agent's
 
     agent, handoff = [e for e in events(path) if e.kind == Kind.DECISION]
     assert agent.attrs["decision.authority"] == "triage"
