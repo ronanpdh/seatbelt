@@ -4,7 +4,10 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-29
+
 ### Added
+- OIDC sign-in from Claude Desktop tested end to end with an Auth0 tenant: sign-in, a reply through the gateway, and a ledger recording the user by their Auth0 `sub`, issuer and email. `docs/deploy/claude-desktop-gateway.md` gains an Auth0 section: a Native app, a fixed loopback callback port, the issuer with its trailing slash. It also covers opening the in-app configuration through Developer Mode. Silent token refresh with Auth0 was not yet confirmed.
 - `seatbelt import compliance` imports a Claude Enterprise organization's transcripts from Anthropic's Compliance API into signed ledgers: claude.ai chats, and Cowork, Claude Code, Claude for Microsoft 365, Claude Science and Claude in Chrome sessions, on users' machines and (Cowork) in the cloud. Run on a schedule, it imports each conversation once it has been quiet for an hour, and a conversation that continues gets a further ledger of only its new messages, chained to the last. Each ledger names its source and the endpoint it came from, and each event carries the API's message id and timestamp; no `model.request` is written, since the API returns the conversation, not the requests. Configured by a `compliance:` block in the gateway config (the key from `ANTHROPIC_COMPLIANCE_ACCESS_KEY`), signed with the gateway's key, written to `compliance/` in its ledgers folder, and shipped by the sink when one is set. Follows the API's documented paging and retry contract. **Tested against a fake of the documented API only, not a live tenant.** `seatbelt.compliance`; guide: `docs/deploy/compliance-import.md`; design and sources: `docs/plans/2026-09-29-compliance-importer-design.md`.
 - `Recorder.model_responded` records a model's answer seen with no request; `user_message` and `tool_returned` take extra `attrs`, and `tool_returned` a result whose call is not in the ledger.
 - `seatbelt report` leaves imported answers marked unverified or unavailable (`compliance.provenance`) out of model calls, and groups answers with no model as `unknown`.
@@ -161,7 +164,8 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 - Tests: hash determinism, chain link and resume, property test that any edit breaks the chain, deletion detection, redaction, recorder lineage and failure path, CLI round trip and tamper detection.
 - Project scaffolding: uv, ruff, pyright strict, pytest, Hypothesis, pre-commit, CI, Dependabot, Scorecard, SECURITY.md, CONTRIBUTING.md, STANDARDS.md, ROADMAP.md.
 
-[Unreleased]: https://github.com/ronanpdh/seatbelt/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/ronanpdh/seatbelt/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.3.0
 [0.2.0]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.2.0
 [0.1.0]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.1.0
 [0.0.4]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.0.4
