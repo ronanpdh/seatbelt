@@ -65,3 +65,7 @@ Signed Ed25519 attestation of each run (`seatbelt.attest`, `keygen`, `attest`, `
 ## 0.5.2 (released)
 
 - Done: dependency floors that are tested and free of known advisories, so `seatbelt-ai` installs beside frameworks such as CrewAI 1.x; a `lowest` workflow that tests and audits them weekly; lockfile-only Dependabot; the gateway image builds its requirements from `uv.lock`
+
+## 0.5.3 (released)
+
+- Done: `seatbelt run claude` keeps Claude Code's MCP tool search on when it records locally, prints the ledger's path ready to paste into a shell, and `seatbelt report` shows Anthropic's prompt-cache tokens; the pyjwt floor is 2.15.0

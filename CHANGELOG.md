@@ -4,6 +4,8 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-10-01
+
 ### Fixed
 - `seatbelt run claude`, recording on this machine, keeps Claude Code's MCP tool search on: it sets `ENABLE_TOOL_SEARCH=true` when the recorder forwards to Anthropic, unless you set it yourself. Behind any other base URL Claude Code turns tool search off and sends every MCP tool's schema with every request, so a run with many MCP tools used much more of its context than the same run without seatbelt. Behind a base URL of your own, or an `[upstreams]` proxy, it is left to Claude Code as before ([docs/local-recording.md](docs/local-recording.md)).
 - `seatbelt run` prints the ledger's path quoted, ready to paste into a shell. On macOS it is under `Application Support`, and a shell split the unquoted path at the space into two files that do not exist.
@@ -246,7 +248,8 @@ A review of the whole project, with every finding checked by a second reader. Up
 - Tests: hash determinism, chain link and resume, property test that any edit breaks the chain, deletion detection, redaction, recorder lineage and failure path, CLI round trip and tamper detection.
 - Project scaffolding: uv, ruff, pyright strict, pytest, Hypothesis, pre-commit, CI, Dependabot, Scorecard, SECURITY.md, CONTRIBUTING.md, STANDARDS.md, ROADMAP.md.
 
-[Unreleased]: https://github.com/ronanpdh/seatbelt/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/ronanpdh/seatbelt/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.5.3
 [0.5.2]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.5.2
 [0.5.1]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.5.1
 [0.5.0]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.5.0
