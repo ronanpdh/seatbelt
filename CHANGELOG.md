@@ -9,6 +9,9 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 - `seatbelt run` prints the ledger's path quoted, ready to paste into a shell. On macOS it is under `Application Support`, and a shell split the unquoted path at the space into two files that do not exist.
 - `seatbelt report` shows Anthropic's prompt-cache tokens, `cache read` and `cache write`, beside `in`. Anthropic's `input_tokens` leaves them out, and with caching they are most of a long prompt, so `in` alone looked small. `--json` has them as `cache_read_input_tokens` and `cache_creation_input_tokens`.
 
+### Security
+- The `pyjwt` floor is 2.15.0. The `lowest` workflow's audit reported GHSA-42vr-xj54-vc7v (CVE-2026-101918) against 2.14.0: a `RecursionError` denial of service in PyJWT's payload parse before verification, fixed in 2.15.0. The locked pyjwt (2.15.1) is not affected.
+
 ## [0.5.2] - 2026-09-29
 
 ### Changed
