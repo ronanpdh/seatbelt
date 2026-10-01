@@ -22,7 +22,7 @@ from seatbelt.gateway.launcher import data_dir, load_client_config, run_cli
 from seatbelt.ledger.events import Kind
 from seatbelt.ledger.store import LedgerError, read_events
 from seatbelt.record.recorder import Recorder
-from seatbelt.report.fleet import People
+from seatbelt.report.fleet import People, Usage
 from seatbelt.report.fleet import fleet as build_fleet
 from seatbelt.report.pack import PackError, PackStatus
 from seatbelt.report.pack import build as build_pack
@@ -673,6 +673,24 @@ def run(
     raise typer.Exit(code=code)
 
 
+# `in` is the input tokens as the provider reports them. Anthropic's leave out its prompt
+# cache, read and written, which with caching is most of a long prompt: those are beside it
+_USAGE_COLUMNS = ("runs", "calls", "in", "cache read", "cache write", "out", "denied")
+
+
+def _usage_row(u: Usage) -> list[str]:
+    counts = (
+        u.runs,
+        u.calls,
+        u.input_tokens,
+        u.cache_read_input_tokens,
+        u.cache_creation_input_tokens,
+        u.output_tokens,
+        u.denials,
+    )
+    return [str(n) for n in counts]
+
+
 @app.command()
 def report(
     runs: Annotated[
@@ -713,18 +731,12 @@ def report(
     if json_out:
         print(fleet.model_dump_json(indent=2))
     else:
-        by_person = Table(Column("person", no_wrap=True), "runs", "calls", "in", "out", "denied")
+        by_person = Table(Column("person", no_wrap=True), *_USAGE_COLUMNS)
         for name, u in fleet.by_principal.items():
-            by_person.add_row(
-                Text(printable(name)),
-                *map(str, (u.runs, u.calls, u.input_tokens, u.output_tokens, u.denials)),
-            )
-        models = Table(Column("model", no_wrap=True), "runs", "calls", "in", "out", "denied")
+            by_person.add_row(Text(printable(name)), *_usage_row(u))
+        models = Table(Column("model", no_wrap=True), *_USAGE_COLUMNS)
         for name, u in fleet.by_model.items():
-            models.add_row(
-                Text(printable(name)),
-                *map(str, (u.runs, u.calls, u.input_tokens, u.output_tokens, u.denials)),
-            )
+            models.add_row(Text(printable(name)), *_usage_row(u))
         tools = Table(Column("tool", no_wrap=True), "calls")
         for name, n in fleet.by_tool.items():
             tools.add_row(Text(printable(name)), str(n))

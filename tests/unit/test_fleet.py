@@ -92,6 +92,35 @@ def test_cli_report(tmp_path: Path) -> None:
     assert "alice@corp" in r.output and "lookup_order" in r.output and "broken" in r.output
 
 
+def test_anthropic_prompt_cache_tokens_are_reported_beside_input(tmp_path: Path) -> None:
+    """Anthropic's input_tokens leaves out its prompt cache, so with caching `in` alone shows
+    a few tokens for a prompt of thousands."""
+    runs = tmp_path / "runs"
+    with Recorder.start(
+        runs, "gateway", run_id="r1", metadata={"principal.id": "dana@corp"}
+    ) as rec:
+        for read, written in ((0, 150_000), (150_000, 200)):
+            call = rec.model_requested("claude-opus-5-5", {"messages": []})
+            usage = {
+                "input_tokens": 3,
+                "cache_read_input_tokens": read,
+                "cache_creation_input_tokens": written,
+                "output_tokens": 9,
+            }
+            call.respond({}, usage, response_model="claude-opus-5-5")
+    dana = fleet(runs).by_principal["dana@corp"]
+    assert (dana.input_tokens, dana.cache_read_input_tokens) == (6, 150_000)
+    assert dana.cache_creation_input_tokens == 150_200
+    runner = CliRunner()
+    r = runner.invoke(app, ["report", str(runs)])
+    assert r.exit_code == 0 and "cache" in r.output
+    assert "150000" in r.output and "150200" in r.output
+    r = runner.invoke(app, ["report", str(runs), "--json"])
+    model = json.loads(r.output)["by_model"]["claude-opus-5-5"]
+    assert model["cache_read_input_tokens"] == 150_000
+    assert model["cache_creation_input_tokens"] == 150_200
+
+
 def test_cli_report_with_no_directory_reads_this_machines_runs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

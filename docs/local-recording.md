@@ -41,8 +41,8 @@ seatbelt's own secrets never reach the CLI or the tools it runs: `SEATBELT_SIGNI
 
 | CLI | Sign-in | Recorded | What `seatbelt run` sets |
 |---|---|---|---|
-| Claude Code | Claude subscription (Pro, Max, Team, Enterprise) | yes [R1][R2] | `ANTHROPIC_BASE_URL` |
-| Claude Code | API key or `apiKeyHelper` | yes [R2] | `ANTHROPIC_BASE_URL` |
+| Claude Code | Claude subscription (Pro, Max, Team, Enterprise) | yes [R1][R2] | `ANTHROPIC_BASE_URL`, `ENABLE_TOOL_SEARCH` (below) |
+| Claude Code | API key or `apiKeyHelper` | yes [R2] | `ANTHROPIC_BASE_URL`, `ENABLE_TOOL_SEARCH` (below) |
 | Claude Code | your own LLM gateway (`ANTHROPIC_BASE_URL` with `ANTHROPIC_AUTH_TOKEN`) | yes, then on to your gateway | `ANTHROPIC_BASE_URL`; the recorder forwards to the URL you had |
 | Codex | ChatGPT | yes [R3] | a `seatbelt` model provider on the command line, using Codex's own login |
 | Codex | API key | yes [R3] | the same provider |
@@ -59,6 +59,7 @@ How each sign-in is routed:
   - Forwarded unrecorded: Gemini CLI's account, quota and settings calls (`loadCodeAssist`, `retrieveUserQuota` and the like), its token counts, its usage metrics (`recordCodeAssistMetrics`), and reads of a long-running onboarding operation.
   - Refused: any other call.
 - **A base URL you already had** is where the recorder forwards: `ANTHROPIC_BASE_URL`, `GOOGLE_GEMINI_BASE_URL` or `CODE_ASSIST_ENDPOINT` in your environment, your company's LLM gateway, say. Its credentials go on with it. `[upstreams]` in the settings overrides it.
+- **Claude Code's MCP tool search** stays on. Behind any `ANTHROPIC_BASE_URL` but Anthropic's, Claude Code turns it off, as a proxy may not forward the `tool_reference` blocks it uses, and sends every MCP tool's schema with every request instead [R5]. The recorder forwards those blocks unchanged, so when it forwards to `api.anthropic.com`, `seatbelt run` sets `ENABLE_TOOL_SEARCH=true`, unless you set it yourself. Behind a base URL you already had, or an `[upstreams]` proxy, it is left to Claude Code: that proxy may not forward them.
 - **Gemini CLI with nothing selected** needs `security.auth.selectedType` set in `~/.gemini/settings.json`. Otherwise the base URL makes it pick a sign-in mode it refuses to run [R4]. `seatbelt run gemini` warns about this.
 
 ## What is not recorded
@@ -133,7 +134,7 @@ A 0.2.0 `~/.config/seatbelt/gateway.toml` with `url` and `key` is still read whe
 
 ## Sources
 
-R1 to R4 were read, and the runs below made, on 2026-09-28. The Gemini CLI source read is a 0.63.0 nightly; the runs used the released 0.61.0.
+R1 to R4 were read, and the runs below made, on 2026-09-28; R5 on 2026-10-01. The Gemini CLI source read is a 0.63.0 nightly; the runs used the released 0.61.0.
 
 | Ref | Source | Used for |
 |---|---|---|
@@ -141,3 +142,4 @@ R1 to R4 were read, and the runs below made, on 2026-09-28. The Gemini CLI sourc
 | R2 | Runs of Claude Code 2.1.284 against a recording proxy with an API key, an `apiKeyHelper` and `CLAUDE_CODE_OAUTH_TOKEN`: the headers each sends, and the hosts it reached directly. code.claude.com/docs/en/network-config (the hosts it needs). This change's end-to-end run: API key through `seatbelt run claude` | Claude Code rows |
 | R3 | openai/codex at `rust-v0.158.0`, and runs of Codex 0.158.0: `requires_openai_auth` uses the stored login (`codex-rs/model-provider/src/auth.rs`); `env_http_headers` takes a header's value from an environment variable (`model-provider-info/src/lib.rs`); ChatGPT login sends `chatgpt-account-id` (`model-provider/src/bearer_auth_provider.rs`) to `chatgpt.com/backend-api/codex` (`model-provider-info/src/lib.rs`); a custom provider's `supports_websockets` defaults to false; the hosts reached directly. This change's end-to-end runs: API key and ChatGPT login through `seatbelt run codex` | Codex rows |
 | R4 | google-gemini/gemini-cli at `2fe7c2d`, and runs of Gemini CLI 0.61.0: `CODE_ASSIST_ENDPOINT` sets the base of every Code Assist call (`packages/core/src/code_assist/server.ts`); the request and response wrapping (`code_assist/converter.ts`); a base URL with nothing selected picks the `gateway` mode, which is refused (`packages/core/src/core/contentGenerator.ts`, `packages/cli/src/config/auth.ts`); the hosts reached directly. This change's end-to-end run: API key through `seatbelt run gemini` | Gemini CLI rows |
+| R5 | code.claude.com/docs/en/env-vars (`ANTHROPIC_BASE_URL`: "When set to a non-first-party host, MCP tool search is disabled by default. Set `ENABLE_TOOL_SEARCH=true` if your proxy forwards `tool_reference` blocks"; `ENABLE_TOOL_SEARCH`: "requests fail on proxies that don't support `tool_reference`") and code.claude.com/docs/en/mcp ("Configurations without tool search include a custom `ANTHROPIC_BASE_URL`"). Runs of Claude Code 2.1.286 through `seatbelt run claude` to a stand-in provider, with an MCP server of 80 tools: without the variable, the first request carried every tool's schema (103 tools, 198 KB); with it, 12 tools (44 KB), the MCP tools deferred until a tool search named one, and the ledger verified | MCP tool search |
