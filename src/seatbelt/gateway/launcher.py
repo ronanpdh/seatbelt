@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import shlex
 import signal
 import stat
 import subprocess
@@ -82,6 +83,27 @@ def chained_upstreams(env: Mapping[str, str]) -> dict[str, str]:
         for var, name in _CHAINED.items()
         if env.get(var) and "/_seatbelt/" not in env[var]
     }
+
+
+# Claude Code turns MCP tool search off behind any ANTHROPIC_BASE_URL but Anthropic's, since a
+# proxy may not forward the `tool_reference` blocks it uses, and then puts every MCP tool's
+# schema in the context up front. The local recorder forwards them unchanged: see
+# `local_defaults` and docs/local-recording.md
+TOOL_SEARCH_ENV = "ENABLE_TOOL_SEARCH"
+
+
+def local_defaults(
+    cli: str, upstreams: Mapping[str, str], anthropic: str, base: Mapping[str, str]
+) -> dict[str, str]:
+    """What a local run adds to the CLI's environment so that it works as it does without
+    seatbelt: Claude Code's MCP tool search, when the recorder forwards to `anthropic`
+    (Anthropic's API) and the user has not set it. A proxy of the user's own may not forward
+    tool search's blocks, so behind one Claude Code keeps its own default (off)."""
+    if cli != "claude" or TOOL_SEARCH_ENV in base:
+        return {}
+    if upstreams.get("anthropic", anthropic).rstrip("/") != anthropic:
+        return {}
+    return {TOOL_SEARCH_ENV: "true"}
 
 
 def local_url(recorder: str, key: str, run: str) -> str:
@@ -520,7 +542,7 @@ def _run_local(cli: str, args: list[str], cfg: ClientConfig, exe: str | None, ru
     where = f"no gateway in {cfg.path}" if cfg.path is not None else "no client config"
     print(f"seatbelt: recording {cli} on this machine ({where})", file=sys.stderr)
     try:
-        from seatbelt.gateway.local import local_recorder
+        from seatbelt.gateway.local import UPSTREAMS, local_recorder
     except ImportError as exc:  # a broken install: the server packages are dependencies
         raise ValueError(f"recording locally needs seatbelt's server packages: {exc}") from exc
     root = data_dir()
@@ -529,13 +551,15 @@ def _run_local(cli: str, args: list[str], cfg: ClientConfig, exe: str | None, ru
     with local_recorder(ledgers, root / "keys", run, cfg.sink, upstreams) as recorder:
         url = local_url(recorder.url, recorder.key, run)
         env = environment(cli, url, recorder.key, run, os.environ, True, own_secrets(cfg))
+        env.update(local_defaults(cli, upstreams, UPSTREAMS["anthropic"], os.environ))
         try:
             extra = arguments(cli, recorder.url, run, local=True)
             code = _spawn([exe or cli, *extra, *args], env)
         finally:
             recorder.end(run)
     if recorder.written:
-        paths = "\n".join(f"  file:      {path}" for path in recorder.written)
+        # quoted to paste into a shell: the macOS data folder, Application Support, has a space
+        paths = "\n".join(f"  file:      {shlex.quote(str(p))}" for p in recorder.written)
         print(
             f"seatbelt: recorded run {run}\n  replay it: seatbelt reconstruct {run}\n{paths}",
             file=sys.stderr,

@@ -3,6 +3,7 @@ its own credentials, and the ledger lands in the local data folder, signed."""
 
 import ast
 import json
+import shlex
 import sys
 import threading
 import tomllib
@@ -15,7 +16,8 @@ import pytest
 
 from seatbelt.attest.manifest import sidecar
 from seatbelt.attest.sign import PUB_FILE
-from seatbelt.gateway.launcher import data_dir, run_cli
+from seatbelt.gateway.launcher import data_dir, local_defaults, run_cli
+from seatbelt.gateway.local import UPSTREAMS
 from seatbelt.ledger.events import Kind
 from seatbelt.ledger.store import read_events
 
@@ -114,6 +116,66 @@ def test_a_local_run_passes_the_clis_own_key_through_and_signs_the_ledger(
     assert events[0].attrs["run.name"].startswith("claude-")
     assert "sk-ant-USERS-OWN" not in ledger.read_text()  # credentials are never recorded
     assert sidecar(ledger).exists() and (tmp_path / "home" / "keys" / PUB_FILE).exists()
+
+
+def test_the_ledgers_path_is_printed_ready_to_paste_into_a_shell(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    provider: Provider,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """The macOS data folder is ~/Library/Application Support/seatbelt. Unquoted, a shell
+    splits the path at the space, and an editor opens two empty files that do not exist."""
+    home = tmp_path / "Application Support" / "seatbelt"
+    monkeypatch.setenv("SEATBELT_HOME", str(home))
+    run_cli("claude", ["-c", CLAUDE], config=_config(tmp_path, provider), exe=sys.executable)
+    (ledger,) = (home / "runs").glob("*.jsonl")
+    (line,) = [x for x in capfd.readouterr().err.splitlines() if x.strip().startswith("file:")]
+    assert shlex.split(line.strip().removeprefix("file:")) == [str(ledger)]
+
+
+ANTHROPIC = UPSTREAMS["anthropic"]
+TOOL_SEARCH_PROBE = "import os; print(os.environ.get('ENABLE_TOOL_SEARCH'))"
+
+
+@pytest.mark.parametrize(
+    ("upstream", "base_url", "own", "expected"),
+    [
+        (None, None, None, "true"),  # forwarded to Anthropic: as without seatbelt
+        (ANTHROPIC + "/", None, None, "true"),
+        ("https://llm-proxy.corp.example", None, None, "None"),  # may not forward its blocks
+        (None, "https://llm-proxy.corp.example", None, "None"),  # chained from the environment
+        (None, None, "false", "false"),  # the user's own choice stands
+    ],
+)
+def test_claude_keeps_mcp_tool_search_when_the_recorder_forwards_to_anthropic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+    upstream: str | None,
+    base_url: str | None,
+    own: str | None,
+    expected: str,
+) -> None:
+    """Behind any base URL but Anthropic's, Claude Code turns MCP tool search off and puts
+    every MCP tool's schema in the context up front, unless ENABLE_TOOL_SEARCH says otherwise.
+    The recorder forwards tool search's `tool_reference` blocks unchanged."""
+    monkeypatch.setenv("SEATBELT_HOME", str(tmp_path / "home"))
+    for name, value in (("ANTHROPIC_BASE_URL", base_url), ("ENABLE_TOOL_SEARCH", own)):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+    config = tmp_path / "config.toml"
+    config.write_text(f'[upstreams]\nanthropic = "{upstream}"\n' if upstream else "")
+    assert run_cli("claude", ["-c", TOOL_SEARCH_PROBE], config=config, exe=sys.executable) == 0
+    assert capfd.readouterr().out.strip() == expected
+
+
+def test_only_claude_is_given_tool_search() -> None:
+    assert local_defaults("claude", {}, ANTHROPIC, {}) == {"ENABLE_TOOL_SEARCH": "true"}
+    assert local_defaults("codex", {}, ANTHROPIC, {}) == {}
+    assert local_defaults("gemini", {}, ANTHROPIC, {}) == {}
 
 
 def test_the_local_port_refuses_anyone_without_the_runs_key(

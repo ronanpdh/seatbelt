@@ -28,6 +28,10 @@ class Usage(BaseModel):
     runs: int = 0
     calls: int = 0  # model responses, errors included
     input_tokens: int = 0
+    # Anthropic's prompt cache, which its input_tokens leaves out (OpenAI's and Gemini's count
+    # cached tokens in input_tokens): with caching, most of a long prompt is counted here
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
     output_tokens: int = 0
     denials: int = 0  # policy checks that refused
 
@@ -156,6 +160,8 @@ def fleet(
                 for u in (who, m):
                     u.calls += 1
                     u.input_tokens += _tokens(e, "input_tokens")
+                    u.cache_read_input_tokens += _tokens(e, "cache_read_input_tokens")
+                    u.cache_creation_input_tokens += _tokens(e, "cache_creation_input_tokens")
                     u.output_tokens += _tokens(e, "output_tokens")
             elif e.kind is Kind.TOOL_CALL:
                 tools[str(e.attrs.get("gen_ai.tool.name"))] += 1

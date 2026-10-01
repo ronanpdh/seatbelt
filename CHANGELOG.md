@@ -4,6 +4,11 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 
 ## [Unreleased]
 
+### Fixed
+- `seatbelt run claude`, recording on this machine, keeps Claude Code's MCP tool search on: it sets `ENABLE_TOOL_SEARCH=true` when the recorder forwards to Anthropic, unless you set it yourself. Behind any other base URL Claude Code turns tool search off and sends every MCP tool's schema with every request, so a run with many MCP tools used much more of its context than the same run without seatbelt. Behind a base URL of your own, or an `[upstreams]` proxy, it is left to Claude Code as before ([docs/local-recording.md](docs/local-recording.md)).
+- `seatbelt run` prints the ledger's path quoted, ready to paste into a shell. On macOS it is under `Application Support`, and a shell split the unquoted path at the space into two files that do not exist.
+- `seatbelt report` shows Anthropic's prompt-cache tokens, `cache read` and `cache write`, beside `in`. Anthropic's `input_tokens` leaves them out, and with caching they are most of a long prompt, so `in` alone looked small. `--json` has them as `cache_read_input_tokens` and `cache_creation_input_tokens`.
+
 ## [0.5.2] - 2026-09-29
 
 ### Changed
