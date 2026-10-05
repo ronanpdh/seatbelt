@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 import threading
-from collections.abc import Iterator
+from collections.abc import Generator
 from pathlib import Path
 from typing import Any, cast
 
@@ -22,7 +22,7 @@ class LedgerError(Exception):
     """Raised when the ledger cannot be trusted."""
 
 
-def read_events(path: Path) -> Iterator[Event]:
+def read_events(path: Path) -> Generator[Event]:
     with path.open(encoding="utf-8") as fh:
         for lineno, line in enumerate(fh, start=1):
             if not line.strip():

@@ -269,6 +269,42 @@ def test_a_base_url_the_cli_already_has_is_where_the_recorder_forwards(
     assert sent["path"] == "/v1/messages?beta=true"
 
 
+# Claude Code with tool search off: every MCP tool's definition with every request
+CLAUDE_MCP = """
+import json, os, urllib.request
+tools = [{"name": f"mcp__big__tool_{i}", "description": "d" * 2048,
+          "input_schema": {"type": "object"}} for i in range(60)]
+body = {"model": "claude-opus-5-5", "max_tokens": 5, "tools": tools,
+        "messages": [{"role": "user", "content": "hi"}]}
+req = urllib.request.Request(os.environ["ANTHROPIC_BASE_URL"] + "/v1/messages",
+                             data=json.dumps(body).encode(),
+                             headers={"content-type": "application/json", "x-api-key": "sk-x",
+                                      "anthropic-version": "2023-06-01"})
+urllib.request.urlopen(req).read()
+"""
+
+
+def test_a_run_that_sent_its_mcp_tools_in_full_says_so_at_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    provider: Provider,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """Through a proxy of the user's own seatbelt leaves tool search to Claude Code (off), and
+    the run's end points at it and at `seatbelt calls`."""
+    monkeypatch.setenv("SEATBELT_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("ENABLE_TOOL_SEARCH", raising=False)
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+    code = run_cli(
+        "claude", ["-c", CLAUDE_MCP], config=_config(tmp_path, provider), exe=sys.executable
+    )
+    err = capfd.readouterr().err
+    assert code == 0, err
+    (line,) = [x for x in err.splitlines() if "MCP tools were sent in full" in x]
+    assert line.startswith("seatbelt: 60 MCP tools") and "ENABLE_TOOL_SEARCH=true" in line
+    assert "each request: seatbelt calls claude-" in err
+
+
 def _open_ledger(ledgers: Path, run: str) -> Path:
     """A ledger a run opened and never closed, as a killed run leaves it."""
     from seatbelt.ledger.events import Actor, ActorType

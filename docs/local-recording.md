@@ -6,10 +6,11 @@
 seatbelt run claude      # when it exits: "recorded run claude-99ce72ff"
 seatbelt reconstruct     # replay the latest run; or: seatbelt reconstruct claude-99ce72ff
 seatbelt runs            # your runs by name, newest first
+seatbelt calls           # each model call of the latest run as numbers, safe to share
 seatbelt report          # your local runs, checked against this machine's key
 ```
 
-`verify` and `reconstruct` find a local run by its name, by its id (the file name, with or without `.jsonl`), or take a file path. A local run is checked against this machine's key without `--pubkey`.
+`verify`, `reconstruct` and `calls` find a local run by its name, by its id (the file name, with or without `.jsonl`), or take a file path. A local run is checked against this machine's key without `--pubkey`.
 
 To record through your organisation's gateway instead, see [Through a gateway](#through-a-gateway).
 
@@ -59,7 +60,7 @@ How each sign-in is routed:
   - Forwarded unrecorded: Gemini CLI's account, quota and settings calls (`loadCodeAssist`, `retrieveUserQuota` and the like), its token counts, its usage metrics (`recordCodeAssistMetrics`), and reads of a long-running onboarding operation.
   - Refused: any other call.
 - **A base URL you already had** is where the recorder forwards: `ANTHROPIC_BASE_URL`, `GOOGLE_GEMINI_BASE_URL` or `CODE_ASSIST_ENDPOINT` in your environment, your company's LLM gateway, say. Its credentials go on with it. `[upstreams]` in the settings overrides it.
-- **Claude Code's MCP tool search** stays on. Behind any `ANTHROPIC_BASE_URL` but Anthropic's, Claude Code turns it off, as a proxy may not forward the `tool_reference` blocks it uses, and sends every MCP tool's schema with every request instead [R5]. The recorder forwards those blocks unchanged, so when it forwards to `api.anthropic.com`, `seatbelt run` sets `ENABLE_TOOL_SEARCH=true`, unless you set it yourself. Behind a base URL you already had, or an `[upstreams]` proxy, it is left to Claude Code: that proxy may not forward them.
+- **Claude Code's MCP tool search** stays on. Behind any `ANTHROPIC_BASE_URL` but Anthropic's, Claude Code turns it off, as a proxy may not forward the `tool_reference` blocks it uses, and sends every MCP tool's schema with every request instead [R5]. The recorder forwards those blocks unchanged, so when it forwards to `api.anthropic.com`, `seatbelt run` sets `ENABLE_TOOL_SEARCH=true`, unless you set it yourself. Behind a base URL you already had, or an `[upstreams]` proxy, it is left to Claude Code: that proxy may not forward them. When a run sends 100 KB or more of MCP tool definitions in full with a request, as with tool search off and many MCP servers, `seatbelt run` says so when it exits, and `seatbelt calls <run>` shows each request's tools and tokens.
 - **Gemini CLI with nothing selected** needs `security.auth.selectedType` set in `~/.gemini/settings.json`. Otherwise the base URL makes it pick a sign-in mode it refuses to run [R4]. `seatbelt run gemini` warns about this.
 
 ## What is not recorded

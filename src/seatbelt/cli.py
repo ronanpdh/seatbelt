@@ -22,6 +22,8 @@ from seatbelt.gateway.launcher import data_dir, load_client_config, run_cli
 from seatbelt.ledger.events import Kind
 from seatbelt.ledger.store import LedgerError, read_events
 from seatbelt.record.recorder import Recorder
+from seatbelt.report.calls import calls as model_calls
+from seatbelt.report.calls import heaviest_inline_mcp, inline_mcp_note
 from seatbelt.report.fleet import People, Usage
 from seatbelt.report.fleet import fleet as build_fleet
 from seatbelt.report.pack import PackError, PackStatus
@@ -167,6 +169,57 @@ def reconstruct(ledger: LedgerRef = None, pubkey: PubKey = None) -> None:
     path, pubkey = _resolved(ledger, pubkey)
     _check(path, pubkey)
     timeline(path, console)
+
+
+_TOKENS = (
+    "input_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "output_tokens",
+)
+
+
+@app.command()
+def calls(ledger: LedgerRef = None, pubkey: PubKey = None) -> None:
+    """Each model call in a run as numbers: messages and tools sent (MCP tools, and those
+    deferred by tool search), the request's size, the tokens counted, and any error. No prompt
+    or tool text, so it can be shared where the ledger cannot. Refuses an altered ledger."""
+    path, pubkey = _resolved(ledger, pubkey)
+    _check(path, pubkey)
+    made = model_calls(read_events(path))
+    if not made:
+        console.print(f"no model calls in {_shown(str(path))}")
+        return
+    numbers = ("#", "msgs", "tools", "mcp", "defer", "KB", "in", "cache w", "cache r", "out")
+    table = Table(
+        *(Column(h, justify="right", no_wrap=True) for h in numbers),
+        Column("model", no_wrap=True),
+        box=None,  # plain columns: pasted into an issue as they are
+    )
+    errors: list[str] = []
+    for n, c in enumerate(made, start=1):
+        table.add_row(
+            str(n),
+            str(c.messages),
+            str(c.tools),
+            str(c.mcp),
+            str(c.deferred),
+            f"{c.request_bytes / 1024:.0f}",
+            *(str(c.usage[k]) if k in c.usage else "-" for k in _TOKENS),
+            Text(printable(c.model)),
+        )
+        if c.error:
+            errors.append(f"{n}: {' '.join(printable(c.error).split())[:100]}")
+    console.print(table)
+    for line in errors:
+        console.print(Text(f"error {line}"))
+    console.print(
+        f"{len(made)} model calls. mcp: MCP tools sent; defer: tools deferred by tool search; "
+        "KB: the request as recorded"
+    )
+    heavy = heaviest_inline_mcp(made)
+    if heavy is not None and heavy.model.startswith("claude"):
+        console.print(Text(inline_mcp_note(heavy), style="yellow"))
 
 
 @app.command()

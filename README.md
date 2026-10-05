@@ -100,6 +100,7 @@ uv run seatbelt scenarios scenarios/ --target examples.scenario_target:target   
 | `seatbelt runs [--limit]` | lists this machine's runs by name, newest first | |
 | `seatbelt verify [run or ledger] [--pubkey]` | checks the hash chain and attestation; a local run against this machine's key. With no argument, the latest run | broken, forged (a signature that does not match the ledger counts, key or not), incomplete, or unattested with a key given |
 | `seatbelt reconstruct [run or ledger] [--pubkey]` | prints the run as a timeline; with no argument, the latest run | same as verify |
+| `seatbelt calls [run or ledger] [--pubkey]` | each model call as numbers: messages, tools sent (MCP, deferred), request size, tokens, errors; no prompt text, so it can be shared; with no argument, the latest run | same as verify |
 | `seatbelt demo [--out runs]` | records a scripted example run | |
 | `seatbelt keygen [dir]` | writes an Ed25519 key pair | a key file exists |
 | `seatbelt attest <ledger> --key` | signs a finished ledger into `<id>.attest.json` | broken or incomplete chain, sidecar exists |

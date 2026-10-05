@@ -9,6 +9,7 @@ Stdlib only at import: the local recorder's server code is imported when a run n
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import secrets
@@ -24,7 +25,10 @@ import urllib.request
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from seatbelt.report.calls import Call
 
 CONFIG_DIR = Path.home() / ".config" / "seatbelt"
 DEFAULT_CONFIG = CONFIG_DIR / "config.toml"
@@ -537,6 +541,38 @@ def run_cli(
     return code
 
 
+FIRST_REQUESTS = 10  # a CLI sends the same tools with every request: its first few show them
+
+
+def tool_search_warning(ledgers: Collection[Path], env: Mapping[str, str], run: str) -> str | None:
+    """What to tell the user when Claude Code sent its MCP tools in full with its requests,
+    which tool search would have left out of each one: when seatbelt forwards to a proxy of the
+    user's own, say, or something turned tool search off. None when it did not."""
+    from seatbelt.ledger.store import LedgerError, read_events
+    from seatbelt.report.calls import heaviest_inline_mcp, inline_mcp_note, requested
+
+    found: list[Call] = []
+    for path in ledgers:
+        try:
+            with contextlib.closing(read_events(path)) as events:
+                found.extend(requested(events, FIRST_REQUESTS))
+        except (OSError, UnicodeDecodeError, LedgerError):
+            continue  # a warning is not worth failing the run's exit for
+    heavy = heaviest_inline_mcp(found)
+    if heavy is None:
+        return None
+    note = inline_mcp_note(heavy)
+    value = env.get(TOOL_SEARCH_ENV, "")
+    if value.strip().lower().startswith("auto"):  # upfront while they fit its share of context
+        note += f" {TOOL_SEARCH_ENV}={value} sends them so while they fit its share of context."
+    elif value.strip().lower() not in ("", "0", "false"):
+        note += (
+            f" It was set ({TOOL_SEARCH_ENV}={value}): CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS, "
+            "or an env block in Claude Code's settings, can turn tool search off."
+        )
+    return f"seatbelt: {note}\n  each request: seatbelt calls {run}"
+
+
 def _run_local(cli: str, args: list[str], cfg: ClientConfig, exe: str | None, run: str) -> int:
     environment(cli, "", "", run, {}, local=True)  # an unsupported CLI fails before any start
     where = f"no gateway in {cfg.path}" if cfg.path is not None else "no client config"
@@ -566,4 +602,6 @@ def _run_local(cli: str, args: list[str], cfg: ClientConfig, exe: str | None, ru
         )
     else:
         print(f"seatbelt: nothing recorded ({cli} sent no model requests)", file=sys.stderr)
+    if cli == "claude" and (warning := tool_search_warning(recorder.written, env, run)):
+        print(warning, file=sys.stderr)
     return code

@@ -4,6 +4,10 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 
 ## [Unreleased]
 
+### Added
+- `seatbelt calls [run]` prints each model call in a run as numbers: messages, tools sent (MCP tools, and those deferred by tool search), the request's size, the tokens counted (cache reads and writes included) and any error. It shows no prompt or tool text, so it can be shared where the ledger cannot, for example to find what filled a run's context.
+- `seatbelt run claude` says when it exits if Claude Code sent 100 KB or more of MCP tool definitions in full with a request, and points at `ENABLE_TOOL_SEARCH=true` and `seatbelt calls`. Claude Code sends them so when MCP tool search is off: by default behind a base URL of your own, and whenever something turns it off.
+
 ## [0.5.3] - 2026-10-01
 
 ### Fixed
