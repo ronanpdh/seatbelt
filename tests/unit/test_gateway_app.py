@@ -555,7 +555,8 @@ CLAUDE_CODE = {"user-agent": "claude-cli/2.1.294 (external, cli)"}
 
 
 def test_claude_code_gets_a_refusal_as_422_with_what_to_do(gwp: Gateway) -> None:
-    """Claude Code reads a 403 as a sign-in problem: it retries, then asks for /login."""
+    """Claude Code reads a 403 as a sign-in problem: it retries, then shows an authentication
+    error without the gateway's message."""
     headers = {"x-api-key": gwp.key, **CLAUDE_CODE}
     model = gwp.client.post(
         "/v1/messages",

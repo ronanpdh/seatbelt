@@ -7,7 +7,7 @@
 
 Once Claude Code takes the screen, nothing says the session is recorded or under an org policy, and seatbelt's own lines look like the CLI's. Three things go wrong under a gateway policy ([issue #46](https://github.com/ronanpdh/seatbelt/issues/46)):
 
-- Claude Code reads the gateway's 403 as a sign-in failure. It retries, then shows "Authentication error" and asks for `/login`. A refused model or output-token cap does not say what the policy allows.
+- Claude Code reads the gateway's 403 as a sign-in failure. It retries, then shows "Authentication error" without the gateway's message. A refused model does not say which models the policy allows, and no refusal says how to fix it in Claude Code.
 - The gateway cannot stop a local tool ([ADR 0006](0006-recording-gateway.md)). A denied tool runs, the gateway refuses the next request, which carries its result, and then every request after it, so the session is stuck.
 - A gateway that is down, or a revoked key, is found only after the CLI has started.
 
@@ -15,7 +15,7 @@ Once Claude Code takes the screen, nothing says the session is recorded or under
 
 ## Decision
 
-- **Every line `seatbelt run` prints starts with its badge**: `[seatbelt]`, shown reversed on a terminal. This covers its log warnings too.
+- **Every line `seatbelt run` prints starts with its badge**: `[seatbelt]`, or on a terminal a reversed `seatbelt`. This covers its log warnings too.
 - **A seatbelt buckles** as the CLI starts and unbuckles when it exits. It is drawn only on a styled terminal with room for it, and `SEATBELT_NO_ANIMATION` turns it off.
 - **`GET /seatbelt/policy`** returns the policy, the caller's principal id and the gateway version to an authenticated caller. Nothing is recorded. Before it starts the CLI, `seatbelt run` calls it through a gateway:
   - a 401 or 403, a gateway it cannot reach, or any other failure stops the run;

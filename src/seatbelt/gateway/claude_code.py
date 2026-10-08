@@ -26,7 +26,8 @@ SETTINGS_FLAG = "--settings"
 # a hook's reason, as Claude Code 2.1 sends it for a PreToolUse hook that denies
 _HOOK_ERROR = "PreToolUse:{tool} hook error: "
 STATUS_TIMEOUT = 5.0  # seconds the user's own status line has to answer
-# a matcher of only these is a list of exact names to Claude Code; any other is a regex
+# names of only these are joined with `|`, which Claude Code reads as exact names (as it
+# does spaces and `,`); a matcher with any other character is a regex to it
 _PLAIN_NAME = re.compile(r"[A-Za-z0-9_-]+")
 _REGEX_SPECIAL = re.compile(r"[\\^$.*+?()\[\]{}|/]")
 # the statusLine keys that change how Claude Code shows it, kept from the user's

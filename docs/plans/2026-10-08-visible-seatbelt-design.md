@@ -11,7 +11,7 @@
   - A hook that exits 2 instead puts its own command path in that content [C2], so seatbelt's hook prints JSON (ours).
 - **Claude Code reads only the last `--settings`.** With two, a hook in the first did not run [C4]. `--settings` takes inline JSON or a file path, and is accepted before a subcommand and as `--settings=<path>` [C5, D1].
 - **Settings precedence:** managed settings, then `--settings`, then `.claude/settings.local.json`, `.claude/settings.json`, and `~/.claude/settings.json` [D1]. So a status line given in `--settings` replaces the user's own, and seatbelt's has to run theirs.
-- **A matcher of letters, digits, `_`, `-` and `|` is a list of exact tool names.** Any other character makes it an unanchored JavaScript regex [D2].
+- **A matcher of only letters, digits, `_`, `-`, spaces, `,` and `|` is a list of exact tool names,** separated by `|` or `,`. Any other character makes it an unanchored JavaScript regex [D2]. Seatbelt joins names of only letters, digits, `_` and `-` with `|`, and anchors and escapes anything else as a regex.
 - **`disableAllHooks` turns off hooks and a custom status line** [D3]. `allowManagedHooksOnly`, a managed setting, blocks hooks and status lines that are not managed [D2, D4].
 - **A status line command** gets the session's JSON on stdin. Each line it prints is a row, ANSI colours show, and its output is shown only when it exits 0 [D4].
 - **What the hints name:**
@@ -22,14 +22,14 @@
 
 ## Design (ours)
 
-1. **Badge.** `seatbelt.gateway.badge.say` prints every line with `[seatbelt]` in front. On a TTY it is a reversed ` seatbelt `, except under `NO_COLOR` or `TERM=dumb`. While a run is on, seatbelt's and uvicorn's log warnings go through it too. The local recorder's uvicorn gets `log_config=None`, so its warnings are not printed twice.
+1. **Badge.** `seatbelt.gateway.badge.say` prints every line with `[seatbelt]` in front. On a TTY it is a reversed ` seatbelt `, except under `NO_COLOR` or `TERM=dumb`. While a run is on, seatbelt's and uvicorn's log warnings go through it too. The local recorder's uvicorn gets `log_config=None`: with its own logging config it would replace seatbelt's handler, and its warnings would print without the badge.
 2. **Buckle.** A tongue slides into a buckle, about 1.4 seconds as the CLI starts, then about 0.8 seconds to unbuckle after it exits. It is drawn only on a styled terminal at least as wide as the drawing, that can encode its characters. `SEATBELT_NO_ANIMATION` turns it off. Ctrl-C while it draws gives the cursor back.
 3. **Preflight.** `GET /seatbelt/policy` (authenticated, not recorded) answers `{"principal", "version", "policy": {"models", "tools_denied", "max_output_tokens"}}`.
    - Through a gateway, `seatbelt run` calls it before the CLI starts and prints the policy, a line per rule.
    - A 404 is an older gateway, and the run goes on.
    - A 401 or 403, any other status, an answer that is not the policy, or a gateway it cannot reach stops the run with exit 1.
 4. **`--settings` for Claude Code**, built by `seatbelt.gateway.claude_code.launch_arguments`:
-   - a `statusLine` that runs `python -m seatbelt.gateway.claude_code statusline [<the user's command>]`, keeping the user's `padding`, `refreshInterval` and `hideVimModeIndicator`. The user's command is whichever statusLine is in effect across the files above and their own `--settings`;
+   - a `statusLine` that runs `python -m seatbelt.gateway.claude_code statusline [<the user's command>]`, keeping the user's `padding`, `refreshInterval` and `hideVimModeIndicator`. The user's command is the statusLine in effect across `~/.claude/settings.json`, `.claude/settings.json`, `.claude/settings.local.json` and their own `--settings` (a managed statusLine overrides seatbelt's anyway);
    - through a gateway whose policy denies tools, a PreToolUse hook with a matcher for exactly those tools. It runs `python -m seatbelt.gateway.claude_code hook <tools>`, which denies only a listed tool and gives no decision for anything else, or for input it cannot read;
    - a `--settings` of the user's own, before any `--`, is merged in: their keys and hooks stay, and seatbelt's hook is added beside theirs. If it cannot be read, it is left as given, with a warning;
    - when `disableAllHooks` is in effect, `seatbelt run` warns.

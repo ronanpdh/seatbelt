@@ -540,7 +540,8 @@ def _hint(policy: PolicyConfig, refusal: Refusal, claude: bool) -> str:
 
 def _refused(request: Request, policy: PolicyConfig, refusal: Refusal) -> Response:
     """A policy refusal, with what to do about it. Claude Code reads a 403 as a sign-in
-    problem: it retries, then asks for /login. A 422 it shows with the gateway's message."""
+    problem: it retries, then shows an authentication error without the gateway's message. A
+    422 it shows with the message."""
     claude = is_claude_code(request.headers.get("user-agent"))
     message = refusal.reason + _hint(policy, refusal, claude)
     return _error(request, 422 if claude else 403, "permission_error", message)
