@@ -208,7 +208,9 @@ def test_org_policy_applies_to_gemini(gwp: Gw) -> None:
     first, _ = _replies()
     other = gwp.post(_body(), path="/v1beta/models/gemini-2.5-flash:generateContent")
     assert other.status_code == 403
-    assert other.json()["error"]["message"] == "model gemini-2.5-flash is not allowed"
+    assert other.json()["error"]["message"] == (
+        "model gemini-2.5-flash is not allowed. The org's policy allows gemini-2.5-pro"
+    )
     capped = gwp.post(_body(generationConfig={"maxOutputTokens": 5000}))
     assert capped.status_code == 403
     assert "generationConfig.maxOutputTokens 5000 exceeds 1000" in capped.text

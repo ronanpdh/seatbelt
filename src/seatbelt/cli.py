@@ -659,16 +659,18 @@ def run(
 ) -> None:
     """Launch a CLI and record it: on this machine, or through your org's gateway if one is
     configured. Arguments after -- go to the CLI."""
+    from seatbelt.gateway.badge import say
+
     try:
         code = run_cli(cli, list(ctx.args), config=config, exe=exe)
     except ValueError as exc:
-        console.print(f"[red]{escape(str(exc))}[/]")
+        say(f"error: {exc}")
         raise typer.Exit(code=1) from exc
     except FileNotFoundError as exc:
-        console.print(f"[red]{escape(str(exc))}[/]")
+        say(f"error: {exc}")
         raise typer.Exit(code=127) from exc
     except (AttestError, OSError) as exc:  # a bad signing key, a CLI that cannot be run
-        console.print(f"[red]{escape(str(exc))}[/]")
+        say(f"error: {exc}")
         raise typer.Exit(code=1) from exc
     raise typer.Exit(code=code)
 

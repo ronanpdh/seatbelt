@@ -181,7 +181,9 @@ def test_org_policy_applies_to_responses(gwp: Gw) -> None:
     assert gwp.post(_body(model="gpt-4o")).status_code == 403
     too_long = gwp.post(_body(max_output_tokens=4000))
     assert too_long.status_code == 403
-    assert too_long.json()["error"]["message"] == "max_output_tokens 4000 exceeds 1000"
+    assert too_long.json()["error"]["message"] == (
+        "max_output_tokens 4000 exceeds 1000. The org's policy caps output at 1000 tokens"
+    )
     gwp.upstream(httpx2.Response(200, json=first))
     assert gwp.post(_body()).status_code == 200  # the model asks for lookup_order: denied
     output = {"type": "function_call_output", "call_id": "call_01", "output": "delivered"}

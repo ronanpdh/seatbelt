@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from tests.helpers import fake_claude, no_gateway_policy
 from typer.testing import CliRunner
 
 from seatbelt import __version__
@@ -311,8 +312,9 @@ def test_run_cli_warns_about_removed_variables_and_says_what_was_recorded(
             "claude",
             ["-c", ENV_PROBE, *AROUND],
             config=_gateway_config(tmp_path),
-            exe=sys.executable,
+            exe=fake_claude(tmp_path),
             end=lambda url, key, run, status=status: status,
+            preflight=no_gateway_policy,
         )
         out, err = capfd.readouterr()
         assert code == 0 and not any(json.loads(out).values())
@@ -344,8 +346,9 @@ def test_claude_settings_that_switch_to_bedrock_or_vertex_are_warned_about(
         "claude",
         ["-c", "pass"],
         config=_gateway_config(tmp_path),
-        exe=sys.executable,
+        exe=fake_claude(tmp_path),
         end=lambda url, key, run: 404,
+        preflight=no_gateway_policy,
     )
     assert str(user / "settings.json") in capfd.readouterr().err
 
@@ -385,7 +388,7 @@ def test_a_local_run_hides_the_sinks_renamed_credentials(
         'access_key_env = "MY_S3_KEY"\nsecret_key_env = "MY_S3_SECRET"\n',
     )
     names = ["MY_S3_KEY", "MY_S3_SECRET", "SEATBELT_SIGNING_KEY", "SEATBELT_SINK_OTHER", "PATH"]
-    code = run_cli("claude", ["-c", ENV_PROBE, *names], config=config, exe=sys.executable)
+    code = run_cli("claude", ["-c", ENV_PROBE, *names], config=config, exe=fake_claude(tmp_path))
     seen = json.loads(capfd.readouterr().out)
     assert code == 0 and seen == {**dict.fromkeys(names[:-1], False), "PATH": True}
 
@@ -509,8 +512,9 @@ def test_a_cli_killed_by_a_signal_exits_128_plus_its_number(tmp_path: Path) -> N
         "claude",
         ["-c", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"],
         config=_gateway_config(tmp_path),
-        exe=sys.executable,
+        exe=fake_claude(tmp_path),
         end=lambda url, key, run: 404,
+        preflight=no_gateway_policy,
     )
     assert code == 128 + signal.SIGKILL
     assert signal.getsignal(signal.SIGTERM) is before  # restored
@@ -536,7 +540,7 @@ def test_sigterm_to_seatbelt_reaches_the_cli_and_the_run_is_closed(
     env = {**os.environ, "SEATBELT_HOME": str(home)}
     config = _local_config(tmp_path)
     command = [sys.executable, "-c", SEATBELT, "0.5", "run", "claude", "--config", str(config)]
-    command += ["--exe", sys.executable, "--", "-c", SLOW_CLI, str(ready), cli]
+    command += ["--exe", fake_claude(tmp_path), "--", "-c", SLOW_CLI, str(ready), cli]
     seatbelt = subprocess.Popen(command, env=env, stderr=subprocess.PIPE, text=True)  # noqa: S603
     try:
         deadline = time.monotonic() + 30
@@ -599,18 +603,19 @@ def test_a_run_says_whether_it_records_locally_or_through_a_gateway(
 ) -> None:
     monkeypatch.setenv("SEATBELT_HOME", str(tmp_path / "home"))
     config = _local_config(tmp_path)
-    assert run_cli("claude", ["-c", "pass"], config=config, exe=sys.executable) == 0
+    assert run_cli("claude", ["-c", "pass"], config=config, exe=fake_claude(tmp_path)) == 0
     err = capfd.readouterr().err
-    assert f"seatbelt: recording claude on this machine (no gateway in {config})" in err
+    assert f"[seatbelt] recording claude on this machine (no gateway in {config})" in err
     run_cli(
         "claude",
         ["-c", "pass"],
         config=_gateway_config(tmp_path),
-        exe=sys.executable,
+        exe=fake_claude(tmp_path),
         end=lambda url, key, run: 204,
+        preflight=no_gateway_policy,
     )
     assert (
-        "seatbelt: recording claude through the gateway at https://gw.corp"
+        "[seatbelt] recording claude through the gateway at https://gw.corp"
         in capfd.readouterr().err
     )
 

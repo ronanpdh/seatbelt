@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.helpers import fake_claude
 
 from seatbelt.attest.manifest import sidecar
 from seatbelt.attest.sign import PUB_FILE
@@ -94,7 +95,8 @@ def test_a_local_run_passes_the_clis_own_key_through_and_signs_the_ledger(
 ) -> None:
     monkeypatch.setenv("SEATBELT_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-USERS-OWN")
-    code = run_cli("claude", ["-c", CLAUDE], config=_config(tmp_path, provider), exe=sys.executable)
+    config, claude = _config(tmp_path, provider), fake_claude(tmp_path)
+    code = run_cli("claude", ["-c", CLAUDE], config=config, exe=claude)
     out, err = capfd.readouterr()
     assert code == 7 and out.strip() == "hi"  # the CLI's exit code and output
     (sent,) = provider.seen
@@ -104,7 +106,7 @@ def test_a_local_run_passes_the_clis_own_key_through_and_signs_the_ledger(
     assert "x-seatbelt-key" not in headers and "x-seatbelt-run" not in headers
     (ledger,) = (tmp_path / "home" / "runs").glob("*.jsonl")
     run = ledger.stem.split("-", 1)[1].rsplit("-", 1)[0]  # <user>-<run>-<hex>
-    assert f"seatbelt: recorded run {run}" in err
+    assert f"[seatbelt] recorded run {run}" in err
     assert f"replay it: seatbelt reconstruct {run}" in err and str(ledger) in err
     events = list(read_events(ledger))
     assert [e.kind for e in events] == [
@@ -128,10 +130,11 @@ def test_the_ledgers_path_is_printed_ready_to_paste_into_a_shell(
     splits the path at the space, and an editor opens two empty files that do not exist."""
     home = tmp_path / "Application Support" / "seatbelt"
     monkeypatch.setenv("SEATBELT_HOME", str(home))
-    run_cli("claude", ["-c", CLAUDE], config=_config(tmp_path, provider), exe=sys.executable)
+    run_cli("claude", ["-c", CLAUDE], config=_config(tmp_path, provider), exe=fake_claude(tmp_path))
     (ledger,) = (home / "runs").glob("*.jsonl")
-    (line,) = [x for x in capfd.readouterr().err.splitlines() if x.strip().startswith("file:")]
-    assert shlex.split(line.strip().removeprefix("file:")) == [str(ledger)]
+    lines = [x.removeprefix("[seatbelt]").strip() for x in capfd.readouterr().err.splitlines()]
+    (line,) = [x for x in lines if x.startswith("file:")]
+    assert shlex.split(line.removeprefix("file:")) == [str(ledger)]
 
 
 ANTHROPIC = UPSTREAMS["anthropic"]
@@ -168,7 +171,8 @@ def test_claude_keeps_mcp_tool_search_when_the_recorder_forwards_to_anthropic(
             monkeypatch.setenv(name, value)
     config = tmp_path / "config.toml"
     config.write_text(f'[upstreams]\nanthropic = "{upstream}"\n' if upstream else "")
-    assert run_cli("claude", ["-c", TOOL_SEARCH_PROBE], config=config, exe=sys.executable) == 0
+    claude = fake_claude(tmp_path)
+    assert run_cli("claude", ["-c", TOOL_SEARCH_PROBE], config=config, exe=claude) == 0
     assert capfd.readouterr().out.strip() == expected
 
 
@@ -196,7 +200,7 @@ def test_the_local_port_refuses_anyone_without_the_runs_key(
         "claude",
         ["-c", "import urllib.error\n" + intruder],
         config=_config(tmp_path, provider),
-        exe=sys.executable,
+        exe=fake_claude(tmp_path),
     )
     assert code == 3 and provider.seen == []  # 401, and nothing reached the provider
     assert list((tmp_path / "home" / "runs").glob("*.jsonl")) == []
@@ -223,7 +227,7 @@ def test_with_no_config_a_run_is_recorded_locally(
         "import os; url = os.environ['ANTHROPIC_BASE_URL']; "
         "raise SystemExit(0 if url.startswith('http://127.0.0.1:') else 1)"
     )
-    assert run_cli("claude", ["-c", probe], exe=sys.executable) == 0
+    assert run_cli("claude", ["-c", probe], exe=fake_claude(tmp_path)) == 0
     with pytest.raises(ValueError, match="no preset to record aider locally"):
         run_cli("aider", [], exe=sys.executable)
 
@@ -264,7 +268,7 @@ def test_a_base_url_the_cli_already_has_is_where_the_recorder_forwards(
     monkeypatch.setenv("ANTHROPIC_BASE_URL", provider.url + "/")
     empty = tmp_path / "config.toml"
     empty.write_text("")
-    assert run_cli("claude", ["-c", CLAUDE], config=empty, exe=sys.executable) == 7
+    assert run_cli("claude", ["-c", CLAUDE], config=empty, exe=fake_claude(tmp_path)) == 7
     (sent,) = provider.seen
     assert sent["path"] == "/v1/messages?beta=true"
 
@@ -332,7 +336,7 @@ def test_a_run_closes_what_a_killed_run_left_open_in_the_background(
     dead = _open_ledger(home / "runs", "claude-dead")
     empty = tmp_path / "config.toml"
     empty.write_text("")
-    assert run_cli("claude", ["-c", "pass"], config=empty, exe=sys.executable) == 0
+    assert run_cli("claude", ["-c", "pass"], config=empty, exe=fake_claude(tmp_path)) == 0
     assert list(read_events(dead))[-1].kind is Kind.RUN_END
     assert list((home / "runs" / ".running").iterdir()) == []  # this run's lock is gone too
 

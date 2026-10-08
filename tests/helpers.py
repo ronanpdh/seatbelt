@@ -1,6 +1,8 @@
 """Shared test helpers."""
 
 import json
+import sys
+from pathlib import Path
 from typing import Any
 
 
@@ -29,3 +31,29 @@ def sse(message: dict[str, Any]) -> bytes:
     )
     out.append(event("message_stop", {}))
     return "".join(out).encode()
+
+
+# Claude Code as tests run it: Python, after the `--settings` that `seatbelt run` puts first,
+# which it keeps in SEATBELT_TEST_SETTINGS for the test to read
+_FAKE_CLAUDE = """#!{python}
+import os, sys
+args = sys.argv[1:]
+if args[:1] == ["--settings"]:
+    os.environ["SEATBELT_TEST_SETTINGS"] = args[1]
+    args = args[2:]
+os.execv(sys.executable, [sys.executable, *args])
+"""
+
+
+def fake_claude(directory: Path) -> str:
+    """An executable that stands in for `claude`: it runs Python with what follows the
+    `--settings` seatbelt gives Claude Code."""
+    path = directory / "fake-claude"
+    path.write_text(_FAKE_CLAUDE.format(python=sys.executable))
+    path.chmod(0o755)
+    return str(path)
+
+
+def no_gateway_policy(url: str, key: str) -> None:
+    """A preflight that finds a gateway too old to say its policy: the run goes on."""
+    return None

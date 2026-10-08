@@ -26,6 +26,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
+from seatbelt.gateway import badge, claude_code
+from seatbelt.gateway.badge import say
+from seatbelt.terminal import printable
+
 CONFIG_DIR = Path.home() / ".config" / "seatbelt"
 DEFAULT_CONFIG = CONFIG_DIR / "config.toml"
 LEGACY_CONFIG = CONFIG_DIR / "gateway.toml"  # 0.2.0: url and key only
@@ -143,6 +147,8 @@ _HEADER_SEPARATOR = {"ANTHROPIC_CUSTOM_HEADERS": "\n", "GEMINI_CLI_CUSTOM_HEADER
 
 # (gateway url, key, run name) -> the gateway's HTTP status, None if it was not reached
 EndRun = Callable[[str, str, str], int | None]
+# (gateway url, key) -> the gateway's `GET /seatbelt/policy`, None from an older gateway
+Preflight = Callable[[str, str], dict[str, Any] | None]
 
 
 def data_dir(env: Mapping[str, str] = os.environ, platform: str = sys.platform) -> Path:
@@ -215,10 +221,9 @@ def load_client_config(path: Path | None = None) -> ClientConfig:
         raise ValueError(f"{path}: [sink] is a table")
     ledgers = data.get("ledgers")
     if ignored is not None and gateway is None:
-        print(
+        say(
             f"warning: {ignored} is ignored, since {path} is read instead and names no "
-            f'gateway: runs are recorded on this machine. Put gateway = "..." and key in {path}',
-            file=sys.stderr,
+            f'gateway: runs are recorded on this machine. Put gateway = "..." and key in {path}'
         )
     return ClientConfig(
         gateway=gateway.rstrip("/") if isinstance(gateway, str) else None,
@@ -438,6 +443,60 @@ def end_run(url: str, key: str, run: str) -> int | None:
         return None
 
 
+def fetch_policy(url: str, key: str) -> dict[str, Any] | None:
+    """The gateway's `GET /seatbelt/policy`, before the CLI starts: None from a gateway too
+    old to have it (404), which the run goes on with as before. A ValueError when the gateway
+    cannot be reached or refuses the key, so a run that could record nothing never starts."""
+    request = urllib.request.Request(  # noqa: S310 - the org's configured gateway URL
+        f"{url}/seatbelt/policy", headers={"authorization": f"Bearer {key}"}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310
+            data: Any = json.loads(response.read())  # the gateway's JSON
+    except urllib.error.HTTPError as exc:
+        exc.close()
+        if exc.code == 404:
+            return None
+        if exc.code in (401, 403):
+            raise ValueError(
+                f"the gateway at {url} refused your key ({exc.code}): it may have been revoked "
+                "or reissued; ask your admin for a new one"
+            ) from exc
+        raise ValueError(f"the gateway at {url} answered {exc.code}; try again shortly") from exc
+    except (urllib.error.URLError, OSError) as exc:
+        reason = getattr(exc, "reason", exc)
+        raise ValueError(f"cannot reach the gateway at {url}: {reason}") from exc
+    except ValueError as exc:
+        raise ValueError(f"the gateway at {url} did not answer with its policy") from exc
+    if not isinstance(data, dict) or not isinstance(cast(dict[str, Any], data).get("policy"), dict):
+        raise ValueError(f"the gateway at {url} did not answer with its policy")
+    return cast(dict[str, Any], data)
+
+
+def _names(value: Any) -> list[str]:
+    return [str(v) for v in cast(list[Any], value)] if isinstance(value, list) else []
+
+
+def denied_tools(answer: dict[str, Any] | None) -> list[str]:
+    """The tools a `GET /seatbelt/policy` answer denies."""
+    return _names(cast(dict[str, Any], (answer or {}).get("policy") or {}).get("tools_denied"))
+
+
+def policy_lines(answer: dict[str, Any]) -> list[str]:
+    """The org's policy, as a run says it before the CLI starts."""
+    policy = cast(dict[str, Any], answer.get("policy") or {})
+    lines: list[str] = []
+    if denied := _names(policy.get("tools_denied")):
+        lines.append(f"the org's policy denies {', '.join(denied)}")
+    if isinstance(policy.get("models"), list):
+        allowed = _names(policy["models"])
+        lines.append(f"the org's policy allows the models {', '.join(allowed) or '(none)'}")
+    if isinstance(cap := policy.get("max_output_tokens"), int):
+        lines.append(f"the org's policy caps output at {cap} tokens")
+    # names the gateway gave, shown safe for a terminal
+    return [printable(line) for line in lines] or ["the org's policy sets no limits"]
+
+
 def _gemini_warnings(local: bool) -> None:
     home = Path(os.environ.get("GEMINI_CLI_HOME") or Path.home())
     system = gemini_system_settings(os.environ)
@@ -445,13 +504,27 @@ def _gemini_warnings(local: bool) -> None:
         os.environ.get("GEMINI_CLI_SYSTEM_DEFAULTS_PATH") or system.parent / "system-defaults.json"
     )
     for warning in gemini_warnings(home, Path.cwd(), system, defaults, local):
-        print(f"warning: {warning}", file=sys.stderr)
+        say(f"warning: {warning}")
+
+
+def _claude_config_dir() -> Path:
+    return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
 
 
 def _claude_warnings() -> None:
-    config_dir = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
-    for warning in claude_warnings(config_dir, Path.cwd()):
-        print(f"warning: {warning}", file=sys.stderr)
+    for warning in claude_warnings(_claude_config_dir(), Path.cwd()):
+        say(f"warning: {warning}")
+
+
+def cli_arguments(cli: str, args: list[str], denied: Collection[str] = ()) -> list[str]:
+    """The user's arguments for `cli`, with what seatbelt gives it: for Claude Code, a
+    `--settings` with seatbelt's status line and a hook that stops the `denied` tools."""
+    if cli != "claude":
+        return args
+    out, warnings = claude_code.launch_arguments(args, denied, _claude_config_dir(), Path.cwd())
+    for warning in warnings:
+        say(f"warning: {warning}")
+    return out
 
 
 GRACE = 10.0  # seconds the CLI has to exit after seatbelt passes it SIGTERM or SIGHUP
@@ -493,11 +566,26 @@ def run_cli(
     config: Path | None = None,
     exe: str | None = None,
     end: EndRun = end_run,
+    preflight: Preflight | None = None,
 ) -> int:
-    """Launch `cli` recorded: through the configured gateway, else on this machine."""
+    """Launch `cli` recorded: through the configured gateway, else on this machine.
+    `preflight` asks the gateway for its policy (default `fetch_policy`)."""
+    # seatbelt's log lines (and, recording locally, its server's) carry the badge too
+    with badge.said_logs("seatbelt", "uvicorn"):
+        return _run(cli, args, config, exe, end, preflight or fetch_policy)
+
+
+def _run(
+    cli: str,
+    args: list[str],
+    config: Path | None,
+    exe: str | None,
+    end: EndRun,
+    preflight: Preflight,
+) -> int:
     cfg = load_client_config(config)
     if cfg.path is not None and cfg.key and readable_by_others(cfg.path):
-        print(f"warning: {cfg.path} holds your gateway key; chmod 600 it", file=sys.stderr)
+        say(f"warning: {cfg.path} holds your gateway key; chmod 600 it")
     gateway = (cfg.gateway, cfg.key) if cfg.gateway and cfg.key else None
     if cli == "gemini":
         _gemini_warnings(local=gateway is None)
@@ -508,31 +596,38 @@ def run_cli(
     env = environment(cli, url, key, run, os.environ, drop=own_secrets(cfg))
     removed = [n for n in _AROUND_GATEWAY if os.environ.get(n)]
     if removed:
-        print(
+        say(
             f"warning: {', '.join(removed)} removed from {cli}'s environment: they would take "
-            "it around the gateway, or give it a login of its own",
-            file=sys.stderr,
+            "it around the gateway, or give it a login of its own"
         )
     if cli == "claude":
         _claude_warnings()
-    print(f"seatbelt: recording {cli} through the gateway at {url}", file=sys.stderr)
+    say(f"recording {cli} through the gateway at {url}")
+    answer = preflight(url, key)  # before anything starts: a refused key stops here
+    for line in policy_lines(answer) if answer is not None else []:
+        say(line)
+    command = [
+        exe or cli,
+        *arguments(cli, url, run),
+        *cli_arguments(cli, args, denied_tools(answer)),
+    ]
+    badge.buckle()
     try:
-        code = _spawn([exe or cli, *arguments(cli, url, run), *args], env)
+        code = _spawn(command, env)
     finally:
+        badge.unbuckle()
         status = end(url, key, run)
     if status == 204:
-        print(f"seatbelt: recorded run {run} at {url}", file=sys.stderr)
+        say(f"recorded run {run} at {url}")
     elif status == 404:  # no open run by that name
-        print(
-            f"seatbelt: no open run {run} at {url}: {cli} sent no model requests, or the "
-            "gateway already closed the run after it went idle",
-            file=sys.stderr,
+        say(
+            f"no open run {run} at {url}: {cli} sent no model requests, or the "
+            "gateway already closed the run after it went idle"
         )
     else:
-        print(
-            f"seatbelt: could not end run {run} at {url} (status {status or 'none'}); the "
-            "gateway closes it when idle, if it recorded anything",
-            file=sys.stderr,
+        say(
+            f"could not end run {run} at {url} (status {status or 'none'}); the "
+            "gateway closes it when idle, if it recorded anything"
         )
     return code
 
@@ -540,7 +635,7 @@ def run_cli(
 def _run_local(cli: str, args: list[str], cfg: ClientConfig, exe: str | None, run: str) -> int:
     environment(cli, "", "", run, {}, local=True)  # an unsupported CLI fails before any start
     where = f"no gateway in {cfg.path}" if cfg.path is not None else "no client config"
-    print(f"seatbelt: recording {cli} on this machine ({where})", file=sys.stderr)
+    say(f"recording {cli} on this machine ({where})")
     try:
         from seatbelt.gateway.local import UPSTREAMS, local_recorder
     except ImportError as exc:  # a broken install: the server packages are dependencies
@@ -552,18 +647,18 @@ def _run_local(cli: str, args: list[str], cfg: ClientConfig, exe: str | None, ru
         url = local_url(recorder.url, recorder.key, run)
         env = environment(cli, url, recorder.key, run, os.environ, True, own_secrets(cfg))
         env.update(local_defaults(cli, upstreams, UPSTREAMS["anthropic"], os.environ))
+        extra = arguments(cli, recorder.url, run, local=True)
+        command = [exe or cli, *extra, *cli_arguments(cli, args)]
+        badge.buckle()
         try:
-            extra = arguments(cli, recorder.url, run, local=True)
-            code = _spawn([exe or cli, *extra, *args], env)
+            code = _spawn(command, env)
         finally:
+            badge.unbuckle()
             recorder.end(run)
     if recorder.written:
         # quoted to paste into a shell: the macOS data folder, Application Support, has a space
         paths = "\n".join(f"  file:      {shlex.quote(str(p))}" for p in recorder.written)
-        print(
-            f"seatbelt: recorded run {run}\n  replay it: seatbelt reconstruct {run}\n{paths}",
-            file=sys.stderr,
-        )
+        say(f"recorded run {run}\n  replay it: seatbelt reconstruct {run}\n{paths}")
     else:
-        print(f"seatbelt: nothing recorded ({cli} sent no model requests)", file=sys.stderr)
+        say(f"nothing recorded ({cli} sent no model requests)")
     return code
