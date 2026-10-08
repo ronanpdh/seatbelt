@@ -23,7 +23,9 @@ The CLI's base URL carries a random key and the run's name in its path: `http://
 - **The key is in the path, not a custom header,** because CLIs also send their custom headers to other hosts. Claude Code, for one, sends them on a direct request to `api.anthropic.com` [R1].
 - **Codex is the exception.** It takes its provider on the command line, which any user on the machine can read. So Codex gets the key in its environment, which only you can read. Codex sends it as an `x-seatbelt-key` header, to its model provider only (`env_http_headers`) [R3]. Claude Code and Gemini CLI get their base URL, key included, in their environment too.
 
-At the start it prints whether it records on this machine or through a gateway. When the CLI exits, its ledger is closed and signed, and the path is printed. The signing key is made on first use in `keys/` in the data folder, mode 0600, with its public key beside it.
+At the start it prints whether it records on this machine or through a gateway. When the CLI exits, its ledger is closed and signed, and the path is printed. Every line seatbelt prints starts with its badge, `[seatbelt]`, shown reversed on a terminal (plain with `NO_COLOR` set), so it is not taken for the CLI's. On a terminal with room for it, a seatbelt buckles as the CLI starts and unbuckles when it exits, about 2 seconds in all; set `SEATBELT_NO_ANIMATION=1` to turn it off.
+
+Claude Code's status line ends with seatbelt's badge, after your own status line and a `|`. `seatbelt run claude` gives Claude Code a status line through `--settings` that runs yours (from `~/.claude/settings.json`, `.claude/settings.json` or `.claude/settings.local.json`) and adds the badge. A `--settings` of your own is merged with seatbelt's, since Claude Code reads only the last one. `disableAllHooks` hides the status line, and `seatbelt run` warns when it is set. The signing key is made on first use in `keys/` in the data folder, mode 0600, with its public key beside it.
 
 seatbelt passes a SIGTERM or SIGHUP it gets on to the CLI, waits up to 10 seconds for it to exit (then kills it), and closes the run. It exits with the CLI's status, or 128 + N when signal N ended the CLI, as a shell does.
 
@@ -108,6 +110,8 @@ With a gateway set, `seatbelt run` behaves as before:
 - The CLI uses the gateway, with your issued key.
 - The gateway holds the provider keys.
 - The CLI's own provider credentials are removed from its environment. So are the switches that would send Claude Code around the gateway, to Bedrock or Vertex AI (`CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` and their settings), and `CLAUDE_CODE_OAUTH_TOKEN`; `seatbelt run` names any it removed. It also warns when Claude Code's `settings.json` (`~/.claude/`, or `.claude/` in the current folder) sets either switch in its `env`, which seatbelt cannot remove.
+- Before the CLI starts, it asks the gateway for its policy (`GET /seatbelt/policy`), which also checks the gateway is up and your key is accepted. A gateway it cannot reach, or one that refuses your key, stops the run there, with exit 1. It prints the policy, e.g. "the org's policy denies Bash, Write".
+- For Claude Code, a tool the policy denies is stopped before it runs, by a PreToolUse hook `seatbelt run` gives it. Without the hook (with `disableAllHooks` set, say, which seatbelt warns about) the tool runs and the gateway refuses the conversation from then on; `/clear` or `/rewind` leaves it.
 - After the CLI exits, it says whether anything was recorded.
 
 A 0.2.0 `~/.config/seatbelt/gateway.toml` with `url` and `key` is still read when there is no `config.toml`. See [deploy/gateway.md](deploy/gateway.md) to run a gateway.
