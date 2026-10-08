@@ -12,6 +12,7 @@ from starlette.applications import Starlette
 from starlette.testclient import TestClient
 from tests.helpers import sse
 
+from seatbelt import __version__
 from seatbelt.attest.manifest import sidecar
 from seatbelt.attest.sign import Signer
 from seatbelt.gateway.app import create_app
@@ -470,7 +471,8 @@ def test_disallowed_model_is_403_and_recorded(gwp: Gateway) -> None:
     assert r.status_code == 403 and gwp.seen == []
     assert r.json()["error"] == {
         "type": "permission_error",
-        "message": "model claude-opus-5 is not allowed",
+        "message": "model claude-opus-5 is not allowed. The org's policy allows "
+        "claude-sonnet-5, gpt-5",
     }
     events = gwp.events()
     denied = [e for e in events if e.kind == Kind.POLICY_CHECK and not e.attrs["policy.allowed"]]
@@ -549,6 +551,118 @@ def test_denied_tool_in_a_stream_is_recorded(gwp: Gateway) -> None:
     assert last.kind == Kind.POLICY_CHECK and last.attrs["policy.allowed"] is False
 
 
+CLAUDE_CODE = {"user-agent": "claude-cli/2.1.294 (external, cli)"}
+
+
+def test_claude_code_gets_a_refusal_as_422_with_what_to_do(gwp: Gateway) -> None:
+    """Claude Code reads a 403 as a sign-in problem: it retries, then shows an authentication
+    error without the gateway's message."""
+    headers = {"x-api-key": gwp.key, **CLAUDE_CODE}
+    model = gwp.client.post(
+        "/v1/messages",
+        json={"model": "claude-opus-5", "max_tokens": 10, "messages": []},
+        headers=headers,
+    )
+    assert model.status_code == 422 and model.json()["error"]["message"] == (
+        "model claude-opus-5 is not allowed. The org's policy allows claude-sonnet-5, gpt-5; "
+        "pick one with /model"
+    )
+    tokens = gwp.client.post(
+        "/v1/messages",
+        json={"model": "claude-sonnet-5", "max_tokens": 32000, "messages": []},
+        headers=headers,
+    )
+    assert tokens.status_code == 422 and tokens.json()["error"]["message"] == (
+        "max_tokens 32000 exceeds 1000. The org's policy caps output at 1000 tokens; "
+        "set CLAUDE_CODE_MAX_OUTPUT_TOKENS=1000 and start Claude Code again"
+    )
+    assert gwp.seen == []
+    # what the ledger records is the reason alone, for any client
+    reasons = [e.attrs["policy.reason"] for e in gwp.events() if e.kind == Kind.POLICY_CHECK]
+    assert "model claude-opus-5 is not allowed" in reasons
+    assert "max_tokens 32000 exceeds 1000" in reasons
+
+
+def _hook_result(body: dict[str, Any], shell: dict[str, Any], content: Any) -> dict[str, Any]:
+    followup = _followup(body, shell)
+    followup["messages"][-1]["content"] = [
+        {"type": "tool_result", "tool_use_id": "toolu_09", "content": content, "is_error": True}
+    ]
+    return followup
+
+
+def test_a_tool_the_hook_stopped_does_not_hold_the_conversation(gwp: Gateway) -> None:
+    from seatbelt.gateway.claude_code import denial
+
+    shell = _shell_reply()
+    gwp.upstream(lambda _: httpx2.Response(200, json=shell))
+    body: dict[str, Any] = {
+        "model": "claude-sonnet-5",
+        "max_tokens": 10,
+        "messages": [{"role": "user", "content": "ls"}],
+    }
+    headers = {"x-api-key": gwp.key, **CLAUDE_CODE}
+    gwp.client.post("/v1/messages", json=body, headers=headers)
+    text = {**shell, "content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn"}
+    gwp.upstream(lambda _: httpx2.Response(200, json=text))
+    stopped = f"PreToolUse:run_shell hook error: {denial('run_shell')}"
+    r = gwp.client.post("/v1/messages", json=_hook_result(body, shell, stopped), headers=headers)
+    assert r.status_code == 200 and len(gwp.seen) == 2  # the model got the refusal, no output
+    checks = [e for e in gwp.events() if e.kind == Kind.POLICY_CHECK and e.actor.id == "denylist"]
+    assert [c.attrs["policy.allowed"] for c in checks] == [False, True]  # the call, its result
+    assert checks[1].attrs["policy.reason"].endswith("(run_shell): stopped before it ran")
+    (result,) = [e for e in gwp.events() if e.kind == Kind.TOOL_RESULT]
+    assert result.attrs["gen_ai.tool.call.result"] == stopped  # what came back is evidence
+
+
+def test_a_tool_that_ran_still_holds_the_conversation(gwp: Gateway) -> None:
+    from seatbelt.gateway.claude_code import denial
+
+    shell = _shell_reply()
+    gwp.upstream(lambda _: httpx2.Response(200, json=shell))
+    body: dict[str, Any] = {
+        "model": "claude-sonnet-5",
+        "max_tokens": 10,
+        "messages": [{"role": "user", "content": "ls"}],
+    }
+    headers = {"x-api-key": gwp.key, **CLAUDE_CODE}
+    gwp.client.post("/v1/messages", json=body, headers=headers)
+    for content in ("file.txt", denial("run_shell") + "\nfile.txt"):
+        r = gwp.client.post(
+            "/v1/messages", json=_hook_result(body, shell, content), headers=headers
+        )
+        assert r.status_code == 422 and len(gwp.seen) == 1
+        assert r.json()["error"]["message"] == (
+            "tool result for denied call toolu_09 (run_shell). The org's policy denies "
+            "run_shell, and this conversation holds its result; run /clear to start a new one, "
+            "or /rewind to go back to before the call"
+        )
+    other = gwp.client.post(
+        "/v1/messages", json=_followup(body, shell), headers={"x-api-key": gwp.key}
+    )
+    assert other.status_code == 403 and "/clear" not in other.json()["error"]["message"]
+
+
+def test_the_policy_is_said_to_its_callers_only(gwp: Gateway, gw: Gateway) -> None:
+    r = gwp.client.get("/seatbelt/policy", headers={"authorization": f"Bearer {gwp.key}"})
+    assert r.status_code == 200
+    assert r.json() == {
+        "principal": "alice@corp",
+        "version": __version__,
+        "policy": {
+            "models": ["claude-sonnet-5", "gpt-5"],
+            "tools_denied": ["run_shell"],
+            "max_output_tokens": 1000,
+        },
+    }
+    none = gw.client.get("/seatbelt/policy", headers={"x-api-key": gw.key}).json()["policy"]
+    assert none == {"models": None, "tools_denied": [], "max_output_tokens": None}
+    assert gwp.client.get("/seatbelt/policy").status_code == 401
+    bad = gwp.client.get("/seatbelt/policy", headers={"x-api-key": "sbk_nope"})
+    assert bad.status_code == 401
+    assert not list(gwp.ledgers.glob("*.jsonl")) and gwp.seen == []  # nothing recorded
+
+
 def test_query_string_reaches_the_upstream(gw: Gateway) -> None:
     gw.client.post(
         "/v1/messages?beta=true",
@@ -556,6 +670,87 @@ def test_query_string_reaches_the_upstream(gw: Gateway) -> None:
         headers={"x-api-key": gw.key},
     )
     assert gw.seen[0].url.path == "/v1/messages" and gw.seen[0].url.query == b"beta=true"
+
+
+# -- run id ------------------------------------------------------------------
+
+
+def _stems(gw: Gateway) -> set[str]:
+    return {p.stem for p in gw.ledgers.glob("*.jsonl")}
+
+
+def test_every_recorded_response_names_its_ledger(gwp: Gateway) -> None:
+    """JSON, streamed, a policy refusal and an unreachable upstream: each names the run that
+    recorded it, and an upstream's header of the same name is replaced."""
+    headers = {"x-api-key": gwp.key, "X-Seatbelt-Run": "triage-7"}
+    allowed: dict[str, Any] = {"model": "claude-sonnet-5", "max_tokens": 10, "messages": []}
+    gwp.upstream(
+        lambda _: httpx2.Response(200, json=_first(), headers={"X-Seatbelt-Run-Id": "forged"})
+    )
+    ids = [gwp.client.post("/v1/messages", json=allowed, headers=headers).headers]
+    gwp.upstream(lambda _: httpx2.Response(200, headers=SSE_HEADERS, content=sse(_first())))
+    with gwp.client.stream(
+        "POST", "/v1/messages", json={**allowed, "stream": True}, headers=headers
+    ) as r:
+        r.read()
+        ids.append(r.headers)
+    refused = gwp.client.post(
+        "/v1/messages", json={**allowed, "model": "claude-opus-5"}, headers=headers
+    )
+    assert refused.status_code == 403
+    ids.append(refused.headers)
+
+    def down(request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.ConnectError("connection refused", request=request)
+
+    gwp.upstream(down)
+    unreachable = gwp.client.post("/v1/messages", json=allowed, headers=headers)
+    assert unreachable.status_code == 502
+    ids.append(unreachable.headers)
+    (stem,) = _stems(gwp)
+    assert stem.startswith("alice_corp-triage-7-")
+    assert [h.get_list("x-seatbelt-run-id") for h in ids] == [[stem]] * 4
+
+
+def test_a_reused_run_name_gets_a_new_id_each_run(gw: Gateway) -> None:
+    headers = {"x-api-key": gw.key, "X-Seatbelt-Run": "job", "X-Seatbelt-Run-End": "true"}
+    body: dict[str, Any] = {"model": "m", "messages": []}
+    first = gw.client.post("/v1/messages", json=body, headers=headers).headers["x-seatbelt-run-id"]
+    second = gw.client.post("/v1/messages", json=body, headers=headers).headers["x-seatbelt-run-id"]
+    assert first != second and _stems(gw) == {first, second}
+
+
+def test_an_unnamed_run_is_named_too(gw: Gateway) -> None:
+    r = gw.client.post(
+        "/v1/messages", json={"model": "m", "messages": []}, headers={"x-api-key": gw.key}
+    )
+    assert _stems(gw) == {r.headers["x-seatbelt-run-id"]}
+
+
+def test_a_response_sent_before_any_session_carries_no_run_id(
+    gw: Gateway, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from seatbelt.gateway import app
+
+    unknown = gw.client.post(
+        "/v1/messages", json={"model": "m", "messages": []}, headers={"x-api-key": "sbk_nope"}
+    )
+    monkeypatch.setattr(app, "_MAX_BODY", 10)
+    too_large = gw.client.post(
+        "/v1/messages", json={"model": "m", "messages": []}, headers={"x-api-key": gw.key}
+    )
+    assert (unknown.status_code, too_large.status_code) == (401, 413)
+    assert "x-seatbelt-run-id" not in unknown.headers
+    assert "x-seatbelt-run-id" not in too_large.headers
+    assert not _stems(gw)
+
+
+def test_a_forwarded_probe_carries_no_run_id(gw: Gateway) -> None:
+    gw.upstream(
+        lambda _: httpx2.Response(200, json={"data": []}, headers={"X-Seatbelt-Run-Id": "x"})
+    )
+    r = gw.client.get("/v1/models", headers={"x-api-key": gw.key})
+    assert r.status_code == 200 and "x-seatbelt-run-id" not in r.headers
 
 
 # -- probes --------------------------------------------------------------------

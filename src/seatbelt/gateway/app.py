@@ -23,7 +23,8 @@ from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
 from seatbelt import __version__
-from seatbelt.gateway.config import KEY_PREFIX, GatewayConfig, Principal, Upstream
+from seatbelt.gateway.claude_code import is_claude_code
+from seatbelt.gateway.config import KEY_PREFIX, GatewayConfig, PolicyConfig, Principal, Upstream
 from seatbelt.gateway.formats import (
     Format,
     anthropic,
@@ -46,6 +47,9 @@ _log = logging.getLogger(__name__)
 
 RUN_HEADER = "x-seatbelt-run"
 RUN_END_HEADER = "x-seatbelt-run-end"
+# on every response to a request that reached a session: the run id, its ledger's file name
+# without `.jsonl`, which the caller cannot predict from the run name it chose
+RUN_ID_HEADER = "x-seatbelt-run-id"
 # the issued key, for a client whose own auth headers carry its provider credentials to a
 # pass-through upstream (`key_env` unset): `seatbelt run` in local mode
 KEY_HEADER = "x-seatbelt-key"
@@ -81,8 +85,9 @@ _STRIP_WITH_KEY = _STRIP_REQUEST | {"openai-organization", "openai-project", "x-
 _AUTH_HEADERS = frozenset({"authorization", "x-api-key", "x-goog-api-key"})
 # to a pass-through upstream the client's own credentials go on as sent
 _STRIP_PASSTHROUGH = _STRIP_REQUEST - _AUTH_HEADERS
-# the body is relayed decoded, so the upstream's encoding and length no longer describe it
-_STRIP_RESPONSE = _HOP | {"content-encoding", "content-length"}
+# the body is relayed decoded, so the upstream's encoding and length no longer describe it.
+# A run id is the gateway's to give, never an upstream's
+_STRIP_RESPONSE = _HOP | {"content-encoding", "content-length", RUN_ID_HEADER}
 type Assemble = Callable[[list[dict[str, Any]]], dict[str, Any]]
 type Spec = tuple[str, str, type[Format], Assemble]  # upstream, auth header, format, assembler
 # path -> how it is relayed and recorded
@@ -454,6 +459,16 @@ def _check_tool_call(session: Session, policy: Policy, event: Event) -> None:
             session.denied_calls[str(event.attrs.get("gen_ai.tool.call.id"))] = name
 
 
+@dataclass(frozen=True)
+class Refusal:
+    """Why the policy refused a request: the rule, the reason recorded, and for a tool result
+    the tool."""
+
+    rule: str
+    reason: str
+    tool: str | None = None
+
+
 def _refusal(
     session: Session,
     fmt: Format,
@@ -461,13 +476,18 @@ def _refusal(
     request_id: str,
     request_policy: Policy | None,
     tool_policy: Policy | None,
-) -> str | None:
+) -> Refusal | None:
     """Record the checks on a request; return the first denial, or None. A tool result is
     refused while the policy denies the tool this session recorded for its call, or the tool
     the history names (a new session after the idle window still carries the old
-    conversation). A result held back earlier is let through, and that recorded, once a
-    config reload stops denying its tool."""
+    conversation), unless it is Claude Code's report that seatbelt's hook stopped the tool
+    before it ran: then nothing the tool did is in it. A result held back earlier is let
+    through, and that recorded, once a config reload stops denying its tool."""
     if tool_policy is not None:
+        # a format whose client can stop a tool before it runs (Claude Code) says so
+        stopped: Callable[[dict[str, Any], str, str], bool] | None = getattr(
+            fmt, "stopped_before_run", None
+        )
         for call_id, name in fmt.tool_result_calls(body):
             remembered = session.denied_calls.get(call_id)
             denied = next(
@@ -478,22 +498,53 @@ def _refusal(
                 ),
                 None,
             )
+            if denied is not None and stopped is not None and stopped(body, call_id, denied):
+                reason = f"tool result for denied call {call_id} ({denied}): stopped before it ran"
+                session.rec.policy_check("denylist", request_id, True, reason)
+                continue
             if denied is not None:
                 reason = f"tool result for denied call {call_id} ({denied})"
                 session.rec.policy_check("denylist", request_id, False, reason)
-                return reason
+                return Refusal("denylist", reason, denied)
             if remembered is not None:  # denied when called; the policy has changed since
                 reason = f"tool result for call {call_id} ({remembered}): no longer denied"
                 session.rec.policy_check("denylist", request_id, True, reason)
     if request_policy is None:
         return None
-    first: str | None = None
+    first: Refusal | None = None
     # a format that wraps the request (Code Assist) gives the policy what is inside
     view: Callable[[dict[str, Any]], dict[str, Any]] | None = getattr(fmt, "policy_view", None)
     for rule, reason in request_policy.evaluate(fmt.model(body), view(body) if view else body):
         session.rec.policy_check(rule, request_id, reason is None, reason or "allowed")
-        first = first or reason
+        if first is None and reason is not None:
+            first = Refusal(rule, reason)
     return first
+
+
+def _hint(policy: PolicyConfig, refusal: Refusal, claude: bool) -> str:
+    """What the caller can do about `refusal`, said after its reason. Claude Code is told
+    where in Claude Code to do it."""
+    if refusal.rule == "models" and policy.models is not None:
+        allowed = ", ".join(policy.models) or "no model"
+        return f". The org's policy allows {allowed}" + ("; pick one with /model" if claude else "")
+    if refusal.rule == "max_output_tokens" and policy.max_output_tokens is not None:
+        cap = policy.max_output_tokens
+        fix = f"; set CLAUDE_CODE_MAX_OUTPUT_TOKENS={cap} and start Claude Code again"
+        return f". The org's policy caps output at {cap} tokens" + (fix if claude else "")
+    if refusal.rule == "denylist" and refusal.tool is not None:
+        held = f". The org's policy denies {refusal.tool}, and this conversation holds its result"
+        leave = "; run /clear to start a new one, or /rewind to go back to before the call"
+        return held + (leave if claude else ", so the gateway refuses it")
+    return ""
+
+
+def _refused(request: Request, policy: PolicyConfig, refusal: Refusal) -> Response:
+    """A policy refusal, with what to do about it. Claude Code reads a 403 as a sign-in
+    problem: it retries, then shows an authentication error without the gateway's message. A
+    422 it shows with the message."""
+    claude = is_claude_code(request.headers.get("user-agent"))
+    message = refusal.reason + _hint(policy, refusal, claude)
+    return _error(request, 422 if claude else 403, "permission_error", message)
 
 
 def sse_events(raw: bytes) -> list[dict[str, Any]]:
@@ -711,8 +762,13 @@ def create_app(
         def fallback(call: ModelCall, payload: dict[str, Any], error: str) -> None:
             _locked(session, lambda: call.respond(payload, error=error))
 
-        def admit() -> tuple[ModelCall, str | None]:
-            """Record the request, then the policy verdicts on it. Returns a refusal reason."""
+        def tagged(response: Response) -> Response:
+            """`response` naming the run that recorded it."""
+            response.headers[RUN_ID_HEADER] = session.rec.run_id
+            return response
+
+        def admit() -> tuple[ModelCall, Refusal | None]:
+            """Record the request, then the policy verdicts on it. Returns a refusal."""
             f = fmt()
             call = f.begin(body)
             refusal = _refusal(session, f, body, call.request.id, request_policy, tool_policy)
@@ -730,7 +786,7 @@ def create_app(
             call, refusal = await run_in_threadpool(_locked, session, admit)
             if refusal is not None:
                 refused = True
-                return _error(request, 403, "permission_error", refusal)
+                return tagged(_refused(request, cfg.policy, refusal))
             client = httpx2.AsyncClient(
                 base_url=upstream.url, transport=request.app.state.transport, timeout=600
             )
@@ -752,10 +808,10 @@ def create_app(
                 await client.aclose()
                 error = f"upstream unreachable: {type(exc).__name__}: {exc}"
                 await run_in_threadpool(finish, call, None, error)
-                return _error(request, 502, "api_error", error)
+                return tagged(_error(request, 502, "api_error", error))
             if streaming:
                 handed_off = True
-                return _stream(resp, client, call, assemble, finish, fallback, settle)
+                return tagged(_stream(resp, client, call, assemble, finish, fallback, settle))
             await client.aclose()
             value = _json(resp.content)
             if isinstance(value, list) and issubclass(format_cls, GeminiFormat):
@@ -768,8 +824,8 @@ def create_app(
             else:
                 error = None if payload is not None else f"{resp.status_code}: not a JSON object"
             await run_in_threadpool(finish, call, payload, error)
-            return Response(
-                resp.content, status_code=resp.status_code, headers=_relay_headers(resp)
+            return tagged(
+                Response(resp.content, status_code=resp.status_code, headers=_relay_headers(resp))
             )
         finally:
             if not handed_off:
@@ -860,6 +916,26 @@ def create_app(
     async def hello(_: Request) -> Response:
         return Response(status_code=200)
 
+    async def policy(request: Request) -> Response:
+        """GET /seatbelt/policy: the policy the caller's requests run under, for a client to
+        check its key and say the policy before it starts. Not recorded: no model sees it."""
+        live = _live(request)
+        principal = await _identify(live, request)
+        if isinstance(principal, Response):
+            return principal
+        p = live.cfg.policy
+        return JSONResponse(
+            {
+                "principal": principal.id,
+                "version": __version__,
+                "policy": {
+                    "models": p.models,
+                    "tools_denied": p.tools_denied,
+                    "max_output_tokens": p.max_output_tokens,
+                },
+            }
+        )
+
     async def end_run(request: Request) -> Response:
         principal = await _identify(_live(request), request)
         if isinstance(principal, Response):
@@ -887,6 +963,7 @@ def create_app(
             Route("/v1internal:{method}", code_assist, methods=["GET", "POST"]),
             Route("/v1internal/{name:path}", code_assist_operation, methods=["GET"]),
             Route("/api/hello", hello, methods=["GET", "HEAD"]),
+            Route("/seatbelt/policy", policy, methods=["GET"]),
             Route("/seatbelt/runs/{name}/end", end_run, methods=["POST"]),
         ]
     )

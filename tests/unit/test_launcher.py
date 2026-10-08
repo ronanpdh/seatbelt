@@ -1,12 +1,13 @@
 import ast
 import json
-import os
+import re
 import sys
 import tomllib
 from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.helpers import fake_claude, no_gateway_policy
 from typer.testing import CliRunner
 
 from seatbelt.cli import app
@@ -119,7 +120,14 @@ def test_run_cli_puts_the_codex_provider_before_the_users_arguments(
     def keep_open(url: str, key: str, run: str) -> None:
         pass
 
-    run_cli("codex", ["exec", "hi"], config=_config(tmp_path), exe=str(fake), end=keep_open)
+    run_cli(
+        "codex",
+        ["exec", "hi"],
+        config=_config(tmp_path),
+        exe=str(fake),
+        end=keep_open,
+        preflight=no_gateway_policy,
+    )
     argv = ast.literal_eval(capfd.readouterr().out.strip())
     assert argv[-2:] == ["exec", "hi"] and len(argv) == 6
     assert _provider(argv[:4])["http_headers"]["X-Seatbelt-Run"].startswith("codex-")
@@ -215,8 +223,9 @@ def test_run_cli_spawns_with_the_preset_then_ends_the_run(
         "claude",
         ["-c", PROBE],
         config=_config(tmp_path),
-        exe=sys.executable,
+        exe=fake_claude(tmp_path),
         end=lambda url, key, run: ended.append((url, key, run)),
+        preflight=no_gateway_policy,
     )
     out = capfd.readouterr().out.split()
     assert code == 3  # the child's exit code
@@ -234,17 +243,23 @@ def test_run_cli_warns_about_a_readable_key_file(
         "claude",
         ["-c", "pass"],
         config=_config(tmp_path, 0o644),
-        exe=sys.executable,
+        exe=fake_claude(tmp_path),
         end=lambda url, key, run: None,
+        preflight=no_gateway_policy,
     )
     assert "chmod 600" in capfd.readouterr().err
 
 
-def test_cli_run_passes_arguments_and_exit_code(tmp_path: Path) -> None:
-    env_bin = "/usr/bin/env" if os.path.exists("/usr/bin/env") else "env"
+def test_cli_run_passes_arguments_and_exit_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from seatbelt.gateway import launcher
+
+    monkeypatch.setattr(launcher, "fetch_policy", no_gateway_policy)
+    claude = fake_claude(tmp_path)
     r = CliRunner().invoke(
         app,
-        ["run", "claude", "--config", str(_config(tmp_path)), "--exe", env_bin, "--", "true"],
+        ["run", "claude", "--config", str(_config(tmp_path)), "--exe", claude, "--", "-c", "1"],
     )
     assert r.exit_code == 0, r.output
     r = CliRunner().invoke(app, ["run", "vim", "--config", str(_config(tmp_path))])
@@ -288,6 +303,166 @@ def test_run_cli_warns_before_launching_gemini(
         config=_config(tmp_path),
         exe=sys.executable,
         end=lambda url, key, run: None,
+        preflight=no_gateway_policy,
     )
     err = capfd.readouterr().err
     assert str(tmp_path / "home" / ".gemini" / "settings.json") in err
+
+
+# -- the preflight: the gateway and the key checked, and the policy said, before the CLI ----
+
+
+class _Gateway:
+    """A stand-in gateway on localhost that answers `GET /seatbelt/policy` with `status`."""
+
+    def __init__(self, status: int, body: bytes = b"") -> None:
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        seen = self.seen = list[str | None]()
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                seen.append(self.headers.get("authorization"))
+                self.send_response(status)
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args: object) -> None:
+                pass
+
+        self.server = HTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+
+ANSWER = {
+    "principal": "alice@corp",
+    "version": "0.5.3",
+    "policy": {"models": ["claude-sonnet-5"], "tools_denied": ["Bash"], "max_output_tokens": 8000},
+}
+
+
+def test_the_preflight_reads_the_policy_or_finds_an_older_gateway() -> None:
+    from seatbelt.gateway.launcher import fetch_policy
+
+    gateway = _Gateway(200, json.dumps(ANSWER).encode())
+    try:
+        assert fetch_policy(gateway.url, "sbk_abc") == ANSWER
+        assert gateway.seen == ["Bearer sbk_abc"]
+    finally:
+        gateway.close()
+    older = _Gateway(404)
+    try:
+        assert fetch_policy(older.url, "sbk_abc") is None  # the run goes on as before
+    finally:
+        older.close()
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "said"),
+    [
+        (401, b"", "refused your key (401)"),
+        (403, b"", "refused your key (403)"),
+        (503, b"", "answered 503"),
+        (200, b"<html>", "did not answer with its policy"),
+        (200, b'{"policy": "none"}', "did not answer with its policy"),
+    ],
+)
+def test_a_preflight_that_fails_stops_the_run(status: int, body: bytes, said: str) -> None:
+    from seatbelt.gateway.launcher import fetch_policy
+
+    gateway = _Gateway(status, body)
+    try:
+        with pytest.raises(ValueError, match=re.escape(said)):
+            fetch_policy(gateway.url, "sbk_abc")
+    finally:
+        gateway.close()
+
+
+def test_an_unreachable_gateway_stops_the_run() -> None:
+    from seatbelt.gateway.launcher import fetch_policy
+
+    gateway = _Gateway(200)
+    url = gateway.url
+    gateway.close()  # nothing listens there now
+    with pytest.raises(ValueError, match=f"cannot reach the gateway at {re.escape(url)}"):
+        fetch_policy(url, "sbk_abc")
+
+
+def test_the_policy_is_said_in_a_line_per_rule() -> None:
+    from seatbelt.gateway.launcher import denied_tools, policy_lines
+
+    assert policy_lines(ANSWER) == [
+        "the org's policy denies Bash",
+        "the org's policy allows the models claude-sonnet-5",
+        "the org's policy caps output at 8000 tokens",
+    ]
+    empty: dict[str, Any] = {
+        "policy": {"models": None, "tools_denied": [], "max_output_tokens": None}
+    }
+    assert policy_lines(empty) == ["the org's policy sets no limits"]
+    assert denied_tools(ANSWER) == ["Bash"] and denied_tools(None) == []
+    hostile = {"policy": {"tools_denied": ["Bash\x1b[2J"]}}
+    assert policy_lines(hostile) == ["the org's policy denies Bash\\x1b[2J"]
+
+
+SETTINGS_PROBE = "import os; print(os.environ['SEATBELT_TEST_SETTINGS'])"
+
+
+def test_a_gateway_run_says_the_policy_and_stops_denied_tools_in_claude_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    monkeypatch.chdir(tmp_path)
+    code = run_cli(
+        "claude",
+        ["-c", SETTINGS_PROBE],
+        config=_config(tmp_path),
+        exe=fake_claude(tmp_path),
+        end=lambda url, key, run: 204,
+        preflight=lambda url, key: ANSWER,
+    )
+    out, err = capfd.readouterr()
+    assert code == 0
+    given = json.loads(out)
+    assert given["hooks"]["PreToolUse"][0]["matcher"] == "Bash"
+    assert "claude_code statusline" in given["statusLine"]["command"]
+    lines = err.splitlines()
+    assert all(line.startswith("[seatbelt] ") for line in lines)  # every line, badged
+    assert "[seatbelt] the org's policy denies Bash" in lines
+    assert "[seatbelt] the org's policy caps output at 8000 tokens" in lines
+
+
+def test_a_refused_key_stops_the_run_before_the_cli_starts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from seatbelt.gateway import launcher
+
+    started = tmp_path / "started"
+
+    def refused(url: str, key: str) -> None:
+        raise ValueError(f"the gateway at {url} refused your key (401): ask your admin")
+
+    monkeypatch.setattr(launcher, "fetch_policy", refused)
+    r = CliRunner().invoke(
+        app,
+        [
+            "run",
+            "claude",
+            "--config",
+            str(_config(tmp_path)),
+            "--exe",
+            fake_claude(tmp_path),
+            "--",
+            "-c",
+            f"open({str(started)!r}, 'w')",
+        ],
+    )
+    assert r.exit_code == 1 and not started.exists()
+    assert "[seatbelt] error: the gateway at https://gw.corp refused your key (401)" in r.output

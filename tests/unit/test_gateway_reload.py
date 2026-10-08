@@ -294,7 +294,8 @@ def test_a_result_is_refused_while_its_remembered_or_its_named_tool_is_denied(
     }
 
     def verdict(*denied: str) -> str | None:
-        return _refusal(s, fmt, body, "req", None, Policy(denylist(*denied)))
+        refusal = _refusal(s, fmt, body, "req", None, Policy(denylist(*denied)))
+        return refusal.reason if refusal is not None else None
 
     assert verdict("Write") == "tool result for denied call c1 (Write)"
     assert verdict("Bash") == "tool result for denied call c1 (Bash)"

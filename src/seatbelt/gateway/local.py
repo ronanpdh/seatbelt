@@ -221,6 +221,7 @@ def local_recorder(
             host="127.0.0.1",
             port=0,
             log_level="warning",
+            log_config=None,  # its warnings reach `seatbelt run`, which says them
             lifespan="off",
         )
     )

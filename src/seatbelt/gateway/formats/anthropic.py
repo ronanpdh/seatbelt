@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from typing import Any, cast
 
+from seatbelt.gateway import claude_code
 from seatbelt.gateway.formats import as_dict, as_dicts
 from seatbelt.ledger.events import Event
 from seatbelt.record.recorder import ModelCall, Recorder
@@ -56,6 +57,13 @@ class AnthropicFormat:
             if b.get("type") == "tool_use"
         }
         return [(tid, names.get(tid)) for tid, _, _ in tool_results(body)]
+
+    @staticmethod
+    def stopped_before_run(body: dict[str, Any], call_id: str, tool: str) -> bool:
+        """Whether every result the request carries for `call_id` is Claude Code's report that
+        seatbelt's hook stopped `tool` before it ran (`claude_code.stopped_before_run`)."""
+        results = [(c, e) for tid, c, e in tool_results(body) if tid == call_id]
+        return bool(results) and all(claude_code.stopped_before_run(tool, c, e) for c, e in results)
 
     @staticmethod
     def unrecordable(body: dict[str, Any]) -> str | None:
