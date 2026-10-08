@@ -558,6 +558,87 @@ def test_query_string_reaches_the_upstream(gw: Gateway) -> None:
     assert gw.seen[0].url.path == "/v1/messages" and gw.seen[0].url.query == b"beta=true"
 
 
+# -- run id ------------------------------------------------------------------
+
+
+def _stems(gw: Gateway) -> set[str]:
+    return {p.stem for p in gw.ledgers.glob("*.jsonl")}
+
+
+def test_every_recorded_response_names_its_ledger(gwp: Gateway) -> None:
+    """JSON, streamed, a policy refusal and an unreachable upstream: each names the run that
+    recorded it, and an upstream's header of the same name is replaced."""
+    headers = {"x-api-key": gwp.key, "X-Seatbelt-Run": "triage-7"}
+    allowed: dict[str, Any] = {"model": "claude-sonnet-5", "max_tokens": 10, "messages": []}
+    gwp.upstream(
+        lambda _: httpx2.Response(200, json=_first(), headers={"X-Seatbelt-Run-Id": "forged"})
+    )
+    ids = [gwp.client.post("/v1/messages", json=allowed, headers=headers).headers]
+    gwp.upstream(lambda _: httpx2.Response(200, headers=SSE_HEADERS, content=sse(_first())))
+    with gwp.client.stream(
+        "POST", "/v1/messages", json={**allowed, "stream": True}, headers=headers
+    ) as r:
+        r.read()
+        ids.append(r.headers)
+    refused = gwp.client.post(
+        "/v1/messages", json={**allowed, "model": "claude-opus-5"}, headers=headers
+    )
+    assert refused.status_code == 403
+    ids.append(refused.headers)
+
+    def down(request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.ConnectError("connection refused", request=request)
+
+    gwp.upstream(down)
+    unreachable = gwp.client.post("/v1/messages", json=allowed, headers=headers)
+    assert unreachable.status_code == 502
+    ids.append(unreachable.headers)
+    (stem,) = _stems(gwp)
+    assert stem.startswith("alice_corp-triage-7-")
+    assert [h.get_list("x-seatbelt-run-id") for h in ids] == [[stem]] * 4
+
+
+def test_a_reused_run_name_gets_a_new_id_each_run(gw: Gateway) -> None:
+    headers = {"x-api-key": gw.key, "X-Seatbelt-Run": "job", "X-Seatbelt-Run-End": "true"}
+    body: dict[str, Any] = {"model": "m", "messages": []}
+    first = gw.client.post("/v1/messages", json=body, headers=headers).headers["x-seatbelt-run-id"]
+    second = gw.client.post("/v1/messages", json=body, headers=headers).headers["x-seatbelt-run-id"]
+    assert first != second and _stems(gw) == {first, second}
+
+
+def test_an_unnamed_run_is_named_too(gw: Gateway) -> None:
+    r = gw.client.post(
+        "/v1/messages", json={"model": "m", "messages": []}, headers={"x-api-key": gw.key}
+    )
+    assert _stems(gw) == {r.headers["x-seatbelt-run-id"]}
+
+
+def test_a_response_sent_before_any_session_carries_no_run_id(
+    gw: Gateway, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from seatbelt.gateway import app
+
+    unknown = gw.client.post(
+        "/v1/messages", json={"model": "m", "messages": []}, headers={"x-api-key": "sbk_nope"}
+    )
+    monkeypatch.setattr(app, "_MAX_BODY", 10)
+    too_large = gw.client.post(
+        "/v1/messages", json={"model": "m", "messages": []}, headers={"x-api-key": gw.key}
+    )
+    assert (unknown.status_code, too_large.status_code) == (401, 413)
+    assert "x-seatbelt-run-id" not in unknown.headers
+    assert "x-seatbelt-run-id" not in too_large.headers
+    assert not _stems(gw)
+
+
+def test_a_forwarded_probe_carries_no_run_id(gw: Gateway) -> None:
+    gw.upstream(
+        lambda _: httpx2.Response(200, json={"data": []}, headers={"X-Seatbelt-Run-Id": "x"})
+    )
+    r = gw.client.get("/v1/models", headers={"x-api-key": gw.key})
+    assert r.status_code == 200 and "x-seatbelt-run-id" not in r.headers
+
+
 # -- probes --------------------------------------------------------------------
 
 

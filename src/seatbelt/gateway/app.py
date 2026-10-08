@@ -46,6 +46,9 @@ _log = logging.getLogger(__name__)
 
 RUN_HEADER = "x-seatbelt-run"
 RUN_END_HEADER = "x-seatbelt-run-end"
+# on every response to a request that reached a session: the run id, its ledger's file name
+# without `.jsonl`, which the caller cannot predict from the run name it chose
+RUN_ID_HEADER = "x-seatbelt-run-id"
 # the issued key, for a client whose own auth headers carry its provider credentials to a
 # pass-through upstream (`key_env` unset): `seatbelt run` in local mode
 KEY_HEADER = "x-seatbelt-key"
@@ -81,8 +84,9 @@ _STRIP_WITH_KEY = _STRIP_REQUEST | {"openai-organization", "openai-project", "x-
 _AUTH_HEADERS = frozenset({"authorization", "x-api-key", "x-goog-api-key"})
 # to a pass-through upstream the client's own credentials go on as sent
 _STRIP_PASSTHROUGH = _STRIP_REQUEST - _AUTH_HEADERS
-# the body is relayed decoded, so the upstream's encoding and length no longer describe it
-_STRIP_RESPONSE = _HOP | {"content-encoding", "content-length"}
+# the body is relayed decoded, so the upstream's encoding and length no longer describe it.
+# A run id is the gateway's to give, never an upstream's
+_STRIP_RESPONSE = _HOP | {"content-encoding", "content-length", RUN_ID_HEADER}
 type Assemble = Callable[[list[dict[str, Any]]], dict[str, Any]]
 type Spec = tuple[str, str, type[Format], Assemble]  # upstream, auth header, format, assembler
 # path -> how it is relayed and recorded
@@ -711,6 +715,11 @@ def create_app(
         def fallback(call: ModelCall, payload: dict[str, Any], error: str) -> None:
             _locked(session, lambda: call.respond(payload, error=error))
 
+        def tagged(response: Response) -> Response:
+            """`response` naming the run that recorded it."""
+            response.headers[RUN_ID_HEADER] = session.rec.run_id
+            return response
+
         def admit() -> tuple[ModelCall, str | None]:
             """Record the request, then the policy verdicts on it. Returns a refusal reason."""
             f = fmt()
@@ -730,7 +739,7 @@ def create_app(
             call, refusal = await run_in_threadpool(_locked, session, admit)
             if refusal is not None:
                 refused = True
-                return _error(request, 403, "permission_error", refusal)
+                return tagged(_error(request, 403, "permission_error", refusal))
             client = httpx2.AsyncClient(
                 base_url=upstream.url, transport=request.app.state.transport, timeout=600
             )
@@ -752,10 +761,10 @@ def create_app(
                 await client.aclose()
                 error = f"upstream unreachable: {type(exc).__name__}: {exc}"
                 await run_in_threadpool(finish, call, None, error)
-                return _error(request, 502, "api_error", error)
+                return tagged(_error(request, 502, "api_error", error))
             if streaming:
                 handed_off = True
-                return _stream(resp, client, call, assemble, finish, fallback, settle)
+                return tagged(_stream(resp, client, call, assemble, finish, fallback, settle))
             await client.aclose()
             value = _json(resp.content)
             if isinstance(value, list) and issubclass(format_cls, GeminiFormat):
@@ -768,8 +777,8 @@ def create_app(
             else:
                 error = None if payload is not None else f"{resp.status_code}: not a JSON object"
             await run_in_threadpool(finish, call, payload, error)
-            return Response(
-                resp.content, status_code=resp.status_code, headers=_relay_headers(resp)
+            return tagged(
+                Response(resp.content, status_code=resp.status_code, headers=_relay_headers(resp))
             )
         finally:
             if not handed_off:

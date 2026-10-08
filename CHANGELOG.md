@@ -4,6 +4,9 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 
 ## [Unreleased]
 
+### Added
+- The gateway names the run that recorded a request in an `X-Seatbelt-Run-Id` response header: the ledger's file name without `.jsonl`. A client that names its run with `X-Seatbelt-Run` could not tell which ledger held its call, since the run id ends in random hex. The header is on relayed responses, JSON and streamed, on policy refusals and on the 502 for an unreachable upstream, and replaces any upstream header of the same name. Responses sent before a run is opened carry none ([docs/deploy/gateway.md](docs/deploy/gateway.md)).
+
 ## [0.5.3] - 2026-10-01
 
 ### Fixed
