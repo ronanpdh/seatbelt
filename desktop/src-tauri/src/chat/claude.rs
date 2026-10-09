@@ -66,6 +66,11 @@ enum Asked {
     Mode(Option<String>),
 }
 
+/// Said when Claude Code reports the mode the app never sets, as its own settings can.
+const BYPASS: &str = "Claude Code is in bypassPermissions mode, set by its own settings: it runs \
+every tool without asking, so no approval will be asked here. This app does not offer that mode; \
+choose another to be asked again.";
+
 /// The permission modes offered: Claude Code's, but `bypassPermissions`, which skips every
 /// approval. Named and described as Claude Code's documentation names them.
 fn modes() -> Vec<Mode> {
@@ -139,6 +144,15 @@ impl Claude {
     }
 
     /// Set permission mode `mode`; the window shows it at once, and goes back if refused.
+    /// Say so when Claude Code is in the mode that asks nothing, which the app never sets.
+    fn say_if_bypass(&self, step: &mut Step) {
+        if self.modes.current.as_deref() == Some("bypassPermissions") {
+            step.show(ChatEvent::Note {
+                text: BYPASS.into(),
+            });
+        }
+    }
+
     /// Load the folder's project settings too: for a folder Claude Code trusts.
     pub fn with_project_settings(mut self, trusted: bool) -> Self {
         self.project_settings = trusted;
@@ -205,7 +219,9 @@ impl Claude {
                 if let Some(choice) = self.models.listed(list, step) {
                     self.apply(choice, step);
                 }
-                self.modes.using(str_of(&answer, "current_permission_mode"));
+                if self.modes.using(str_of(&answer, "current_permission_mode")) {
+                    self.say_if_bypass(step);
+                }
                 if let Some(mode) = self.modes.listed(modes(), step) {
                     self.set_mode_line(&mode, step);
                 }
@@ -400,6 +416,7 @@ impl Driver for Claude {
             && self.modes.using(str_of(&line, "permissionMode"))
         {
             step.show(self.modes.event());
+            self.say_if_bypass(&mut step);
         }
         // a subagent's own messages: its tools show, its words stay inside it
         let subagent = line.get("parent_tool_use_id").is_some_and(|p| !p.is_null());
@@ -1122,6 +1139,37 @@ mod tests {
         assert!(
             matches!(&left.events[..], [ChatEvent::Modes { mode: Some(m), .. }] if m == "default")
         );
+    }
+
+    #[test]
+    fn bypass_mode_from_claude_codes_own_settings_is_said() {
+        let mut c = Claude::default();
+        c.start("/w");
+        let bypass = MODELS.replace(
+            r#""current_permission_mode":"default""#,
+            r#""current_permission_mode":"bypassPermissions""#,
+        );
+        let step = c.read(line(&bypass));
+        assert!(step.events.iter().any(
+            |e| matches!(e, ChatEvent::Note { text } if text.contains("no approval will be asked"))
+        ));
+        // not offered, so the picker shows it only as the mode in use
+        assert!(step.events.iter().any(|e| matches!(e,
+            ChatEvent::Modes { mode: None, current: Some(m), .. } if m == "bypassPermissions")));
+        let left = c.read(line(
+            r#"{"type":"system","subtype":"status","status":null,"permissionMode":"default"}"#,
+        ));
+        assert!(!left
+            .events
+            .iter()
+            .any(|e| matches!(e, ChatEvent::Note { .. })));
+        let back = c.read(line(
+            r#"{"type":"system","subtype":"status","status":null,"permissionMode":"bypassPermissions"}"#,
+        ));
+        assert!(matches!(
+            &back.events[..],
+            [ChatEvent::Modes { .. }, ChatEvent::Note { .. }]
+        ));
     }
 
     #[test]

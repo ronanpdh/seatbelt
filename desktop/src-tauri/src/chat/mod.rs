@@ -28,11 +28,18 @@ use protocol::{ChatEvent, Choice, Driver, Step};
 /// How long an ended chat's CLI has, once its input is closed, before `seatbelt run` is asked
 /// to end it as closing a terminal would.
 const EOF_WAIT: Duration = Duration::from_secs(3);
-/// Said when a chat leaves out a folder's Claude Code settings.
+/// Said when a chat leaves out a folder's Claude Code project settings.
 const UNTRUSTED: &str = "Claude Code has not been told to trust this folder, so this chat \
-leaves out the folder's own Claude Code settings (.claude/settings.json, .mcp.json): their \
-hooks, permissions and MCP servers. To use them, open Claude Code in a terminal here and \
-accept its trust prompt; the chat then starts with them.";
+leaves out its Claude Code project settings (.claude/settings.json and settings.local.json \
+here, and a .mcp.json here or in a folder above): their hooks, permissions and MCP servers. \
+To use them, open Claude Code in a terminal here and accept its trust prompt; the chat then \
+starts again with them.";
+/// The same in the home folder, which Claude Code never keeps trust for.
+const UNTRUSTED_HOME: &str = "This chat is in your home folder, which Claude Code does not \
+keep trust for, so it leaves out the Claude Code project settings here \
+(.claude/settings.local.json, and a .mcp.json here or in a folder above): their hooks, \
+permissions and MCP servers. Your own settings, ~/.claude/settings.json, still apply. Start \
+the chat in a project's folder to use that project's settings.";
 
 /// Whether Claude Code has been told to trust `cwd`: the trust prompt accepted, by its own
 /// record in `.claude.json` (in `CLAUDE_CONFIG_DIR`, else the home folder), for the folder
@@ -78,15 +85,25 @@ fn trusted_in(record: &Value, cwd: &Path) -> bool {
     false
 }
 
-/// The folder has Claude Code settings of its own that a chat would leave out.
-fn has_project_settings(cwd: &Path) -> bool {
-    [
-        ".claude/settings.json",
-        ".claude/settings.local.json",
-        ".mcp.json",
-    ]
-    .iter()
-    .any(|file| cwd.join(file).exists())
+/// The folder has Claude Code project settings that a chat would leave out. Claude Code
+/// reads `.claude/settings.json` and `.claude/settings.local.json` from the folder it starts
+/// in, and a `.mcp.json` from that folder and each one above it but the root. In the home
+/// folder, `.claude/settings.json` is the user's own settings, which a chat still loads.
+fn has_project_settings(cwd: &Path, in_home: bool) -> bool {
+    let own = [".claude/settings.json", ".claude/settings.local.json"]
+        .iter()
+        .filter(|file| !(in_home && **file == ".claude/settings.json"))
+        .any(|file| cwd.join(file).exists());
+    own || cwd
+        .ancestors()
+        .filter(|folder| folder.parent().is_some())
+        .any(|folder| folder.join(".mcp.json").exists())
+}
+
+/// `folder` is the home folder.
+fn is_home(folder: &Path) -> bool {
+    let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    crate::tools::home_dir().is_some_and(|home| real(&home) == real(folder))
 }
 
 /// The longest line a CLI may print: anything longer is dropped, not buffered without end.
@@ -201,10 +218,10 @@ impl Chats {
         let trusted = launch.cli == "claude" && claude_trusts(launch.cwd);
         let mut driver = driver(launch.cli, resume, launch.choice, launch.mode, trusted)
             .ok_or("no chat for that CLI")?;
-        if launch.cli == "claude" && !trusted && has_project_settings(launch.cwd) {
-            let _ = events.send(ChatEvent::Note {
-                text: UNTRUSTED.into(),
-            });
+        let in_home = is_home(launch.cwd);
+        if launch.cli == "claude" && !trusted && has_project_settings(launch.cwd, in_home) {
+            let text = if in_home { UNTRUSTED_HOME } else { UNTRUSTED };
+            let _ = events.send(ChatEvent::Note { text: text.into() });
         }
         let mut child = Command::new(launch.seatbelt)
             .arg("run")
@@ -559,9 +576,18 @@ mod tests {
         assert!(!trusted_in(&record(&dir, true), &child));
         assert!(!trusted_in(&record(&dir, true), &dir.join("repo")));
         assert!(trusted_in(&record(&dir.join("repo"), true), &child));
-        assert!(!has_project_settings(&child));
-        std::fs::write(child.join(".mcp.json"), "{}").unwrap();
-        assert!(has_project_settings(&child));
+        assert!(!has_project_settings(&child, false));
+        // a .mcp.json above the folder counts, as Claude Code reads it there too
+        std::fs::write(dir.join(".mcp.json"), "{}").unwrap();
+        assert!(has_project_settings(&child, false));
+        std::fs::remove_file(dir.join(".mcp.json")).unwrap();
+        // the folder's own settings; in the home folder, settings.json is the user's own
+        std::fs::create_dir(child.join(".claude")).unwrap();
+        std::fs::write(child.join(".claude").join("settings.json"), "{}").unwrap();
+        assert!(has_project_settings(&child, false));
+        assert!(!has_project_settings(&child, true));
+        std::fs::write(child.join(".claude").join("settings.local.json"), "{}").unwrap();
+        assert!(has_project_settings(&child, true));
         let _ = std::fs::remove_dir_all(dir);
     }
 
