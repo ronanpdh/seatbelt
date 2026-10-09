@@ -226,6 +226,28 @@ Each CLI was installed from npm and driven by a short script, with a stand-in pr
 - **Bare mode becoming the `-p` default** would take the subscription login away from Claude Code chats, with no documented opt-out. The chat would then say sign-in is needed, which signing in cannot fix; the terminal would still work. K11 watches for it.
 - **Undocumented or experimental protocols:** Claude Code's `stdio` permission tool and Codex's app-server can change in any release. K11 rechecks them.
 
+### As built (phase 3, first build)
+
+- **Python package:** `seatbelt verify --json`, `seatbelt reconstruct --json` (what the run's page shows, after the same checks), `seatbelt report --json` with no runs (an empty report), and in `seatbelt runs --json` each run's client, chain and signature, from the events it already reads. The app counts `seatbelt` as supported when `verify --json` answers on a missing ledger.
+- **Rust side (`desktop/src-tauri/src/chat/`):** `protocol.rs` (the events and the driver interface), one driver each in `claude.rs`, `codex.rs` and `acp.rs`, and `mod.rs`, which runs `seatbelt run` with pipes and feeds each stdout line through the driver. A driver does no I/O, so each is tested with lines the real CLIs printed in P1 to P5. Commands added: `open_chat`, `chat_send`, `chat_answer`, `chat_interrupt`, `close_chat`, `run_detail`, `verify_run`, `usage_report`.
+- **Web view:** a session is a chat; "Open in terminal" and the sign-in card switch it to the CLI's own interface, and the chat starts again (a new run) when that ends. Records: Runs (search; filters by outcome, verification, CLI and date), a run (verification, facts, usage, tools, refusals, failures, events with search and a kind filter), Usage.
+
+### Checks run on Linux (2026-10-09)
+
+The app was run on Ubuntu 24.04 under Xvfb, as for L1 to L9, with this branch's `seatbelt`, the real CLIs from npm (Claude Code 2.1.295, Codex 0.162.0, Gemini CLI 0.63.0) and stand-in provider APIs on localhost named in `[upstreams]`. Each CLI used an API key, not a subscription or ChatGPT sign-in.
+
+| Ref | Check | Result |
+|---|---|---|
+| L10 | Claude Code chat: a message whose answer runs Bash; Allow; End | the text streamed in; a Bash line and an approval card showed; Allow ran the command (the file was written), the reply followed, and End closed the run: `seatbelt verify --json` said ok, 8 events, attested, with its page written |
+| L11 | Codex chat in a folder Codex had not been told to trust | Codex ran the command in its read-only sandbox without asking, and it failed there ("Read-only file system"); app-server sent no item for it, so the chat showed only the reply. Driven directly, the same Codex sent the command's items in a trusted folder under each approval policy tried. So this is Codex's behaviour in an untrusted folder, not the app's; noted for K10 |
+| L12 | Codex chat in a trusted folder; the stand-in asks for a command outside the sandbox; Allow | a Shell line and an approval card (the reason, the command, its folder); Allow ran it, and the run was recorded |
+| L13 | Gemini CLI chat; Deny | the approval card showed; Deny: nothing ran, the reply followed, and the run was recorded and attested. Gemini CLI reported the denied tool as failed; the driver now shows it as declined (a unit test; not rerun in the app) |
+| L14 | Runs: search, then a run | the search narrowed the list; a run showed "Verified", its facts, usage by model, tools and events, and an event opened to its full detail |
+| L15 | One ledger altered by hand | its view said "Broken at event 2" and gave no other view of the run; Usage listed it as broken and not counted. The runs list showed its outcome as "ok", which led to the Verified column, now "broken" for it |
+| L16 | Claude Code against a provider answering 401 | the sign-in card showed after the first retry, and the turn was interrupted rather than retried ten times; "Sign in in a terminal" opened Claude Code's own first-run screens through `seatbelt run`; "Back to chat" ended it, and a new chat started |
+| L17 | Close the window with a chat running; Quit | the question showed; Quit ended the chat, its run was attested, and no `seatbelt` process was left |
+| L18 | `cargo test`: 32 tests | the three drivers against the lines from P1 to P5, and a chat through a stand-in `seatbelt` (arguments, a log line, an approval answered, the run report) |
+
 ## Before building
 
 | Id | Check | If it fails |
@@ -315,3 +337,4 @@ All web pages read 2026-10-09.
 | Phase 3 | seatbelt prints its own lines to stderr | `src/seatbelt/gateway/badge.py` (`say`, `buckle`, `unbuckle`: stderr by default) |
 | Phase 3 | arguments after `--` go to the CLI; Codex `-c` overrides apply before a subcommand | `src/seatbelt/cli.py` (`run`: "Arguments after -- go to the CLI."); `src/seatbelt/gateway/launcher.py` (`arguments` docstring) |
 | Phase 3 | P1 to P5 | run in this repository's development container on 2026-10-09; Codex's message types from `codex app-server generate-ts` (0.162.0) |
+| Phase 3 | L10 to L18 | run in this repository's development container on 2026-10-09 |

@@ -1,25 +1,35 @@
 # Seatbelt desktop
 
-Run Claude Code, Codex and Gemini CLI in tabs of one window. Each tab runs its CLI through `seatbelt run`, so every session is recorded as a signed run, and each CLI keeps its own sign-in. The Runs list opens each run's HTML page in your browser.
+Chat with your own Claude Code, Codex and Gemini CLI in one window. Each chat runs its CLI through `seatbelt run`, so every session is recorded as a signed run, and each CLI keeps its own sign-in. Runs, a run's events and its verification, and usage across runs are views in the app.
 
-Design and the checks still open: [docs/plans/2026-10-09-desktop-terminal-design.md](../docs/plans/2026-10-09-desktop-terminal-design.md).
+Design, its sources and the checks still open: [docs/plans/2026-10-09-desktop-terminal-design.md](../docs/plans/2026-10-09-desktop-terminal-design.md).
 
-**Status:** phase 1, a first build. It has been run on Linux with a stand-in CLI (the design's checks L1 to L5), and CI builds and tests it on Linux and macOS. It has not yet been run on macOS, its first target, or with a real CLI (design checks K2 to K8). Windows is phase 2.
+**Not to be released yet.** A chat drives the CLI's headless mode with the user's own sign-in. Whether Anthropic and OpenAI permit that for an app like this is the design's questions K1 and K9; it ships only once they have answered.
+
+**Status:** built and run on Linux, with the real CLIs (Claude Code 2.1.295, Codex 0.162.0, Gemini CLI 0.63.0) talking to stand-in providers on localhost (the design's checks L10 to L18). CI builds and tests it on Linux and macOS. It has not been run on macOS with real sign-ins (check K10). Windows is phase 2.
 
 ## What it needs
 
-- `seatbelt` with `seatbelt runs --json` (unreleased at the time of writing; from source: `uv tool install --from . seatbelt-ai` in the repository root).
-- The CLIs you want to run, installed and on your `PATH`: `claude`, `codex`, `gemini`. Sign in to each in its tab, with its own sign-in (`/login` in Claude Code), as in any terminal. The app never sees your credentials.
+- `seatbelt` with `seatbelt verify --json` (unreleased at the time of writing; from source: `uv tool install --from . seatbelt-ai` in the repository root).
+- The CLIs you want, installed and on your `PATH`: `claude`, `codex`, `gemini`. The app never sees your credentials.
 
 The app looks for these on its own `PATH`, then on the `PATH` your login shell prints, then in `~/.local/bin`, `~/.claude/local`, and on macOS `/opt/homebrew/bin` and `/usr/local/bin`.
 
 ## How it works
 
-- A tab is a pseudo-terminal (`portable-pty`) running `seatbelt run --exe <path to the CLI> <cli>` in the folder you chose, shown with xterm.js. The app has no recording code: `seatbelt run` records as it does in any terminal, locally or through your gateway (`~/.config/seatbelt/config.toml`).
-- When the run ends, `seatbelt run` writes a report to a file the app names (`SEATBELT_RUN_REPORT`), and the tab shows the run it recorded.
-- Closing a tab sends `seatbelt run` SIGTERM. It passes that on to the CLI, then closes and signs the run. A tab still running 20 seconds later is killed, and its ledger is closed by the next `seatbelt run`, as a killed run's is.
-- The runs list is `seatbelt runs --json`. A run's page is opened by its id: the web view never names a file or a program.
-- The folder a session starts in is typed (`~` works) or dropped on the window, and remembered. There are no native dialogs: macOS's folder picker can crash Tauri apps (tauri-apps/tauri#13047), so quitting with sessions running is asked in the window too.
+- **A chat** is `seatbelt run --exe <path to the CLI> <cli> -- <headless arguments>` in the folder you chose, with pipes instead of a terminal:
+  - Claude Code: `-p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --permission-prompt-tool stdio`;
+  - Codex: `app-server`;
+  - Gemini CLI: `--acp`.
+
+  The Rust side speaks each protocol and gives the window a few events: text, tools, approvals, end of turn, sign-in needed. The window can only send a message, answer an approval, interrupt, or end the chat.
+- **Approvals** follow the CLI's own rules: the app sets no permission mode, approval policy or sandbox. Each request is a card with Allow and Deny.
+- **Signing in:** when a CLI reports it is not signed in, the chat offers its own sign-in in a terminal (a pseudo-terminal running `seatbelt run <cli>`, shown with xterm.js). When that ends, the chat starts again. "Open in terminal" does the same at any time.
+- **Ending a chat** closes its input, which ends the CLI's session; `seatbelt run` then closes and signs the run. One still running 3 seconds later gets SIGTERM (on Unix), and is killed after 20 more.
+- **Runs, a run and usage** are `seatbelt runs --json`, `reconstruct --json`, `verify --json` and `report --json`. A run is named by its id: the web view never names a file or a program. A run's page still opens in your browser.
+- **The folder** a session starts in is typed (`~` works) or dropped on the window, and remembered. There are no native dialogs: macOS's folder picker can crash Tauri apps (tauri-apps/tauri#13047), so quitting with sessions running is asked in the window too.
+
+Everything that came from a ledger, a model or a tool is shown as text, never as HTML.
 
 ## Develop
 

@@ -5,8 +5,15 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 ## [Unreleased]
 
 ### Added
-- `seatbelt runs --json` prints the runs as JSON: each run's name, id, start, model calls, status (`ended`, `open` or `unreadable`), outcome, and its ledger and page paths. It is what a desktop app hosting `seatbelt run` reads ([design](docs/plans/2026-10-09-desktop-terminal-design.md)).
-- A desktop app in `desktop/`, unreleased (its own version, 0.1.0): Claude Code, Codex and Gemini CLI in tabs of one window, each run through `seatbelt run` in a built-in terminal, so it is recorded and keeps its own sign-in; a runs list opens each run's page. A Tauri app, first for macOS; built and run on Linux so far ([design](docs/plans/2026-10-09-desktop-terminal-design.md), [README](desktop/README.md)).
+- `seatbelt runs --json` prints the runs as JSON: each run's name, id, start, model calls, status (`ended`, `open` or `unreadable`), outcome, client, its ledger and page paths, and what `seatbelt verify` would find: the chain (`intact` or `broken`) and the signature (`attested`, `unchecked`, `unattested` or `forged`). It is what a desktop app hosting `seatbelt run` reads ([design](docs/plans/2026-10-09-desktop-terminal-design.md)).
+- `seatbelt verify --json` gives the same checks as data: `ok` (what exit 0 means), the event count, the chain, the first bad event, whether the run ended, the signature, and why not.
+- `seatbelt reconstruct --json` prints what the run's HTML page shows, after the same checks: its facts, usage by model, tools, refusals, failures and events.
+- `seatbelt report --json` prints an empty report, not a sentence, when there are no runs.
+- A desktop app in `desktop/`, unreleased (its own version, 0.1.0), and not to be released until Anthropic and OpenAI have answered the design's questions K1 and K9 ([design](docs/plans/2026-10-09-desktop-terminal-design.md), [README](desktop/README.md)). A Tauri app, first for macOS; built and run on Linux so far.
+  - **Chats with your own Claude Code, Codex and Gemini CLI,** each through `seatbelt run`, so each chat is recorded as a signed run. They run in their headless modes: Claude Code's stream-json, Codex's `app-server`, Gemini CLI's ACP.
+  - **Tool approvals in the chat:** an Allow or Deny card for each tool use the CLI asks about, under its own permission rules.
+  - **The terminal is for signing in:** a CLI that is not signed in opens in a terminal for its own sign-in, then the chat starts again.
+  - **Runs, a run and usage:** search and filter runs by name, outcome, verification, CLI and date; a run shows what its page shows, with its verification; usage counts this machine's runs by model, person and tool.
 - With `SEATBELT_RUN_REPORT=<file>` in its environment, `seatbelt run` writes a JSON report there as it exits: the run's name, the CLI, whether it recorded locally or through a gateway, its ledgers and pages, and the CLI's exit code. Mode 0600, written whole; the variable is not passed on to the CLI.
 
 ### Added
