@@ -28,6 +28,8 @@ type Session = {
   note: string;
   /** Ended by the user: nothing starts again. */
   closing: boolean;
+  /** The terminal is open to sign in, rather than because it was asked for. */
+  signingIn: boolean;
 };
 type View =
   | { kind: "session"; session: Session }
@@ -76,9 +78,56 @@ function ready(): boolean {
   return Boolean(tools?.seatbelt?.supported) && folder !== null;
 }
 
-// -- the folder a session starts in: typed or dropped, checked by the app, remembered --------
+// -- the folder a session starts in: picked, typed or dropped; checked by the app; recent ones
+// remembered on this computer --------------------------------------------------------------
 
 const FOLDER_KEY = "seatbelt.folder";
+const RECENT_KEY = "seatbelt.recentFolders";
+const RECENT_MAX = 6;
+
+function recentFolders(): string[] {
+  try {
+    const list: unknown = JSON.parse(localStorage.getItem(RECENT_KEY) ?? "[]");
+    return Array.isArray(list) ? list.filter((p): p is string => typeof p === "string").slice(0, RECENT_MAX) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveRecent(list: string[]): void {
+  try {
+    localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, RECENT_MAX)));
+  } catch {
+    // not remembered this time; nothing else depends on it
+  }
+  renderRecents();
+}
+
+function renderRecents(): void {
+  const box = byId("recent-folders");
+  const list = recentFolders().filter((p) => p !== folder);
+  box.hidden = list.length === 0;
+  box.replaceChildren(el("span", "muted small", "Recent"));
+  for (const path of list) {
+    const chip = button(basename(path), "recent", () => void setFolder(path), path);
+    box.append(chip);
+  }
+}
+
+async function browse(): Promise<void> {
+  const b = byId<HTMLButtonElement>("browse");
+  b.disabled = true;
+  try {
+    const picked = await invoke<string | null>("pick_folder", { start: folder });
+    if (picked) await setFolder(picked);
+  } catch (e) {
+    const error = byId("folder-error");
+    error.textContent = plain(e);
+    error.hidden = false;
+  } finally {
+    b.disabled = false;
+  }
+}
 
 function remembered(): string | null {
   try {
@@ -86,6 +135,13 @@ function remembered(): string | null {
   } catch {
     return null; // storage can be unavailable; the home folder is the default then
   }
+}
+
+/** A long path shows its end, the folder's own name, rather than its start. */
+function showEnd(input: HTMLInputElement): void {
+  requestAnimationFrame(() => {
+    if (document.activeElement !== input) input.scrollLeft = input.scrollWidth;
+  });
 }
 
 /** Check `path` and make it the folder; false, with the reason shown, if it cannot be. */
@@ -96,12 +152,15 @@ async function setFolder(path: string, say = true): Promise<boolean> {
     folder = await invoke<string>("check_folder", { path });
     input.value = folder;
     input.title = folder;
+    showEnd(input);
     error.hidden = true;
     try {
       localStorage.setItem(FOLDER_KEY, folder);
     } catch {
       // not remembered this time; nothing else depends on it
     }
+    const chosen = folder;
+    saveRecent([chosen, ...recentFolders().filter((p) => p !== chosen)]);
     updateCliButtons();
     return true;
   } catch (e) {
@@ -109,6 +168,8 @@ async function setFolder(path: string, say = true): Promise<boolean> {
       error.textContent = plain(e);
       error.hidden = false;
     }
+    // a recent folder that has gone is forgotten
+    if (recentFolders().includes(path)) saveRecent(recentFolders().filter((p) => p !== path));
     input.value = folder ?? "";
     updateCliButtons();
     return false;
@@ -159,6 +220,7 @@ async function newSession(cli: Cli): Promise<void> {
     state: "starting",
     note: "starting",
     closing: false,
+    signingIn: false,
   };
   sessions.push(s);
   byId("tabs").append(s.item);
@@ -200,18 +262,9 @@ async function openTerminal(s: Session, signIn: boolean): Promise<void> {
   s.chat = null;
   if (chat?.running) await chat.close();
   chat?.dispose();
-  const banner = el("div", "banner");
-  banner.append(
-    el(
-      "span",
-      undefined,
-      signIn
-        ? `Sign in with ${s.cli.label}'s own sign-in here. Then leave it (for example /exit); the chat starts again.`
-        : `${s.cli.label} in its own interface. Leave it to go back to the chat.`,
-    ),
-  );
   const box = el("div", "term");
-  s.body.replaceChildren(banner, box);
+  s.body.replaceChildren(box);
+  s.signingIn = signIn;
   const term = new TermPane(box, s.cli, s.folder, (_code, report) => {
     if (s.term !== term) return;
     refreshRecords();
@@ -221,7 +274,6 @@ async function openTerminal(s: Session, signIn: boolean): Promise<void> {
       void startChat(s);
     }
   });
-  banner.append(button("Back to chat", "ghost", () => void term.close(), "End the terminal session; the chat starts again"));
   s.term = term;
   setState(s, "running", signIn ? "signing in" : "terminal");
   await term.start();
@@ -249,6 +301,20 @@ function renderHead(s: Session): void {
   const label = el("div", "session-title");
   label.append(el("strong", undefined, s.cli.label), el("span", "muted", ` · ${s.folder} · ${s.note}`));
   const actions = el("div", "session-actions");
+  if (s.term && s.state !== "ended" && !s.closing) {
+    label.append(
+      el(
+        "div",
+        "session-hint",
+        s.signingIn
+          ? `Sign in with ${s.cli.label}'s own sign-in below, then leave it (/exit) to go back to the chat.`
+          : `${s.cli.label}'s own interface. Leave it (/exit) or press Back to chat.`,
+      ),
+    );
+    actions.append(
+      button("Back to chat", "ghost", () => void s.term?.close(), "End the terminal session and go back to the chat"),
+    );
+  }
   if (s.chat && s.state !== "ended") {
     actions.append(
       button("Open in terminal", "ghost", () => void openTerminal(s, false), `${s.cli.label}'s own interface: to sign in, for example`),
@@ -320,9 +386,12 @@ function refreshRecords(): void {
 // -- wiring ------------------------------------------------------------------------------
 
 byId("recheck").addEventListener("click", () => void check());
+byId("browse").addEventListener("click", () => void browse());
+renderRecents();
 byId("nav-runs").addEventListener("click", () => show({ kind: "runs" }));
 byId("nav-usage").addEventListener("click", () => show({ kind: "usage" }));
 const folderInput = byId<HTMLInputElement>("folder-input");
+folderInput.addEventListener("blur", () => showEnd(folderInput));
 folderInput.addEventListener("change", () => {
   if (folderInput.value !== folder) void setFolder(folderInput.value);
 });

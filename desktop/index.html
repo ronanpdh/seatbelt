@@ -22,13 +22,16 @@
 
       <section id="new-tab">
         <h2>New chat</h2>
-        <label class="folder-field">
-          <span class="muted small">Folder</span>
-          <input id="folder-input" type="text" spellcheck="false" autocomplete="off"
-                 autocapitalize="off" placeholder="~/code/project" />
-        </label>
+        <div class="folder-field">
+          <label class="muted small" for="folder-input">Folder</label>
+          <div class="folder-row">
+            <input id="folder-input" type="text" spellcheck="false" autocomplete="off"
+                   autocapitalize="off" placeholder="~/code/project" />
+            <button id="browse" type="button" class="ghost" title="Choose a folder">Browse…</button>
+          </div>
+        </div>
         <p id="folder-error" class="error small" hidden></p>
-        <p class="muted small hint">Type a path, or drop a folder on the window.</p>
+        <div id="recent-folders" class="recents" hidden></div>
         <div id="cli-buttons" class="cli-buttons"></div>
       </section>
 

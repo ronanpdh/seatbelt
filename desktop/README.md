@@ -28,7 +28,8 @@ The app looks for these on its own `PATH`, then on the `PATH` your login shell p
 - **Signing in:** when a CLI reports it is not signed in, the chat offers its own sign-in in a terminal (a pseudo-terminal running `seatbelt run <cli>`, shown with xterm.js). When that ends, the chat starts again. "Open in terminal" does the same at any time.
 - **Ending a chat** closes its input, which ends the CLI's session; `seatbelt run` then closes and signs the run. One still running 3 seconds later gets SIGTERM (on Unix), and is killed after 20 more.
 - **Runs, a run and usage** are `seatbelt runs --json`, `reconstruct --json`, `verify --json` and `report --json`. A run is named by its id: the web view never names a file or a program. A run's page still opens in your browser.
-- **The folder** a session starts in is typed (`~` works) or dropped on the window, and remembered. There are no native dialogs: macOS's folder picker can crash Tauri apps (tauri-apps/tauri#13047), so quitting with sessions running is asked in the window too.
+- **The folder** a session starts in is chosen with Browse… (the system's folder picker), picked from your recent folders, typed (`~` works) or dropped on the window. On macOS the picker is AppKit's `choose folder`, run by `osascript` in a process of its own: in the app's own process, macOS's folder panel can come back empty and crash Tauri apps (tauri-apps/tauri#13047). On Windows and Linux it is Tauri's dialog plugin, called from the Rust side only. Quitting with sessions running is asked in the window.
+- **The terminal** shows the CLI's own interface under the session's header, with "Back to chat" there. `seatbelt run` is started with `SEATBELT_QUIET=1`, so its belt and its own lines stay out of it; its warnings still show.
 
 Everything that came from a ledger, a model or a tool is shown as text, never as HTML.
 

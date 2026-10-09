@@ -9,6 +9,7 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 - `seatbelt verify --json` gives the same checks as data: `ok` (what exit 0 means), the event count, the chain, the first bad event, whether the run ended, the signature, and why not.
 - `seatbelt reconstruct --json` prints what the run's HTML page shows, after the same checks: its facts, usage by model, tools, refusals, failures and events.
 - `seatbelt report --json` prints an empty report, not a sentence, when there are no runs.
+- `SEATBELT_QUIET=1`: `seatbelt run` draws no belt and leaves out the lines that only inform (that it is recording, and what it recorded), for a host that shows the run its own way, such as the desktop app. Warnings and errors are still printed, and the variable is not passed on to the CLI.
 - A desktop app in `desktop/`, unreleased (its own version, 0.1.0), and not to be released until Anthropic and OpenAI have answered the design's questions K1 and K9 ([design](docs/plans/2026-10-09-desktop-terminal-design.md), [README](desktop/README.md)). A Tauri app, first for macOS; built and run on Linux so far.
   - **Chats with your own Claude Code, Codex and Gemini CLI,** each through `seatbelt run`, so each chat is recorded as a signed run. They run in their headless modes: Claude Code's stream-json, Codex's `app-server`, Gemini CLI's ACP.
   - **Tool approvals in the chat:** an Allow or Deny card for each tool use the CLI asks about, under its own permission rules.

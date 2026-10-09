@@ -129,10 +129,11 @@ def test_a_small_terminal_gets_a_line_of_belt() -> None:
     "env",
     [
         {**TERMINAL, "SEATBELT_NO_ANIMATION": "1"},
+        {**TERMINAL, "SEATBELT_QUIET": "1"},
         {**TERMINAL, "COLUMNS": "30"},  # no room for it
         {**TERMINAL, "NO_COLOR": "1"},
     ],
-    ids=["turned-off", "narrow", "no-color"],
+    ids=["turned-off", "quiet", "narrow", "no-color"],
 )
 def test_the_seatbelt_is_not_drawn_where_it_does_not_belong(env: dict[str, str]) -> None:
     tty = Terminal()

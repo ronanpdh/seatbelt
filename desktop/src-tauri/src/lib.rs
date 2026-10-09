@@ -1,20 +1,22 @@
 //! Seatbelt desktop: Claude Code, Codex and Gemini CLI in tabs, each run through
 //! `seatbelt run`, so each is recorded and keeps its own sign-in.
 //!
-//! The web view can do only what these commands allow: open a chat or a terminal tab for one
-//! of the three CLIs in a folder; send a chat message, answer its approvals, interrupt or end
-//! it; write to, resize or close a tab; list runs; show, verify or open the page of a run by
-//! its id; report usage; open an http(s) link from a reply in the browser; check a folder;
-//! quit. It never names a program to run or a file to open, and never writes to a CLI's
-//! protocol itself.
+//! The web view can do only what these commands allow: pick or check a folder; open a chat
+//! or a terminal tab for one of the three CLIs in a folder; send a chat message, answer its
+//! approvals, interrupt or end it; write to, resize or close a tab; list runs; show, verify or
+//! open the page of a run by its id; report usage; open an http(s) link from a reply in the
+//! browser; quit. It never names a program to run or a file to open, and never writes to a
+//! CLI's protocol itself.
 //!
-//! No native dialogs: macOS's `+[NSOpenPanel openPanel]` can return nil (a code-signature
-//! mismatch after an in-place update is one reported cause), and the binding the dialog plugin
-//! uses panics on the main thread when it does (tauri-apps/tauri#13047). A folder is typed or dropped instead, and the quit question is
-//! asked in the window.
+//! No native dialog in the app's own process on macOS: `+[NSOpenPanel openPanel]` can return
+//! nil (a code-signature mismatch after an in-place update is one reported cause), and the
+//! binding the dialog plugin uses panics on the main thread when it does
+//! (tauri-apps/tauri#13047). The folder picker runs out of process there (picker.rs), and the
+//! quit question is asked in the window.
 //! Design: docs/plans/2026-10-09-desktop-terminal-design.md.
 
 mod chat;
+mod picker;
 mod pty;
 mod runs;
 mod tools;
@@ -142,6 +144,20 @@ fn folder(typed: &str, home: Option<&Path>) -> Result<String, String> {
         return Err(format!("{typed} is a file, not a folder"));
     }
     Ok(full.to_string_lossy().into_owned())
+}
+
+/// The system's folder picker, starting in `start` if that is a folder. `None`: cancelled.
+#[tauri::command]
+async fn pick_folder(
+    app: tauri::AppHandle,
+    start: Option<String>,
+) -> Result<Option<String>, String> {
+    let start = start
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute() && p.is_dir());
+    tauri::async_runtime::spawn_blocking(move || picker::pick(&app, start.as_deref()))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -334,8 +350,11 @@ fn hold_quit(app: &tauri::AppHandle) -> bool {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
+    let builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
+    // the folder picker on Windows and Linux (see picker.rs); no JavaScript permission for it
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.plugin(tauri_plugin_dialog::init());
+    builder
         .manage(AppState {
             tabs: Tabs::default(),
             chats: Chats::default(),
@@ -351,6 +370,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             status,
             check_folder,
+            pick_folder,
             open_tab,
             write_tab,
             resize_tab,

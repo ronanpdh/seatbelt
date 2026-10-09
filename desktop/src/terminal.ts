@@ -24,6 +24,7 @@ dark.addEventListener("change", () => panes.forEach((p) => (p.term.options.theme
 export class TermPane {
   readonly term: Terminal;
   private readonly fitAddon = new FitAddon();
+  private readonly host: HTMLDivElement;
   private id: number | null = null;
   private resizer: ResizeObserver;
   running = false;
@@ -43,9 +44,14 @@ export class TermPane {
     });
     // no clipboard or links addon: output cannot write the clipboard or open links
     this.term.loadAddon(this.fitAddon);
-    this.term.open(box);
+    // the fit addon sizes the terminal to its parent's height, padding included: the margin
+    // goes on the frame, and the terminal's own parent has none, so no row is cut off
+    this.host = document.createElement("div");
+    this.host.className = "term-host";
+    box.append(this.host);
+    this.term.open(this.host);
     this.resizer = new ResizeObserver(() => this.fit());
-    this.resizer.observe(box);
+    this.resizer.observe(this.host);
     panes.add(this);
   }
 
@@ -83,7 +89,7 @@ export class TermPane {
   }
 
   fit(): void {
-    if (this.box.offsetParent !== null) this.fitAddon.fit();
+    if (this.host.offsetParent !== null) this.fitAddon.fit();
   }
 
   focus(): void {

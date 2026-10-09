@@ -257,7 +257,7 @@ def own_secrets(cfg: ClientConfig) -> list[str]:
 
 def _seatbelts(name: str, drop: Collection[str]) -> bool:
     return (
-        name in (_SIGNING_KEY_ENV, RUN_REPORT_ENV)
+        name in (_SIGNING_KEY_ENV, RUN_REPORT_ENV, badge.QUIET_ENV)
         or name.startswith(_SINK_ENV_PREFIX)
         or name in drop
     )
@@ -569,10 +569,18 @@ def cli_arguments(
 
 
 def _buckle_up(lines: list[str]) -> None:
-    """Buckle the seatbelt, then say `lines` below it, as issue #46 drew it."""
+    """Buckle the seatbelt, then say `lines` below it, as issue #46 drew it. Quiet
+    (`SEATBELT_QUIET`): no belt, and only the warnings."""
     badge.buckle()
     for line in lines:
-        say(line)
+        if not badge.quiet() or line.startswith(("warning:", "error:")):
+            say(line)
+
+
+def _inform(message: str) -> None:
+    """Say what only informs, such as what a run recorded: not when quiet."""
+    if not badge.quiet():
+        say(message)
 
 
 GRACE = 10.0  # seconds the CLI has to exit after seatbelt passes it SIGTERM or SIGHUP
@@ -676,7 +684,7 @@ def _run(
             },
         )
     if status == 204:
-        say(f"recorded run {run} at {url}")
+        _inform(f"recorded run {run} at {url}")
     elif status == 404:  # no open run by that name
         say(
             f"no open run {run} at {url}: {cli} sent no model requests, or the "
@@ -727,9 +735,9 @@ def _run_local(
         # quoted to paste into a shell: the macOS data folder, Application Support, has a space
         paths = "\n".join(f"  file:      {shlex.quote(str(p))}" for p in recorder.written)
         pages = "".join(f"\n  page:      {shlex.quote(str(p))}" for p in recorder.pages)
-        say(f"recorded run {run}\n  replay it: seatbelt reconstruct {run}\n{paths}{pages}")
+        _inform(f"recorded run {run}\n  replay it: seatbelt reconstruct {run}\n{paths}{pages}")
     else:
-        say(f"nothing recorded ({cli} sent no model requests)")
+        _inform(f"nothing recorded ({cli} sent no model requests)")
     if report is not None:
         write_run_report(
             report,

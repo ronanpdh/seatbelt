@@ -18,6 +18,8 @@ use tauri::ipc::Channel;
 
 /// The file `seatbelt run` writes its report to (its `RUN_REPORT_ENV`).
 pub const RUN_REPORT_ENV: &str = "SEATBELT_RUN_REPORT";
+/// Tells `seatbelt run` to say only warnings and errors, and draw no belt.
+pub const QUIET_ENV: &str = "SEATBELT_QUIET";
 /// How long a closed tab's `seatbelt run` has to end its CLI and sign the run before it is
 /// killed. seatbelt itself gives the CLI 10 seconds after passing the signal on.
 pub const CLOSE_WAIT: Duration = Duration::from_secs(20);
@@ -90,6 +92,8 @@ impl Tabs {
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
         cmd.env(RUN_REPORT_ENV, &launch.report);
+        // the app shows what the terminal is for: no belt, no lines that only inform
+        cmd.env(QUIET_ENV, "1");
         let mut child = pair
             .slave
             .spawn_command(cmd)
@@ -371,6 +375,7 @@ mod tests {
             r#"printf 'args: %s\n' "$*"
 [ -t 0 ] && [ -t 1 ] && echo 'on a terminal'
 echo "TERM=$TERM"
+echo "QUIET=$SEATBELT_QUIET"
 printf '{"run": "claude-1a2b", "recorded": true, "exit": 3}' > "$SEATBELT_RUN_REPORT"
 exit 3"#,
         );
@@ -381,6 +386,7 @@ exit 3"#,
         );
         assert!(output.contains("on a terminal"), "{output}");
         assert!(output.contains("TERM=xterm-256color"), "{output}");
+        assert!(output.contains("QUIET=1"), "{output}");
         assert_eq!(exit["code"], 3);
         assert_eq!(exit["report"]["run"], "claude-1a2b");
         assert!(!dir.join("report.json").exists()); // read once, removed

@@ -26,6 +26,11 @@ which = "8.0"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# the folder picker on Windows and Linux; macOS uses its own `choose folder` instead, as its
+# NSOpenPanel can return nil in the app's process and the binding panics (tauri-apps/tauri#13047)
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+tauri-plugin-dialog = "2.8.1"
+
 [profile.release]
 codegen-units = 1
 lto = true

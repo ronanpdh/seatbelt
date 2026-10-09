@@ -172,6 +172,35 @@ def test_a_local_run_reports_its_ledger_page_and_exit_code(
     assert data["run"] == next(iter(read_events(ledger))).attrs["run.name"]
 
 
+def test_a_quiet_run_says_only_its_warnings_and_still_records_and_reports(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    provider: Provider,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """SEATBELT_QUIET: for a host, such as the desktop app, that shows the run its own way."""
+    monkeypatch.setenv("SEATBELT_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("SEATBELT_QUIET", "1")
+    report = tmp_path / "report.json"
+    monkeypatch.setenv("SEATBELT_RUN_REPORT", str(report))
+    code = run_cli(
+        "claude", ["-c", CLAUDE], config=_config(tmp_path, provider), exe=fake_claude(tmp_path)
+    )
+    out, err = capfd.readouterr()
+    assert code == 7 and out.strip() == "hi"
+    assert "recording claude" not in err and "recorded run" not in err
+    (ledger,) = (tmp_path / "home" / "runs").glob("*.jsonl")
+    assert sidecar(ledger).exists()
+    assert json.loads(report.read_text())["recorded"] is True
+
+
+def test_the_quiet_setting_is_seatbelts_own_and_not_passed_to_the_cli() -> None:
+    from seatbelt.gateway.launcher import _seatbelts
+
+    assert _seatbelts("SEATBELT_QUIET", ())
+    assert not _seatbelts("SEATBELT_NO_ANIMATION", ())
+
+
 def test_html_false_in_the_config_writes_no_page(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: Provider
 ) -> None:
