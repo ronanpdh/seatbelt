@@ -38,7 +38,7 @@ from seatbelt.scenarios.runner import run as run_corpus
 from seatbelt.scenarios.sandbox import SandboxError, run_sandboxed
 from seatbelt.terminal import printable
 from seatbelt.verify.attest import Attestation, AttestVerdict, verify_attestation
-from seatbelt.verify.chain import Verdict, verify_file
+from seatbelt.verify.chain import Verdict, verify_events, verify_file
 
 app = typer.Typer(help="Attributable, reconstructable, provable records of agent interactions.")
 console = Console(soft_wrap=True)  # never split a path or reason across lines
@@ -278,10 +278,12 @@ def _print_run(ledger: str | None, pubkey: Path | None) -> None:
     print(json.dumps(data, indent=1))
 
 
-def _run_row(path: Path) -> dict[str, Any]:
+def _run_row(path: Path, pubkey: Path | None = None) -> dict[str, Any]:
     """What `seatbelt runs` says about one ledger. `name` is the run's name, or the ledger's
     id when it names none; `ok` is the run's outcome, None while open or unreadable; `client`
-    is the CLI's user agent, as its first request gave it."""
+    is the CLI's user agent, as its first request gave it. `chain` and `signature` are what
+    `seatbelt verify` would find (`signature` checked against `pubkey`, None when the chain is
+    broken or the key unreadable); both None when unreadable."""
     page = page_path(path)
     row: dict[str, Any] = {
         "name": path.stem,
@@ -291,6 +293,8 @@ def _run_row(path: Path) -> dict[str, Any]:
         "status": "unreadable",
         "ok": None,
         "client": None,
+        "chain": None,
+        "signature": None,
         "ledger": str(path),
         "page": str(page) if page.exists() else None,
     }
@@ -302,7 +306,14 @@ def _run_row(path: Path) -> dict[str, Any]:
     name = first.attrs.get("run.name") if first is not None else None
     client = first.attrs.get("client.user_agent") if first is not None else None
     ended = bool(events) and events[-1].kind is Kind.RUN_END
+    verdict = verify_events(events)
+    signature = None
+    if verdict.ok:
+        with contextlib.suppress(AttestError):
+            signature = verify_attestation(path, pubkey).status.value
     row.update(
+        chain="intact" if verdict.ok else "broken",
+        signature=signature,
         name=name if isinstance(name, str) else path.stem,
         client=client if isinstance(client, str) else None,
         started=first.ts.isoformat() if first is not None else None,
@@ -323,12 +334,12 @@ def runs(
     """List the runs `seatbelt run` recorded on this machine, newest first, by the name
     `seatbelt reconstruct` and `seatbelt verify` take."""
     try:
-        folder, _ = _local_runs(None)
+        folder, pubkey = _local_runs(None)
     except ValueError as exc:
         console.print(f"[red]{escape(str(exc))}[/]")
         raise typer.Exit(code=1) from exc
     ledgers = sorted(folder.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
-    rows = [_run_row(path) for path in ledgers[:limit]]
+    rows = [_run_row(path, pubkey) for path in ledgers[:limit]]
     if json_out:  # ledger text is data: json.dumps escapes it, nothing here is markup
         print(json.dumps({"folder": str(folder), "total": len(ledgers), "runs": rows}, indent=1))
         return

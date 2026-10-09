@@ -142,7 +142,7 @@ impl Codex {
                     .collect();
                 let detail = cut(&paths.join("\n"), 2000);
                 self.changes.insert(id.clone(), detail.clone());
-                step.show(tool("Edit files", detail));
+                step.show(tool("Edit", detail));
             }
             "mcpToolCall" => {
                 let name = format!("{}.{}", str_of(&item, "server"), str_of(&item, "tool"));
@@ -167,12 +167,12 @@ impl Codex {
                 if !cwd.is_empty() {
                     detail.push_str(&format!("\nin {cwd}"));
                 }
-                Some(("Run a command", detail, &params))
+                Some(("Shell", detail, &params))
             }
             "item/fileChange/requestApproval" => {
                 let item = str_of(&params, "itemId");
                 let detail = self.changes.get(item).cloned().unwrap_or_default();
-                Some(("Edit files", detail, &params))
+                Some(("Edit", detail, &params))
             }
             _ => None,
         };
@@ -432,7 +432,7 @@ mod tests {
                 },
                 ChatEvent::Approval {
                     id: "codex-0".into(),
-                    tool: "Run a command".into(),
+                    tool: "Shell".into(),
                     detail: "/bin/bash -lc 'echo hi > out.txt'\nin /work".into()
                 },
             ]
@@ -489,7 +489,7 @@ mod tests {
             ask.events.last(),
             Some(&ChatEvent::Approval {
                 id: "codex-s-1".into(),
-                tool: "Edit files".into(),
+                tool: "Edit".into(),
                 detail: "needs write\na.rs".into()
             })
         );

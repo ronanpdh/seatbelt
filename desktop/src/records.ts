@@ -16,10 +16,21 @@ function cliOf(run: Run): string {
   return CLIS.find(([name]) => run.name.startsWith(`${name}-`))?.[0] ?? "other";
 }
 
+/** How the run ended. */
 function state(run: Run): { label: string; css: string } {
   if (run.status === "unreadable") return { label: "unreadable", css: "bad" };
   if (run.status === "open") return { label: "open", css: "warn" };
   return run.ok === false ? { label: "failed", css: "bad" } : { label: "ok", css: "good" };
+}
+
+/** What `seatbelt verify` would say of it, from `seatbelt runs`. */
+function check(run: Run): { label: string; css: string } {
+  if (run.chain === null) return { label: "unreadable", css: "bad" };
+  if (run.chain === "broken") return { label: "broken", css: "bad" };
+  if (run.signature === "forged") return { label: "forged", css: "bad" };
+  if (run.signature === "attested") return { label: "verified", css: "good" };
+  if (run.signature === "unchecked") return { label: "unchecked", css: "warn" };
+  return { label: "unsigned", css: "warn" };
 }
 
 const badge = (label: string, css: string): HTMLSpanElement => el("span", `pill ${css}`, label);
@@ -32,8 +43,8 @@ function heading(title: string, ...extra: Node[]): HTMLElement {
 
 // -- runs: search and filters over `seatbelt runs --json` ----------------------------------
 
-type Filters = { text: string; state: string; cli: string; since: string };
-const filters: Filters = { text: "", state: "all", cli: "all", since: "any" };
+type Filters = { text: string; state: string; check: string; cli: string; since: string };
+const filters: Filters = { text: "", state: "all", check: "all", cli: "all", since: "any" };
 
 function select(options: [string, string][], value: string, onChange: (v: string) => void, label: string): HTMLSelectElement {
   const s = el("select");
@@ -52,6 +63,7 @@ function matches(run: Run, f: Filters, now: number): boolean {
   const text = f.text.trim().toLowerCase();
   if (text && ![run.name, run.id, run.client ?? ""].some((v) => v.toLowerCase().includes(text))) return false;
   if (f.state !== "all" && state(run).label !== f.state) return false;
+  if (f.check !== "all" && check(run).label !== f.check) return false;
   if (f.cli !== "all" && cliOf(run) !== f.cli) return false;
   if (f.since !== "any") {
     const started = run.started ? new Date(run.started).getTime() : NaN;
@@ -98,10 +110,20 @@ export async function showRuns(view: HTMLElement, open: (run: Run) => void): Pro
       name.type = "button";
       name.addEventListener("click", () => open(run));
       const s = state(run);
-      return [name, when(run.started), run.model_calls === null ? "" : number(run.model_calls), badge(s.label, s.css), run.client ?? ""];
+      const c = check(run);
+      return [
+        name,
+        when(run.started),
+        run.model_calls === null ? "" : number(run.model_calls),
+        badge(s.label, s.css),
+        badge(c.label, c.css),
+        run.client ?? "",
+      ];
     });
     list.replaceChildren(
-      runs.length ? table(["Run", "Started", "Model calls", "State", "Client"], rows, "grid runs-table") : el("p", "muted", "No run matches."),
+      runs.length
+        ? table(["Run", "Started", "Model calls", "Outcome", "Verified", "Client"], rows, "grid runs-table")
+        : el("p", "muted", "No run matches."),
     );
   };
   search.addEventListener("input", () => {
@@ -111,10 +133,23 @@ export async function showRuns(view: HTMLElement, open: (run: Run) => void): Pro
   bar.append(
     search,
     select(
-      [["all", "Any state"], ["ok", "OK"], ["failed", "Failed"], ["open", "Open"], ["unreadable", "Unreadable"]],
+      [["all", "Any outcome"], ["ok", "OK"], ["failed", "Failed"], ["open", "Open"], ["unreadable", "Unreadable"]],
       filters.state,
       (v) => ((filters.state = v), draw()),
-      "State",
+      "Outcome",
+    ),
+    select(
+      [
+        ["all", "Any verification"],
+        ["verified", "Verified"],
+        ["unsigned", "Unsigned"],
+        ["unchecked", "Unchecked"],
+        ["broken", "Broken"],
+        ["forged", "Forged"],
+      ],
+      filters.check,
+      (v) => ((filters.check = v), draw()),
+      "Verification",
     ),
     select([["all", "Any CLI"], ...CLIS, ["other", "Other"]], filters.cli, (v) => ((filters.cli = v), draw()), "CLI"),
     select(
@@ -163,7 +198,10 @@ function verificationCard(v: Verification | string): HTMLElement {
   const facts = el("dl", "facts");
   const fact = (k: string, val: string) => facts.append(el("dt", undefined, k), el("dd", undefined, val));
   fact("Hash chain", v.chain === "intact" ? `intact, ${count(v.events, "event")}` : "broken");
-  fact("Ended", v.complete ? "yes, with a matching run.end" : "no run.end: still running, or cut short");
+  fact(
+    "Ended",
+    v.chain === "broken" ? "not checked" : v.complete ? "yes, with a matching run.end" : "no run.end: still running, or cut short",
+  );
   fact("Signature", v.signature ? signature[v.signature] ?? v.signature : "not checked");
   if (v.reason) fact("Why", v.reason);
   card.append(facts);

@@ -323,6 +323,8 @@ def test_seatbelt_runs_json_gives_each_runs_ledger_page_and_state(home: Path) ->
         "status": "unreadable",
         "ok": None,
         "client": None,
+        "chain": None,
+        "signature": None,
         "ledger": str(broken),
         "page": None,
     }
@@ -335,6 +337,12 @@ def test_seatbelt_runs_json_gives_each_runs_ledger_page_and_state(home: Path) ->
     assert (ended["name"], ended["status"], ended["ok"]) == ("claude-11111111", "ended", True)
     assert ended["page"] == str(page_path(done)) and ended["ledger"] == str(done)
     assert ended["started"] is not None and ended["model_calls"] == 0
+    assert (ended["chain"], ended["signature"]) == ("intact", "attested")  # this machine's key
+    assert (opened["chain"], opened["signature"]) == ("intact", "unattested")
+    done.write_text(done.read_text().replace('"hi"', '"ho"'))
+    os.utime(done, (1_000_000, 1_000_000))
+    altered = json.loads(runner.invoke(app, ["runs", "--json"]).output)["runs"][-1]
+    assert (altered["id"], altered["chain"], altered["signature"]) == (done.stem, "broken", None)
     r = runner.invoke(app, ["runs", "--json", "--limit", "1"])
     assert [x["id"] for x in json.loads(r.output)["runs"]] == ["rh-x-1"]
 

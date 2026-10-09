@@ -37,6 +37,8 @@ export type Run = {
   status: "ended" | "open" | "unreadable";
   ok: boolean | null;
   client: string | null;
+  chain: "intact" | "broken" | null;
+  signature: "attested" | "unchecked" | "unattested" | "forged" | null;
   ledger: string;
   page: string | null;
 };

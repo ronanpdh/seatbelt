@@ -21,6 +21,8 @@ pub struct Claude {
     waiting: HashMap<String, (Value, String)>,
     declined: HashSet<String>,
     interrupts: u32,
+    /// This turn was interrupted, by the user or after a sign-in failure.
+    interrupted: bool,
     /// Sign-in failure seen this turn: said once, and the turn is interrupted, not retried.
     signin_said: bool,
 }
@@ -36,6 +38,7 @@ impl Claude {
 
     fn interrupt_line(&mut self) -> Value {
         self.interrupts += 1;
+        self.interrupted = true;
         json!({
             "type": "control_request",
             "request_id": format!("seatbelt-interrupt-{}", self.interrupts),
@@ -212,15 +215,15 @@ impl Driver for Claude {
                     || !matches!(str_of(&line, "subtype"), "success" | "");
                 let error = failed.then(|| {
                     let said = str_of(&line, "result");
-                    cut(
-                        if said.is_empty() {
-                            str_of(&line, "subtype")
-                        } else {
-                            said
-                        },
-                        2000,
-                    )
+                    if !said.is_empty() {
+                        cut(said, 2000)
+                    } else if self.interrupted {
+                        "Stopped.".to_string()
+                    } else {
+                        str_of(&line, "subtype").to_string()
+                    }
                 });
+                self.interrupted = false;
                 self.message = None;
                 self.streamed = false;
                 self.signin_said = false;
@@ -439,7 +442,7 @@ mod tests {
             end.events,
             vec![ChatEvent::TurnEnd {
                 ok: false,
-                error: Some("error_during_execution".into())
+                error: Some("Stopped.".into())
             }]
         );
     }

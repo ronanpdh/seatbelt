@@ -3,11 +3,14 @@
 //! permission requests. It offers no file system or terminal of its own, so the agent uses
 //! its own tools. Check P5 in the design ran this against Gemini CLI 0.63.0.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::{json, Value};
 
 use super::protocol::{about_sign_in, cut, str_of, ChatEvent, Driver, Step, ToolStatus};
+
+/// A permission request: its JSON-RPC id, the agent's options, and the tool call's id.
+type Waiting = (Value, Vec<Value>, String);
 
 #[derive(Default)]
 pub struct Acp {
@@ -19,9 +22,29 @@ pub struct Acp {
     /// The assistant message being streamed: a new one after each tool call.
     message: Option<String>,
     messages: u32,
-    /// Permission requests waiting, by our id: the agent's request id and its options.
-    waiting: HashMap<String, (Value, Vec<Value>)>,
+    /// Permission requests waiting, by our id: the agent's request id, its options, and the
+    /// tool call it is about.
+    waiting: HashMap<String, Waiting>,
+    /// Each tool call's name, from the kind its first update gave, for its approval card.
+    kinds: HashMap<String, &'static str>,
+    /// Tool calls the user rejected, which the agent then reports as failed.
+    declined: HashSet<String>,
     failed: bool,
+}
+
+/// What the chat calls a tool of an ACP kind.
+fn tool_name(kind: &str) -> &'static str {
+    match kind {
+        "execute" => "Shell",
+        "edit" => "Edit",
+        "read" => "Read",
+        "delete" => "Delete",
+        "move" => "Move",
+        "search" => "Search",
+        "fetch" => "Fetch",
+        "think" => "Think",
+        _ => "Tool",
+    }
 }
 
 fn status(s: &str) -> ToolStatus {
@@ -152,28 +175,23 @@ impl Acp {
             }
             kind @ ("tool_call" | "tool_call_update") => {
                 self.message = None;
+                let id = str_of(&update, "toolCallId").to_string();
                 let name = if kind == "tool_call" {
-                    match str_of(&update, "kind") {
-                        "" | "other" => "Tool".to_string(),
-                        k => {
-                            let mut chars = k.chars();
-                            chars
-                                .next()
-                                .map(char::to_uppercase)
-                                .into_iter()
-                                .flatten()
-                                .chain(chars)
-                                .collect()
-                        }
-                    }
+                    let name = tool_name(str_of(&update, "kind"));
+                    self.kinds.insert(id.clone(), name);
+                    name.to_string()
                 } else {
                     String::new()
                 };
+                let mut status = status(str_of(&update, "status"));
+                if status == ToolStatus::Failed && self.declined.remove(&id) {
+                    status = ToolStatus::Declined;
+                }
                 step.show(ChatEvent::Tool {
-                    id: str_of(&update, "toolCallId").to_string(),
+                    id,
                     name,
                     detail: cut(str_of(&update, "title"), 2000),
-                    status: status(str_of(&update, "status")),
+                    status,
                 });
             }
             _ => {} // thoughts, plans, commands and modes: not shown
@@ -198,17 +216,24 @@ impl Acp {
             .cloned()
             .unwrap_or_default();
         let id = format!("gemini-{}", rpc_id.to_string().trim_matches('"'));
-        self.waiting.insert(id.clone(), (rpc_id, options));
-        let title = str_of(&call, "title");
+        let call_id = str_of(&call, "toolCallId").to_string();
+        let tool = self
+            .kinds
+            .get(&call_id)
+            .copied()
+            .unwrap_or_else(|| tool_name(str_of(&call, "kind")));
+        self.waiting.insert(id.clone(), (rpc_id, options, call_id));
+        let title = cut(str_of(&call, "title"), 2000);
         let text = content_text(call.get("content"));
+        let detail = match (title.is_empty(), text.is_empty()) {
+            (false, false) => format!("{title}\n{text}"),
+            (false, true) => title,
+            _ => text,
+        };
         step.show(ChatEvent::Approval {
             id,
-            tool: if title.is_empty() {
-                "Tool".into()
-            } else {
-                cut(title, 200)
-            },
-            detail: text,
+            tool: tool.to_string(),
+            detail,
         });
     }
 
@@ -279,10 +304,13 @@ impl Driver for Acp {
     }
 
     fn answer(&mut self, id: &str, allow: bool) -> Result<Step, String> {
-        let (rpc_id, options) = self
+        let (rpc_id, options, call_id) = self
             .waiting
             .remove(id)
             .ok_or("that request is no longer waiting")?;
+        if !allow {
+            self.declined.insert(call_id);
+        }
         let mut step = Step::default();
         step.send(json!({"jsonrpc": "2.0", "id": rpc_id,
             "result": {"outcome": Self::outcome(&options, allow)}}));
@@ -293,8 +321,8 @@ impl Driver for Acp {
     fn interrupt(&mut self) -> Step {
         let mut step = Step::default();
         // the protocol has a waiting permission request answered as cancelled
-        let waiting: Vec<(String, (Value, Vec<Value>))> = self.waiting.drain().collect();
-        for (id, (rpc_id, _)) in waiting {
+        let waiting: Vec<(String, Waiting)> = self.waiting.drain().collect();
+        for (id, (rpc_id, _, _)) in waiting {
             step.send(json!({"jsonrpc": "2.0", "id": rpc_id, "result": {"outcome": {"outcome": "cancelled"}}}));
             step.show(ChatEvent::Resolved { id });
         }
@@ -365,14 +393,14 @@ mod tests {
             vec![
                 ChatEvent::Tool {
                     id: "run_1".into(),
-                    name: "Execute".into(),
+                    name: "Shell".into(),
                     detail: "echo hi > out.txt".into(),
                     status: ToolStatus::Running
                 },
                 ChatEvent::Approval {
                     id: "gemini-0".into(),
-                    tool: "echo hi > out.txt".into(),
-                    detail: "[cwd /work]".into()
+                    tool: "Shell".into(),
+                    detail: "echo hi > out.txt\n[cwd /work]".into()
                 },
             ]
         );
@@ -415,11 +443,19 @@ mod tests {
     #[test]
     fn rejecting_cancelling_and_requests_the_client_does_not_offer() {
         let (mut a, _) = started();
-        a.read(line(r#"{"jsonrpc":"2.0","id":"p","method":"session/request_permission","params":{"options":[{"optionId":"no","kind":"reject_once"}],"toolCall":{"title":"rm"}}}"#));
+        a.read(line(r#"{"jsonrpc":"2.0","id":"p","method":"session/request_permission","params":{"options":[{"optionId":"no","kind":"reject_once"}],"toolCall":{"toolCallId":"rm_1","title":"rm"}}}"#));
         assert_eq!(
             a.answer("gemini-p", false).unwrap().write[0]["result"]["outcome"],
             json!({"outcome": "selected", "optionId": "no"})
         );
+        let failed = a.read(line(r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call_update","toolCallId":"rm_1","status":"failed"}}}"#));
+        assert!(matches!(
+            &failed.events[0],
+            ChatEvent::Tool {
+                status: ToolStatus::Declined,
+                ..
+            }
+        ));
         a.read(line(r#"{"jsonrpc":"2.0","id":5,"method":"session/request_permission","params":{"options":[],"toolCall":{"title":"x"}}}"#));
         let stop = a.interrupt();
         assert_eq!(
