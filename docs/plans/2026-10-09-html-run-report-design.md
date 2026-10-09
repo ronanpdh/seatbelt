@@ -2,7 +2,7 @@
 
 **Goal:** every run seatbelt records gets one HTML file beside its ledger, written automatically when the ledger is closed and signed. A person can open it in a browser, keep it, or send it on. Any ledger can also be rendered on demand.
 
-**Status:** a design for review. Facts come from the repository and the sources in the source map, read 2026-10-09. A second reader checked every claim against its source the same day and corrected three. Everything under "Design (ours)" and "Rejected (ours)" is our decision.
+**Status:** implemented, unreleased. Facts come from the repository and the sources in the source map, read 2026-10-09. A second reader checked every claim against its source the same day and corrected three. Everything under "Design (ours)" and "Rejected (ours)" is our decision. Where the build differs from this design, it says so under "As built".
 
 ## What exists
 
@@ -26,8 +26,9 @@
    - The start-up tidy also writes a page for each killed run's ledger it closes and signs, so those runs get one too.
    - `html = false` in `~/.config/seatbelt/config.toml` turns it off.
    - The org gateway does not write pages in this version.
-2. **On demand.** `seatbelt reconstruct [run] --html [path]` writes the page for any ledger and prints where.
+2. **On demand.** `seatbelt reconstruct [run] --html [--out path]` writes the page for any ledger and prints where.
    - The default path is `<run id>.html` in the current folder.
+   - `--out` must end in `.html` (or `.htm`), so a slip cannot write a page over a ledger.
    - It makes the same checks as `reconstruct`: a broken or forged ledger gets no page, and the command exits 1.
 3. **A view, not evidence.**
    - The top of the page states the verdict at the time it was rendered:
@@ -57,12 +58,12 @@
      - the one-line summary `reconstruct` prints, cut at 80 characters as there.
 
      Each row expands, with `<details>`, to show the event's full attributes as formatted JSON, its id, parent id, hash and previous hash.
-   - **Large content:** each event's expanded JSON is cut at 64 KiB. The page says how much was left out and that the ledger holds all of it.
+   - **Large content:** each event's expanded JSON is cut at 64 KiB. The page says how much was left out and that the ledger holds all of it. (As built: the start and the end are kept; see below.)
 5. **Safe to open.** Everything from the ledger is untrusted: prompts, model output and tool results can all contain HTML.
    - Templates are Jinja2 with `autoescape=True`, so every value is escaped unless a template says otherwise. No template says otherwise. Autoescaping is off in a plain Jinja2 `Environment`, and `select_autoescape` chooses by the template's file extension with a default of off. So seatbelt sets `True` outright, and a test fails if a value reaches the page unescaped.
    - Every string from the ledger also goes through `printable`, as in the terminal, so bidirectional overrides and control characters are visible.
    - A Content-Security-Policy `<meta>` tag is the first child of `<head>`. It allows no scripts, no network and inline styles only, as a second line of defence if a value ever escapes the template. It comes first because a policy in a `<meta>` tag does not apply to content before it.
-   - Whether browsers enforce a CSP on a page opened from disk (`file://`) is not stated in the CSP or HTML specs, or on MDN. Before this ships, the page's tests are run in Chrome, Firefox and Safari to find out. Autoescaping is the defence that must hold either way.
+   - Whether browsers enforce a CSP on a page opened from disk (`file://`) is not stated in the CSP or HTML specs, or on MDN. Chromium 141 does (check C1). Firefox and Safari were not available to test. Autoescaping is the defence that must hold either way.
    - The page has no JavaScript, web fonts or images, and fetches nothing. Its styles are inline. It works offline and sends no request when opened.
 6. **Same protection as the ledger.**
    - Mode 0600.
@@ -80,6 +81,29 @@
    - New dependency: Jinja2, and MarkupSafe with it. The floor follows the dependency-floors rule: the lowest release the tests pass with, and no release from the floor up with a known advisory.
 9. **A page that fails does not fail the run.** If a page cannot be written (disk full, a template error), seatbelt logs a warning and the run still ends signed. `seatbelt reconstruct <run> --html` makes it again.
 
+## As built
+
+- **`--html` is a flag and `--out` names the file,** not `--html [path]`: Typer has no option that takes a value only sometimes.
+- **The page lives in `seatbelt/report/html.py` (`build`, `render`, `write_page`) and `seatbelt/report/templates/run.html`.** `page_path` is in `seatbelt/report/__init__.py`, because `erase` needs it and `report.html` imports `report.fleet`, which imports `erase`.
+- **Shared with the terminal and `report`:** `timeline.summary` (was `_summary`) for the one-line text, and `fleet.counted`, `fleet.response_model` and `fleet.count_response` for usage.
+- **`seatbelt run` prints the page's path** (`page:`) under the ledger's (`file:`), quoted for a shell. Pages that the start-up tidy writes for killed runs are not listed: they are not this run's.
+- **The erasure record counts pages** (`erasure.pages`), and `erase` removes a page before its ledger, so an interrupted erase finds it again by the ledger.
+- **A long event keeps its start and its end.** The design cut at 64 KiB from the start. A model request's messages run oldest first, so in a long session that showed only the opening of the conversation, never the turn the request was for. An event over 64 KiB now shows its first 8 KiB, how many bytes from the middle are left out, and its last 56 KiB.
+- **A long event is shown as compact JSON.** Indented JSON makes Python's `json` use its pure-Python encoder; events that fit in 64 KiB are still indented.
+- **Jinja2's floor is 3.1.6.** `pip-audit` 2.10.1 on 2026-10-09 reported advisories against 3.1.4 and 3.1.5, all fixed by 3.1.6, and none against 3.1.6 (C2).
+
+## Checks
+
+| Ref | Check | Result |
+|---|---|---|
+| C1 | A rendered page with `<script>document.title="SCRIPT RAN"</script><img src="https://example.com/x.png">` put right after `<meta charset>` (so after the CSP tag), opened from `file://` in Chromium 141.0.7390.37 through Playwright 1.56.1; and the same page with the CSP tag removed | With the CSP: the title unchanged; the console "Refused to execute inline script because it violates the following Content Security Policy directive"; the image request failed with reason `csp`, before the network. Without it: the title "SCRIPT RAN", and the image request went out (it failed later, `net::ERR_BLOCKED_BY_ORB`). So Chromium enforces the page's CSP on `file://` |
+| C2 | `pip-audit==2.10.1 -r <file> --no-deps` on `jinja2==3.1.4`, `3.1.5` and `3.1.6` | 3.1.4: PYSEC-2026-1471 (fixed in 3.1.6), PYSEC-2026-1472 and PYSEC-2026-1475 (fixed in 3.1.5). 3.1.5: PYSEC-2026-1471. 3.1.6: "No known vulnerabilities found" |
+| C3 | A signed ledger whose prompt and tool result hold `<script>`, `<img src=x onerror=…>` and `</details>`, and whose prompt holds a right-to-left override and an ESC sequence, rendered and opened from `file://` in Chromium 141 (light and dark) | no request; title unchanged; the payloads shown as text, the override and ESC as `\u202e` and `\u001b`. `</pre>`, `javascript:` links and `<style>` are covered by the unit tests only |
+| C4 | `uv run pytest -m "not integration"` as root | 747 passed; 7 failed, the same 7 that fail as root before this change (the sandbox refuses root; root ignores `chmod 500`) |
+| C5 | The same as an unprivileged user, with the container's root-only CA bundle variables unset | 754 passed |
+| C7 | Synthetic signed sessions in which each request carries the whole history so far (about 1.8 KB more per turn), a tool call per turn; `write_page` timed on this container | 150 turns: a 21.8 MB ledger, 0.6 s, a 10.2 MB page. 400 turns: 150 MB, 4.1 s, 29.1 MB. At 400 turns: reading the ledger 0.42 s, the chain 0.54 s, the signature 1.14 s, the rows 0.85 s, the template 0.1 s |
+| C6 | `uv build --wheel` (uv 0.12.20) | the wheel holds `seatbelt/report/templates/run.html` and `Requires-Dist: jinja2>=3.1.6` |
+
 ## Rejected (ours)
 
 - **PDF.** It needs a rendering engine as a dependency. Left for later.
@@ -89,21 +113,29 @@
 
 ## Tests
 
-- A prompt, a tool result and a model reply containing `<script>`, an `<img onerror>`, a closing `</details>` and a `javascript:` URL all render as text. This is a golden-file test.
-- In Chrome, Firefox and Safari, a page opened from `file://` with a `<script>` deliberately put after the CSP tag does not run it. This records whether the second line of defence exists there. It does not replace the escaping tests.
-- The page loads nothing: no `<script>`, `<link>`, `<img>`, `<iframe>`, `@import` or `url(`, and no `href` other than an in-page `#` anchor.
-- A property test: random strings in any attribute never produce a `<` in the page outside the template's own markup.
-- A ledger with a broken chain, or a forged signature, gets no page, and the command exits 1.
-- An incomplete ledger gets a page that says it is incomplete.
-- The page's mode is 0600, and an interrupted write leaves no partial file.
-- `erase` removes the page; `pack` and the sink leave it out.
-- A run whose page fails to render still ends signed.
-- A killed run's ledger, closed by the next run's start-up tidy, gets a page.
+In `tests/unit/test_html_report.py` unless named.
+
+- A prompt, tool arguments and result, a model reply, the client and a refusal reason holding `<script>`, an `<img onerror>`, closing `</details>` and `</pre>`, a `javascript:` link and a `<style>` all render as text, and the page keeps the template's structure.
+- A property test (Hypothesis, 60 examples): for any text in those places, the page has the same elements and attributes, in the same order, as for plain text.
+- Bidirectional overrides, ESC and C1 controls are shown as escapes, never written raw.
+- The page loads nothing: the CSP tag is the first element in `<head>` with `default-src 'none'` and no script source; there is no `<script>`, `<link>`, `<img>`, `<iframe>`, `<object>`, `<embed>`, `<base>` or `<form>`, no `src` or `on…` attribute, no `@import` or `url(`, and no `href` but in-page `#e<seq>` anchors.
+- In a browser, a `<script>` deliberately put after the CSP tag does not run: by hand in Chromium (check C1), not in CI.
+- A broken chain or a forged signature gets no page; an unsigned ledger is shown as unattested, and refused when a key is given; an open ledger is shown as incomplete; a failed run shows its error.
+- A long event shows its start and end, and how much of its middle is left out.
+- The page is mode 0600, replaces an older page whole, and an interrupted write leaves no file behind.
+- `reconstruct --html` writes the page, `--out` names it, an `--out` not ending in `.html` and an `--out` without `--html` are refused, and a tampered ledger gets no page.
+- `pack` leaves pages out. (The sink uploads only a ledger and its signature by construction; no test was added.)
+- `test_local.py`: a local run writes its page, mode 0600 and attested, and prints its path; `html = false` writes none; a page that cannot be written leaves the run signed with the CLI's exit code; a killed run's ledger gets its page from the next run.
+- `test_launcher.py`: `html` in the config is true or false.
+- `test_erase.py`: `erase` removes the person's pages and no one else's, and counts them in the record.
 
 ## Not done
 
+- Writing the page off the CLI's exit path. A very long run waits a few seconds for it (check C7).
+- Pages written elsewhere with `--out` are the user's own copies; `erase` does not know about them.
+- The `file://` CSP check in Firefox and Safari.
 - Pages on the org gateway, which holds everyone's ledgers. That needs its own decision about who may read them.
-- An index page for a runs folder. The desktop app lists runs and opens their pages.
+- An index page for a runs folder (`seatbelt runs` lists them).
 - PDF.
 - Recording the page's hash in an erasure record. The record names the ledgers it removed. The page is derived from one of them.
 

@@ -29,6 +29,7 @@ from seatbelt.ledger.events import Event, Kind
 from seatbelt.ledger.store import LedgerError, read_events
 from seatbelt.locks import RUNNING, try_lock
 from seatbelt.record.recorder import Recorder
+from seatbelt.report import page_path
 
 SHIPPED = ".shipped"
 STATE = ".state.json"  # the importer's
@@ -61,6 +62,7 @@ class Target:
     mark_sha256: str | None
     object_keys: list[str]
     leftover: bool = False  # already named by an earlier, interrupted erasure
+    page: Path | None = None  # its HTML page: a copy of what the ledger holds
 
 
 @dataclass
@@ -88,6 +90,7 @@ class Result:
     ledgers: int = 0
     sidecars: int = 0
     marks: int = 0
+    pages: int = 0
     state_entries: int = 0
     closed: list[str] = field(default_factory=list[str])  # interrupted records closed
     to_check: list[str] = field(default_factory=list[str])  # as in Plan: not removed
@@ -226,6 +229,7 @@ def _mark_hashes(mark: Path) -> set[str]:
 
 def _target(folder: Path, ledger: Path, digest: str, leftover: bool) -> Target:
     side = sidecar(ledger)
+    page = page_path(ledger)
     mark = folder / SHIPPED / ledger.stem
     keys: list[str] = []
     if mark.exists():
@@ -242,6 +246,7 @@ def _target(folder: Path, ledger: Path, digest: str, leftover: bool) -> Target:
         mark_sha256=_sha256(mark) if mark.exists() else None,
         object_keys=keys,
         leftover=leftover,
+        page=page if page.exists() else None,
     )
 
 
@@ -340,6 +345,9 @@ def erase(
                 },
             )
         for t in p.targets:
+            if t.page is not None:  # first: if this is interrupted, the ledger finds it again
+                t.page.unlink(missing_ok=True)
+                result.pages += 1
             t.ledger.unlink(missing_ok=True)
             result.ledgers += 1
             if t.sidecar is not None:
@@ -364,12 +372,13 @@ def erase(
             result.state_entries = len(p.state_entries)
         rec.outcome(
             f"erased {result.ledgers} ledgers, {result.sidecars} signatures, {result.marks} "
-            f"shipped marks, {result.state_entries} importer entries",
+            f"shipped marks, {result.pages} pages, {result.state_entries} importer entries",
             success=True,
             attrs={
                 "erasure.ledgers": result.ledgers,
                 "erasure.sidecars": result.sidecars,
                 "erasure.marks": result.marks,
+                "erasure.pages": result.pages,
                 "erasure.state_entries": result.state_entries,
             },
         )

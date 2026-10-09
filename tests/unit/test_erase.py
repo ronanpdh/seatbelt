@@ -20,7 +20,9 @@ from seatbelt.ledger.events import Actor, ActorType, Kind
 from seatbelt.ledger.store import Ledger, read_events
 from seatbelt.locks import RUNNING, Busy, hold_folder
 from seatbelt.record.recorder import Recorder
+from seatbelt.report import page_path
 from seatbelt.report.fleet import fleet
+from seatbelt.report.html import write_page
 from seatbelt.verify.attest import Attestation, verify_attestation
 from seatbelt.verify.chain import verify_file
 
@@ -134,6 +136,31 @@ def test_erase_removes_whole_ledgers_inside_a_signed_record(tmp_path: Path) -> N
     assert ALICE not in report.by_principal and ALICE_ANTHROPIC not in report.by_principal
     assert report.by_principal["seatbelt:erasure"].runs == 2
     assert not report.forged and not report.broken
+
+
+def test_erase_removes_the_persons_pages_and_no_one_elses(tmp_path: Path) -> None:
+    """A page holds what its ledger holds, so it goes with the ledger."""
+    runs, _, signer = _build(tmp_path)
+    for ledger in runs.glob("*.jsonl"):
+        write_page(ledger)
+    p = plan(runs, [ALICE])
+    assert sorted(t.page.name for t in p.targets if t.page is not None) == [
+        "auth0_alice01-a-1111.html",
+        "auth0_alice01-b-2222.html",
+        "auth0_alice01-c-6666.html",  # open, so shown as incomplete, and still theirs
+    ]
+    r = erase(runs, [ALICE], "DSR-2026-015", signer, by="operator")
+    assert (r.ledgers, r.pages) == (3, 3)
+    assert sorted(p.name for p in runs.glob("*.html")) == [
+        "anon-4444.html",
+        "bob-a-3333.html",
+        "unknown-5555.html",
+    ]
+    assert r.record is not None and list(read_events(r.record))[-2].attrs["erasure.pages"] == 3
+    data = b"".join(f.read_bytes() for f in runs.iterdir() if f.is_file())  # not compliance/
+    for needle in (ALICE, "alice01", ALICE_MAIL):
+        assert needle.encode() not in data, needle
+    assert page_path(runs / "bob-a-3333.jsonl").exists()
 
 
 def test_an_erase_that_fails_partway_is_finished_by_the_next(

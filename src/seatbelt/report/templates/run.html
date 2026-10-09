@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; base-uri 'none'; form-action 'none'">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
+<meta name="generator" content="seatbelt {{ page.version }}">
+<title>{{ page.title }} · seatbelt run</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --ink: #1b1f24; --muted: #5d6673; --line: #e2e5ea;
+  --code: #f1f3f6; --accent: #1f6feb;
+  --good: #1a7f37; --good-bg: #e7f5ec; --warn: #9a6700; --warn-bg: #fff6dc;
+  --bad: #cf222e; --bad-bg: #ffecec;
+  --k-user: #8250df; --k-model: #1f6feb; --k-tool: #bc4c00; --k-policy: #cf222e; --k-run: #5d6673;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117; --panel: #161b22; --ink: #e6edf3; --muted: #8d96a0; --line: #30363d;
+    --code: #1f242c; --accent: #4493f8;
+    --good: #3fb950; --good-bg: #12261a; --warn: #d29922; --warn-bg: #2a2111;
+    --bad: #f85149; --bad-bg: #2d1416;
+    --k-user: #a371f7; --k-model: #4493f8; --k-tool: #f0883e; --k-policy: #f85149; --k-run: #8d96a0;
+  }
+}
+* { box-sizing: border-box; }
+html { background: var(--bg); }
+body {
+  margin: 0 auto; max-width: 1100px; padding: 32px 20px 64px; color: var(--ink);
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 13px; }
+h1 { font-size: 26px; margin: 4px 0 2px; overflow-wrap: anywhere; }
+h2 { font-size: 17px; margin: 0 0 12px; }
+section, header { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 20px 22px; margin-bottom: 18px; }
+.brand { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; }
+.badge { background: var(--ink); color: var(--panel); font-weight: 700; padding: 1px 8px; border-radius: 4px; letter-spacing: .02em; }
+.sub { color: var(--muted); margin: 0 0 16px; overflow-wrap: anywhere; }
+dl.facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px 24px; margin: 0; }
+dl.facts div { min-width: 0; }
+dt { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+dd { margin: 2px 0 0; overflow-wrap: anywhere; }
+.pill { display: inline-block; font-weight: 600; font-size: 13px; padding: 1px 9px; border-radius: 999px; }
+.pill.ok, .pill.attested, .pill.yes { color: var(--good); background: var(--good-bg); }
+.pill.unchecked, .pill.unattested, .pill.incomplete, .pill.no { color: var(--warn); background: var(--warn-bg); }
+.pill.failed { color: var(--bad); background: var(--bad-bg); }
+.verdict p { margin: 0 0 10px; }
+.verdict.good { border-left: 4px solid var(--good); }
+.verdict.warn { border-left: 4px solid var(--warn); }
+.note { color: var(--muted); }
+pre { background: var(--code); border-radius: 6px; padding: 10px 12px; margin: 0; overflow-x: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.hash { overflow-wrap: anywhere; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 10px; margin-bottom: 18px; }
+.tile { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+.tile b { display: block; font-size: 22px; }
+.tile span { color: var(--muted); font-size: 12px; }
+.tile.alert b { color: var(--bad); }
+table { border-collapse: collapse; width: 100%; margin-bottom: 16px; }
+th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; }
+th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+tfoot td { font-weight: 600; }
+h3 { font-size: 14px; margin: 18px 0 8px; }
+ol.timeline { list-style: none; padding: 0; margin: 0; }
+ol.timeline li { border-bottom: 1px solid var(--line); }
+ol.timeline summary {
+  display: grid; grid-template-columns: 44px 96px 128px minmax(0, 190px) minmax(0, 1fr); gap: 10px;
+  padding: 7px 4px; cursor: pointer; list-style: none; align-items: baseline;
+}
+ol.timeline summary::-webkit-details-marker { display: none; }
+ol.timeline summary:hover { background: var(--code); }
+ol.timeline details[open] summary { background: var(--code); }
+.seq, .time { color: var(--muted); font-variant-numeric: tabular-nums; }
+.seq { text-align: right; }
+.kind { font-weight: 600; }
+.actor { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.k-user-message .kind { color: var(--k-user); }
+.k-model-request .kind, .k-model-response .kind { color: var(--k-model); }
+.k-tool-call .kind, .k-tool-result .kind { color: var(--k-tool); }
+.k-policy-check .kind { color: var(--k-policy); }
+.k-run-start .kind, .k-run-end .kind, .k-decision .kind, .k-action .kind, .k-outcome .kind { color: var(--k-run); }
+li.denied, li.failed { background: var(--bad-bg); }
+.detail { padding: 6px 4px 14px 58px; }
+.detail dl { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 2px 10px; margin: 0 0 10px; }
+.detail dt { text-transform: none; letter-spacing: 0; font-size: 13px; }
+.detail dd { margin: 0; }
+.cut { color: var(--warn); margin: 8px 0; }
+footer { color: var(--muted); font-size: 13px; text-align: center; margin-top: 24px; }
+@media (max-width: 720px) {
+  ol.timeline summary { grid-template-columns: 36px 1fr; }
+  .time, .actor { display: none; }
+  .what { grid-column: 1 / -1; white-space: normal; }
+  .detail { padding-left: 4px; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand"><span class="badge">seatbelt</span> run report</div>
+  <h1>{{ page.title }}</h1>
+  <p class="sub mono">{{ page.run_id }}</p>
+  <dl class="facts">
+    <div><dt>Outcome</dt><dd><span class="pill {{ page.outcome }}">{{ page.outcome }}</span>{% if page.outcome_reason %} <span class="note">{{ page.outcome_reason }}</span>{% endif %}</dd></div>
+    <div><dt>Who</dt><dd>{{ page.principal or "not recorded" }}</dd></div>
+    <div><dt>Recorded by</dt><dd>{{ page.agent }}</dd></div>
+    {% if page.client %}<div><dt>Client</dt><dd>{{ page.client }}</dd></div>{% endif %}
+    <div><dt>Started</dt><dd>{{ page.started }}</dd></div>
+    <div><dt>Ended</dt><dd>{{ page.ended or "not ended" }}</dd></div>
+    <div><dt>Duration</dt><dd>{{ page.duration }}</dd></div>
+    <div><dt>Events</dt><dd>{{ page.events }}</dd></div>
+  </dl>
+</header>
+
+<section class="verdict {{ 'good' if page.complete and page.signature == 'attested' else 'warn' }}">
+  <h2>What was checked</h2>
+  <p>When this page was made ({{ page.rendered }}), the ledger <code>{{ page.ledger_file }}</code> was checked:</p>
+  <dl class="facts">
+    <div><dt>Hash chain</dt><dd><span class="pill yes">intact</span> {{ page.events }} events</dd></div>
+    <div><dt>Complete</dt><dd>{% if page.complete %}<span class="pill yes">yes</span>{% else %}<span class="pill no">no</span> <span class="note">no matching run.end</span>{% endif %}</dd></div>
+    <div><dt>Signature</dt><dd><span class="pill {{ page.signature }}">{{ page.signature }}</span> <span class="note">{{ page.signature_note }}</span></dd></div>
+    <div><dt>Final hash</dt><dd class="mono hash">{{ page.final_hash }}</dd></div>
+    <div><dt>Ledger SHA-256</dt><dd class="mono hash">{{ page.ledger_sha256 }}</dd></div>
+  </dl>
+  <p style="margin-top: 14px">This page is a view, not evidence: like any file, it can be edited. The ledger and its signature are what prove what happened. Check them again with:</p>
+  <pre><code>{{ page.verify_command }}</code></pre>
+</section>
+
+<section>
+  <h2>Summary</h2>
+  <div class="tiles">
+    <div class="tile"><b>{{ "{:,}".format(page.total.calls) }}</b><span>model calls</span></div>
+    <div class="tile"><b>{{ "{:,}".format(page.total.input_tokens) }}</b><span>input tokens</span></div>
+    <div class="tile"><b>{{ "{:,}".format(page.total.cache_read_input_tokens + page.total.cache_creation_input_tokens) }}</b><span>cache tokens (read + write)</span></div>
+    <div class="tile"><b>{{ "{:,}".format(page.total.output_tokens) }}</b><span>output tokens</span></div>
+    <div class="tile"><b>{{ "{:,}".format(page.tools.values() | sum) }}</b><span>tool calls</span></div>
+    <div class="tile {{ 'alert' if page.refusals else '' }}"><b>{{ page.refusals | length }}</b><span>refused by policy</span></div>
+    <div class="tile {{ 'alert' if page.failures else '' }}"><b>{{ page.failures | length }}</b><span>errors</span></div>
+  </div>
+
+  {% if page.models %}
+  <h3>Models</h3>
+  <table>
+    <thead><tr><th>Model</th><th class="n">Calls</th><th class="n">Input</th><th class="n">Cache read</th><th class="n">Cache write</th><th class="n">Output</th></tr></thead>
+    <tbody>
+    {% for model, u in page.models.items() %}
+      <tr><td class="mono">{{ model }}</td><td class="n">{{ "{:,}".format(u.calls) }}</td><td class="n">{{ "{:,}".format(u.input_tokens) }}</td><td class="n">{{ "{:,}".format(u.cache_read_input_tokens) }}</td><td class="n">{{ "{:,}".format(u.cache_creation_input_tokens) }}</td><td class="n">{{ "{:,}".format(u.output_tokens) }}</td></tr>
+    {% endfor %}
+    </tbody>
+    {% if page.models | length > 1 %}
+    <tfoot><tr><td>All models</td><td class="n">{{ "{:,}".format(page.total.calls) }}</td><td class="n">{{ "{:,}".format(page.total.input_tokens) }}</td><td class="n">{{ "{:,}".format(page.total.cache_read_input_tokens) }}</td><td class="n">{{ "{:,}".format(page.total.cache_creation_input_tokens) }}</td><td class="n">{{ "{:,}".format(page.total.output_tokens) }}</td></tr></tfoot>
+    {% endif %}
+  </table>
+  <p class="note">Input is as the provider reports it. Anthropic's leaves out its prompt cache, which is counted under cache read and cache write.</p>
+  {% endif %}
+
+  {% if page.tools %}
+  <h3>Tools</h3>
+  <table>
+    <thead><tr><th>Tool</th><th class="n">Calls</th></tr></thead>
+    <tbody>
+    {% for tool, n in page.tools.items() %}
+      <tr><td class="mono">{{ tool }}</td><td class="n">{{ "{:,}".format(n) }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {% if page.refusals %}
+  <h3>Refused by policy</h3>
+  <table>
+    <thead><tr><th class="n">Seq</th><th>Rule</th><th>Reason</th></tr></thead>
+    <tbody>
+    {% for r in page.refusals %}
+      <tr><td class="n"><a href="#e{{ r.seq }}">{{ r.seq }}</a></td><td class="mono">{{ r.rule }}</td><td>{{ r.reason }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {% if page.failures %}
+  <h3>Errors</h3>
+  <table>
+    <thead><tr><th class="n">Seq</th><th>Event</th><th>Error</th></tr></thead>
+    <tbody>
+    {% for f in page.failures %}
+      <tr><td class="n"><a href="#e{{ f.seq }}">{{ f.seq }}</a></td><td class="mono">{{ f.kind }}</td><td>{{ f.error }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Timeline</h2>
+  <p class="note">Every event in the ledger, in order. Open one to see everything recorded with it. An event over {{ "{:,}".format(detail_limit // 1024) }} KiB shows its start and its end, where a request's newest turn is; the ledger holds all of it.</p>
+  <ol class="timeline">
+  {% for row in page.rows %}
+    <li id="e{{ row.seq }}" class="k-{{ row.css }}{{ ' denied' if row.denied else '' }}{{ ' failed' if row.failed else '' }}">
+      <details>
+        <summary><span class="seq">{{ row.seq }}</span><span class="time mono">{{ row.time }}</span><span class="kind">{{ row.kind }}</span><span class="actor">{{ row.actor }}</span><span class="what">{{ row.what }}</span></summary>
+        <div class="detail">
+          <dl>
+            <dt>Event id</dt><dd class="mono hash">{{ row.id }}</dd>
+            {% if row.parent %}<dt>Parent</dt><dd class="mono hash">{{ row.parent }}</dd>{% endif %}
+            <dt>Actor</dt><dd class="mono">{{ row.actor }}</dd>
+            <dt>Hash</dt><dd class="mono hash">{{ row.hash }}</dd>
+            <dt>Previous hash</dt><dd class="mono hash">{{ row.prev_hash }}</dd>
+          </dl>
+          <pre>{{ row.detail }}</pre>
+          {% if row.cut %}
+          <p class="cut">{{ "{:,}".format(row.cut) }} bytes from the middle of this event are left out here; the ledger holds them.</p>
+          <pre>{{ row.detail_end }}</pre>
+          {% endif %}
+        </div>
+      </details>
+    </li>
+  {% endfor %}
+  </ol>
+</section>
+
+<footer>Made by seatbelt {{ page.version }} on {{ page.rendered }} from {{ page.ledger_file }}.</footer>
+</body>
+</html>

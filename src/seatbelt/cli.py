@@ -162,11 +162,38 @@ def verify(ledger: LedgerRef = None, pubkey: PubKey = None) -> None:
 
 
 @app.command()
-def reconstruct(ledger: LedgerRef = None, pubkey: PubKey = None) -> None:
-    """Print the run as a timeline a reviewer can read. Refuses an altered ledger."""
+def reconstruct(
+    ledger: LedgerRef = None,
+    pubkey: PubKey = None,
+    html: Annotated[
+        bool, typer.Option("--html", help="write the run as an HTML page instead of printing it")
+    ] = False,
+    out: Annotated[
+        Path | None,
+        typer.Option(help="where --html writes the page; default: <run id>.html in this folder"),
+    ] = None,
+) -> None:
+    """Print the run as a timeline a reviewer can read, or with --html write it as a page to
+    open in a browser. Refuses an altered ledger."""
+    if out is not None and not html:
+        console.print("[red]--out is where --html writes; add --html[/]")
+        raise typer.Exit(code=1)
+    if out is not None and out.suffix.lower() not in (".html", ".htm"):
+        console.print(f"[red]{_shown(str(out))}: a page's name ends in .html[/]")
+        raise typer.Exit(code=1)
     path, pubkey = _resolved(ledger, pubkey)
     _check(path, pubkey)
-    timeline(path, console)
+    if not html:
+        timeline(path, console)
+        return
+    from seatbelt.report.html import PageError, write_page
+
+    try:
+        page = write_page(path, pubkey, out or Path(f"{path.stem}.html"))
+    except (PageError, AttestError, OSError) as exc:
+        console.print(f"[red]{_shown(str(exc))}[/]")
+        raise typer.Exit(code=1) from exc
+    console.print(Text(f"wrote {printable(str(page))}"))
 
 
 @app.command()
@@ -459,9 +486,10 @@ def erase(
     ] = None,
     yes: Annotated[bool, typer.Option("--yes", help="erase; without it, only list")] = False,
 ) -> None:
-    """Remove every ledger recorded under a person's principal ids, with its signature and
-    shipped mark, inside a signed erasure record. Lists what it would remove unless --yes.
-    Nothing may be writing: stop the gateway, and wait for imports and local runs to end."""
+    """Remove every ledger recorded under a person's principal ids, with its signature,
+    shipped mark and HTML page, inside a signed erasure record. Lists what it would remove
+    unless --yes. Nothing may be writing: stop the gateway, and wait for imports and local
+    runs to end."""
     from seatbelt.erase import erase as do_erase
     from seatbelt.erase import live_local_runs, plan
     from seatbelt.gateway.config import load_config
@@ -499,6 +527,8 @@ def erase(
             what = "leftover of an earlier erasure" if t.leftover else "ledger"
             size = t.ledger.stat().st_size
             console.print(Text(f"  {what}: {printable(t.ledger.name)} ({size} bytes)"))
+            if t.page is not None:
+                console.print(Text(f"    its page: {printable(t.page.name)}"))
             for k in t.object_keys:
                 console.print(Text(f"    in the sink as {printable(k)}: not deleted by erase"))
         for o in p.orphans:
@@ -554,7 +584,8 @@ def erase(
                 console.print(
                     Text(
                         f"{folder}: erased {r.ledgers} ledgers, {r.sidecars} signatures, "
-                        f"{r.marks} shipped marks, {r.state_entries} importer entries; "
+                        f"{r.marks} shipped marks, {r.pages} pages, "
+                        f"{r.state_entries} importer entries; "
                         f"record {r.record.name}"
                     )
                 )

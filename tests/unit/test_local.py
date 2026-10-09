@@ -4,6 +4,7 @@ its own credentials, and the ledger lands in the local data folder, signed."""
 import ast
 import json
 import shlex
+import stat
 import sys
 import threading
 import tomllib
@@ -21,6 +22,7 @@ from seatbelt.gateway.launcher import data_dir, local_defaults, run_cli
 from seatbelt.gateway.local import UPSTREAMS
 from seatbelt.ledger.events import Kind
 from seatbelt.ledger.store import read_events
+from seatbelt.report import page_path
 
 REPLY = {
     "id": "msg_1",
@@ -135,6 +137,59 @@ def test_the_ledgers_path_is_printed_ready_to_paste_into_a_shell(
     lines = [x.removeprefix("[seatbelt]").strip() for x in capfd.readouterr().err.splitlines()]
     (line,) = [x for x in lines if x.startswith("file:")]
     assert shlex.split(line.removeprefix("file:")) == [str(ledger)]
+
+
+def test_a_local_run_writes_its_page_beside_the_ledger_and_says_where(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    provider: Provider,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    home = tmp_path / "Application Support" / "seatbelt"
+    monkeypatch.setenv("SEATBELT_HOME", str(home))
+    run_cli("claude", ["-c", CLAUDE], config=_config(tmp_path, provider), exe=fake_claude(tmp_path))
+    (ledger,) = (home / "runs").glob("*.jsonl")
+    page = page_path(ledger)
+    assert stat.S_IMODE(page.stat().st_mode) == 0o600
+    text = page.read_text()
+    assert "attested" in text and "claude-sonnet-5" in text  # checked against this machine's key
+    lines = [x.removeprefix("[seatbelt]").strip() for x in capfd.readouterr().err.splitlines()]
+    (line,) = [x for x in lines if x.startswith("page:")]
+    assert shlex.split(line.removeprefix("page:")) == [str(page)]
+
+
+def test_html_false_in_the_config_writes_no_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: Provider
+) -> None:
+    monkeypatch.setenv("SEATBELT_HOME", str(tmp_path / "home"))
+    config = _config(tmp_path, provider)
+    config.write_text("html = false\n" + config.read_text())
+    run_cli("claude", ["-c", CLAUDE], config=config, exe=fake_claude(tmp_path))
+    (ledger,) = (tmp_path / "home" / "runs").glob("*.jsonl")
+    assert sidecar(ledger).exists() and not page_path(ledger).exists()
+
+
+def test_a_page_that_cannot_be_written_does_not_fail_the_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    provider: Provider,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    from seatbelt.gateway import local
+
+    def broken(*_: object, **__: object) -> Path:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(local, "write_page", broken)
+    monkeypatch.setenv("SEATBELT_HOME", str(tmp_path / "home"))
+    code = run_cli(
+        "claude", ["-c", CLAUDE], config=_config(tmp_path, provider), exe=fake_claude(tmp_path)
+    )
+    assert code == 7  # the CLI's own exit code, as without the page
+    (ledger,) = (tmp_path / "home" / "runs").glob("*.jsonl")
+    assert sidecar(ledger).exists() and not page_path(ledger).exists()
+    err = capfd.readouterr().err
+    assert "no HTML page for" in err and "disk full" in err and "page:" not in err
 
 
 ANTHROPIC = UPSTREAMS["anthropic"]
@@ -338,6 +393,7 @@ def test_a_run_closes_what_a_killed_run_left_open_in_the_background(
     empty.write_text("")
     assert run_cli("claude", ["-c", "pass"], config=empty, exe=fake_claude(tmp_path)) == 0
     assert list(read_events(dead))[-1].kind is Kind.RUN_END
+    assert page_path(dead).exists()  # closed and signed by this run: it gets its page too
     assert list((home / "runs" / ".running").iterdir()) == []  # this run's lock is gone too
 
 

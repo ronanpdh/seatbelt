@@ -15,7 +15,8 @@ from seatbelt.ledger.store import read_events
 from seatbelt.terminal import printable
 
 
-def _summary(event: Event) -> str:
+def summary(event: Event) -> str:
+    """One line for `event`, as `reconstruct` prints it and the HTML page shows it."""
     # escaped before it is cut: a cut escape sequence would leave the terminal inside it
     return " ".join(printable(_describe(event)).split())[:80]
 
@@ -98,7 +99,7 @@ def timeline(path: Path, console: Console | None = None) -> None:
             e.ts.strftime("%H:%M:%S.%f")[:-3],
             e.kind,
             actor,
-            _summary(e),
+            summary(e),
             e.hash[:10],
         )
         # ledger text is data: never Rich markup, nor terminal control sequences

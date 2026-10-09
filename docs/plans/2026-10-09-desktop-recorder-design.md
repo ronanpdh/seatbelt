@@ -4,7 +4,7 @@
 - **v1 apps:** Claude Desktop (and Cowork in it), and Codex in all its forms: the CLI, the IDE extension, and Codex mode in the ChatGPT desktop app.
 - **The parts:** a recorder that is always on, and a tray app that shows what it records.
 
-**Status:** a design for review. Facts come from the repository and the vendors' documentation in the source map, read 2026-10-09. A second reader checked every claim against its source the same day and corrected twelve. Nothing here has been run against the apps yet: the checks under "Before building" must pass first. Everything under "Design (ours)" and "Rejected (ours)" is our decision.
+**Status:** on hold, to be rethought (2026-10-09). The direction to explore next: a desktop app that hosts the CLIs in its own terminal and launches them as `seatbelt run` does, so each keeps its own sign-in, subscriptions included, instead of pointing the vendors' desktop apps at a gateway. What follows is the first design, kept for its findings about Claude Desktop and Codex. Its facts come from the repository and the vendors' documentation in the source map, read 2026-10-09; a second reader checked every claim against its source the same day and corrected twelve. Nothing here has been run against the apps.
 
 ## Why `seatbelt run` is not enough
 

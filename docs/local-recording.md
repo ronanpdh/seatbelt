@@ -11,6 +11,16 @@ seatbelt report          # your local runs, checked against this machine's key
 
 `verify` and `reconstruct` find a local run by its name, by its id (the file name, with or without `.jsonl`), or take a file path. A local run is checked against this machine's key without `--pubkey`.
 
+## The run's page
+
+When a run's ledger is closed and signed, seatbelt writes `<run id>.html` beside it and prints its path (`page:`). Open it in a browser, keep it, or send it on. It shows the run's outcome, tokens per model, tool calls, policy refusals and errors, and every event, each opening to everything recorded with it. An event over 64 KiB shows its start and end (8 KiB and 56 KiB), since a request's newest turn is at its end; the ledger holds all of it. The page is written as the run ends: for a run of 150 model calls (a 22 MB ledger) that took 0.6 seconds in our test, and for an unusually long one of 400 calls (150 MB), about 4.
+
+- **It is a view, not evidence.** It says what was checked when it was made: the hash chain, whether the run is complete, the signature, the final hash and the ledger's SHA-256. It also gives the command that checks the ledger again. Like any file it can be edited; the ledger and its signature are what prove anything. A broken or forged ledger gets no page.
+- **It is safe to open.** Everything from the ledger is escaped, and control characters and bidirectional overrides are shown rather than obeyed. The page has no script, loads nothing, and carries a Content-Security-Policy that forbids both.
+- **It holds what the ledger holds**, already redacted, so it is written mode 0600. `seatbelt erase` removes it with the ledger. `seatbelt pack` and a `[sink]` leave it out: it can be made again from the ledger.
+- **Any ledger, any time:** `seatbelt reconstruct <run> --html` writes `<run id>.html` in the current folder, or where `--out` says. A killed run's ledger gets its page when the next run closes it.
+- `html = false` in the settings turns pages off. A page that cannot be written is a warning; the run still ends signed.
+
 To record through your organisation's gateway instead, see [Through a gateway](#through-a-gateway).
 
 ## How it works
@@ -82,6 +92,7 @@ Put settings in `~/.config/seatbelt/config.toml`. Every setting is optional.
 
 ```toml
 ledgers = "~/seatbelt/runs"          # where local runs go (default: runs/ in the data folder)
+html = false                         # no HTML page beside each ledger (default: true)
 
 [upstreams]                          # a provider's URL, e.g. your company's LLM proxy
 anthropic = "https://llm-proxy.corp.example"
