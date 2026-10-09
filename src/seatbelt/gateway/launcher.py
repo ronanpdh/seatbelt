@@ -171,6 +171,7 @@ class ClientConfig:
     gateway = "https://gw.corp.example"  # record through the org's gateway, with
     key = "sbk_..."                      # your issued key; unset: record locally
     ledgers = "~/seatbelt/runs"          # local: where ledgers go
+    html = false                         # local: no HTML page beside each ledger
     [upstreams]                          # local: providers' URLs, e.g. a proxy
     anthropic = "https://llm-proxy.corp.example"
     [sink]                               # local: also ship ledgers to object storage
@@ -182,12 +183,13 @@ class ClientConfig:
     gateway: str | None = None
     key: str | None = None
     ledgers: Path | None = None
+    html: bool = True  # an HTML page beside each local run's ledger
     upstreams: dict[str, str] = field(default_factory=dict[str, str])
     sink: dict[str, Any] | None = None
     path: Path | None = None  # the file it came from, if any
 
 
-_CLIENT_KEYS = {"gateway", "url", "key", "ledgers", "upstreams", "sink"}
+_CLIENT_KEYS = {"gateway", "url", "key", "ledgers", "html", "upstreams", "sink"}
 
 
 def load_client_config(path: Path | None = None) -> ClientConfig:
@@ -220,6 +222,9 @@ def load_client_config(path: Path | None = None) -> ClientConfig:
     if sink is not None and not isinstance(sink, dict):
         raise ValueError(f"{path}: [sink] is a table")
     ledgers = data.get("ledgers")
+    html = data.get("html", True)
+    if not isinstance(html, bool):
+        raise ValueError(f"{path}: html is true or false")
     if ignored is not None and gateway is None:
         say(
             f"warning: {ignored} is ignored, since {path} is read instead and names no "
@@ -229,6 +234,7 @@ def load_client_config(path: Path | None = None) -> ClientConfig:
         gateway=gateway.rstrip("/") if isinstance(gateway, str) else None,
         key=key if isinstance(key, str) else None,
         ledgers=path.parent / Path(ledgers).expanduser() if isinstance(ledgers, str) else None,
+        html=html,
         upstreams=cast(dict[str, str], upstreams),
         sink=cast(dict[str, Any], sink) if sink is not None else None,
         path=path,
@@ -656,7 +662,9 @@ def _run_local(
     root = data_dir()
     ledgers = cfg.ledgers or root / "runs"
     upstreams = {**chained_upstreams(os.environ), **cfg.upstreams}
-    with local_recorder(ledgers, root / "keys", run, cfg.sink, upstreams) as recorder:
+    with local_recorder(
+        ledgers, root / "keys", run, cfg.sink, upstreams, html=cfg.html
+    ) as recorder:
         url = local_url(recorder.url, recorder.key, run)
         env = environment(cli, url, recorder.key, run, os.environ, True, own_secrets(cfg))
         env.update(local_defaults(cli, upstreams, UPSTREAMS["anthropic"], os.environ))
@@ -672,7 +680,8 @@ def _run_local(
     if recorder.written:
         # quoted to paste into a shell: the macOS data folder, Application Support, has a space
         paths = "\n".join(f"  file:      {shlex.quote(str(p))}" for p in recorder.written)
-        say(f"recorded run {run}\n  replay it: seatbelt reconstruct {run}\n{paths}")
+        pages = "".join(f"\n  page:      {shlex.quote(str(p))}" for p in recorder.pages)
+        say(f"recorded run {run}\n  replay it: seatbelt reconstruct {run}\n{paths}{pages}")
     else:
         say(f"nothing recorded ({cli} sent no model requests)")
     return code

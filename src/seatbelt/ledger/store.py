@@ -34,6 +34,19 @@ def read_events(path: Path) -> Iterator[Event]:
                 raise LedgerError(msg) from exc
 
 
+def parse_events(data: bytes, source: object) -> Iterator[Event]:
+    """The events in `data`, a ledger's bytes read once, as `read_events` reads its file: for a
+    caller that must check and show the same bytes. `source` names it in errors."""
+    for lineno, line in enumerate(data.split(b"\n"), start=1):
+        if not line.strip():
+            continue
+        try:
+            yield Event.model_validate_json(line)
+        except (ValidationError, UnicodeDecodeError) as exc:
+            msg = f"{source}:{lineno} is not a valid event: {exc}"
+            raise LedgerError(msg) from exc
+
+
 def fsync_dir(directory: Path) -> None:
     """Make a new name in `directory` durable: fsyncing a file does not cover its entry."""
     if os.name == "nt":  # a directory cannot be opened on Windows; NTFS journals names

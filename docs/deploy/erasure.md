@@ -1,6 +1,6 @@
 # Erasing a person's ledgers
 
-`seatbelt erase` removes every ledger recorded under a person's principal ids, together with each ledger's signature and shipped mark. It leaves a signed record that the removal happened. It never edits a ledger: ledgers are hash-chained and signed, so it removes whole ones. Design and sources: [docs/plans/2026-09-29-erasure-design.md](../plans/2026-09-29-erasure-design.md).
+`seatbelt erase` removes every ledger recorded under a person's principal ids, together with each ledger's signature, shipped mark and HTML page. It leaves a signed record that the removal happened. It never edits a ledger: ledgers are hash-chained and signed, so it removes whole ones. Design and sources: [docs/plans/2026-09-29-erasure-design.md](../plans/2026-09-29-erasure-design.md).
 
 **Whether to erase is your decision.** The GDPR's right to erasure has exceptions, for example where processing is necessary to comply with a legal obligation, or for legal claims (Article 17(3)(b) and (e)). seatbelt only carries out the decision, and records your case reference.
 

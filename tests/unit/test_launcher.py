@@ -491,3 +491,14 @@ def test_the_status_line_says_org_policy_only_under_one(
         )
         given = json.loads(capfd.readouterr().out)
         assert given["statusLine"]["command"].endswith("statusline --note recording")
+
+
+def test_html_in_the_client_config_is_true_or_false(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text("html = false\n")
+    assert load_client_config(path).html is False
+    path.write_text("")
+    assert load_client_config(path).html is True
+    path.write_text('html = "no"\n')
+    with pytest.raises(ValueError, match="html is true or false"):
+        load_client_config(path)

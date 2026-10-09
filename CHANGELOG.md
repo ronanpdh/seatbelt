@@ -4,6 +4,15 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 
 ## [Unreleased]
 
+### Added
+- **An HTML page for each run** ([design](docs/plans/2026-10-09-html-run-report-design.md)). `seatbelt run` writes `<run id>.html` beside each ledger when it closes and signs it, and prints its path. A killed run's ledger gets its page when the next run closes it. Any ledger can be rendered with `seatbelt reconstruct [run] --html`, beside the ledger, or elsewhere with `--out page.html`.
+  - **What it shows:** the run's name, who, the client, start, end and outcome; tokens per model, with the prompt cache beside input; tool calls; policy refusals; errors; and every event, each opening to all that was recorded with it. An event over 64 KiB shows its first 8 KiB and its last 56 KiB, where a request's newest turn is; the ledger holds the rest.
+  - **A view, not evidence.** It says what was checked when it was made (chain, completeness, signature, final hash, the ledger's SHA-256) and the command that checks the ledger again. A ledger that is broken, forged, or unsigned when a key is given gets no page.
+  - **Safe to open.** Every value from the ledger is escaped, and control characters and bidirectional overrides are shown, not obeyed. The page has no script and loads nothing, and a Content-Security-Policy says so. Mode 0600, written whole.
+  - `html = false` in `~/.config/seatbelt/config.toml` turns it off. A page that cannot be written is a warning; the run still ends signed.
+  - `seatbelt erase` removes a person's pages with their ledgers, and counts them in its record (`erasure.pages`). `pack` and the sink leave pages out.
+- New dependency: Jinja2 (`>=3.1.6`, the first release with no known advisory).
+
 ## [0.6.0] - 2026-10-09
 
 ### Added

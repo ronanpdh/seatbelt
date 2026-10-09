@@ -101,6 +101,24 @@ def _tokens(event: Event, name: str) -> int:
     return value if isinstance(value, int) else 0
 
 
+def counted(event: Event) -> bool:
+    """A model response that counts as a call: not an imported marker or claim."""
+    return event.kind is Kind.MODEL_RESPONSE and not event.attrs.get("compliance.provenance")
+
+
+def response_model(event: Event) -> str:
+    return str(event.attrs.get("gen_ai.response.model") or "unknown")
+
+
+def count_response(usage: Usage, event: Event) -> None:
+    """Add one model response to `usage`: a call, and the tokens it reports."""
+    usage.calls += 1
+    usage.input_tokens += _tokens(event, "input_tokens")
+    usage.cache_read_input_tokens += _tokens(event, "cache_read_input_tokens")
+    usage.cache_creation_input_tokens += _tokens(event, "cache_creation_input_tokens")
+    usage.output_tokens += _tokens(event, "output_tokens")
+
+
 def fleet(
     runs: Path | Iterable[Path], pubkey: Path | None = None, people: People | None = None
 ) -> Fleet:
@@ -152,17 +170,13 @@ def fleet(
             if e.kind is Kind.MODEL_REQUEST:
                 requested[e.id] = str(e.attrs.get("gen_ai.request.model"))
             elif e.kind is Kind.MODEL_RESPONSE:
-                if e.attrs.get("compliance.provenance"):
+                if not counted(e):
                     continue  # imported, but not a verified model answer: a marker or claim
-                model = str(e.attrs.get("gen_ai.response.model") or "unknown")
+                model = response_model(e)
                 m = out.by_model.setdefault(model, Usage())
                 models_used.add(model)
                 for u in (who, m):
-                    u.calls += 1
-                    u.input_tokens += _tokens(e, "input_tokens")
-                    u.cache_read_input_tokens += _tokens(e, "cache_read_input_tokens")
-                    u.cache_creation_input_tokens += _tokens(e, "cache_creation_input_tokens")
-                    u.output_tokens += _tokens(e, "output_tokens")
+                    count_response(u, e)
             elif e.kind is Kind.TOOL_CALL:
                 tools[str(e.attrs.get("gen_ai.tool.name"))] += 1
             elif e.kind is Kind.POLICY_CHECK and e.attrs.get("policy.allowed") is False:

@@ -25,7 +25,7 @@ import uvicorn
 from pydantic import ValidationError
 
 from seatbelt.attest.manifest import AttestError
-from seatbelt.attest.sign import KEY_FILE, Signer, keygen
+from seatbelt.attest.sign import KEY_FILE, PUB_FILE, Signer, keygen
 from seatbelt.erase import is_record
 from seatbelt.gateway.app import create_app
 from seatbelt.gateway.config import (
@@ -40,6 +40,7 @@ from seatbelt.gateway.serve import make_sink
 from seatbelt.gateway.sessions import Sessions, close_open_chains
 from seatbelt.ledger.events import Event
 from seatbelt.locks import RUNNING, try_lock
+from seatbelt.report.html import write_page
 
 _log = logging.getLogger(__name__)
 
@@ -137,6 +138,7 @@ class LocalRecorder:
     ledgers: Path
     sessions: Sessions
     written: list[Path] = field(default_factory=list[Path])  # ledgers closed so far
+    pages: list[Path] = field(default_factory=list[Path])  # their HTML pages
 
     def end(self, run: str) -> None:
         self.sessions.end(self.principal, run, key_hash(self.key))
@@ -163,14 +165,16 @@ def local_recorder(
     sink: Mapping[str, object] | None = None,
     upstreams: Mapping[str, str] | None = None,
     env: Mapping[str, str] = os.environ,
+    html: bool = True,
 ) -> Generator[LocalRecorder]:
     """Serve on 127.0.0.1 in a background thread until the block exits, then close and sign
     every ledger this run opened, and ship them when a sink is configured. `run` is the run's
     name, which its lock is known by. `upstreams` replaces the providers' URLs by name (a
-    corporate proxy, say). Raises ValueError for a bad sink or upstream.
+    corporate proxy, say). `html` writes each closed ledger's HTML page beside it. Raises
+    ValueError for a bad sink or upstream.
 
-    Meanwhile, in the background: ledgers dead runs left open are closed and signed, and a
-    sink ships what earlier runs did not."""
+    Meanwhile, in the background: ledgers dead runs left open are closed and signed (and get
+    their pages), and a sink ships what earlier runs did not."""
     signer = local_signer(keys)
     urls = {**UPSTREAMS, **(upstreams or {})}
     try:
@@ -190,6 +194,19 @@ def local_recorder(
     shipper = make_sink(cfg, env)
     if shipper is not None:
         shipper.start()
+    pub = keys / PUB_FILE
+    pages: list[Path] = []
+
+    def page(path: Path) -> Path | None:
+        """A ledger's page. The ledger matters and the page does not: a page that cannot be
+        written is a warning, and `seatbelt reconstruct --html` makes it again."""
+        if not html:
+            return None
+        try:
+            return write_page(path, pub if pub.exists() else None)
+        except Exception as exc:  # any failure: the run still ends signed, and ships
+            _log.warning("no HTML page for %s: %s", path.name, exc)
+            return None
 
     def tidy() -> None:  # reads every open ledger: off the path of the CLI's start
         try:
@@ -201,6 +218,8 @@ def local_recorder(
                 _log.warning(
                     "closed %d ledgers that runs left open when they were killed", len(closed)
                 )
+            for path in closed:
+                page(path)
         if shipper is not None:
             try:
                 shipper.catch_up()  # earlier runs' ledgers a sink missed, and those just closed
@@ -213,6 +232,8 @@ def local_recorder(
         written.append(path)
         if shipper is not None:
             shipper.ship(path)
+        if (written_page := page(path)) is not None:
+            pages.append(written_page)
 
     sessions = Sessions(ledgers, signer, idle=IDLE, on_close=closed)
     server = uvicorn.Server(
@@ -237,7 +258,9 @@ def local_recorder(
                 raise ValueError("the local recorder did not start; see the log above")
             thread.join(0.02)
         port = server.servers[0].sockets[0].getsockname()[1]
-        yield LocalRecorder(f"http://127.0.0.1:{port}", key, principal, ledgers, sessions, written)
+        yield LocalRecorder(
+            f"http://127.0.0.1:{port}", key, principal, ledgers, sessions, written, pages
+        )
     finally:
         server.should_exit = True
         thread.join(30)
