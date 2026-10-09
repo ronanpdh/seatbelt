@@ -2,17 +2,18 @@
 
 **Goal:** every run seatbelt records gets one HTML file beside its ledger, written automatically when the ledger is closed and signed. A person can open it in a browser, keep it, or send it on. Any ledger can also be rendered on demand.
 
-**Status:** a design for review. Facts come from the repository and the sources in the source map, read 2026-10-09. Everything under "Design (ours)" and "Rejected (ours)" is our decision.
+**Status:** a design for review. Facts come from the repository and the sources in the source map, read 2026-10-09. A second reader checked every claim against its source the same day and corrected three. Everything under "Design (ours)" and "Rejected (ours)" is our decision.
 
 ## What exists
 
-- `seatbelt reconstruct` prints a run as a terminal table: sequence number, time, kind, actor, a one-line summary cut to 80 characters, and the first 10 characters of each event's hash. It refuses a ledger whose chain is broken or whose signature is forged.
+- `seatbelt reconstruct` prints a run as a terminal table: sequence number, time, kind, actor, a one-line summary cut to 80 characters, and the first 10 characters of each event's hash. It refuses a ledger whose chain is broken or whose signature is forged, and, when a key is given, one that is unsigned.
 - `seatbelt report` sums usage by person, model and tool, and lists failed, incomplete, unattested, forged, unsigned, broken and missing runs. It counts only ledgers whose chain verifies.
 - Every string from a ledger goes through `printable` before it is shown. `printable` makes control characters visible, including the bidirectional overrides that can reorder what a reader sees.
 - The local recorder is given a callback that runs each time it closes and signs a ledger. Today that callback collects the ledger's path and hands it to the sink.
+- A ledger a killed run left open is closed and signed later, by the next run's start-up tidy. That path does not call the callback; the sink finds such ledgers by scanning the folder.
 - A ledger file is created with mode 0600.
 - What reads the runs folder:
-  - `pack` collects `*.jsonl` files only;
+  - `pack` collects ledgers, their signatures and `findings.json`, and no other file;
   - `erase` removes a person's ledger, its signature and its ship mark;
   - the sink uploads a ledger and its signature only.
 - `STANDARDS.md` names Jinja2 for report templates. Jinja2 is not a dependency yet: it is in neither `pyproject.toml` nor `uv.lock`.
@@ -22,6 +23,7 @@
 
 1. **One file per run, beside its ledger.** The file is `<run id>.html` in the runs folder.
    - It is written when the ledger is closed and signed, from the same callback the sink uses. This covers `seatbelt run` and the desktop recorder ([desktop design](2026-10-09-desktop-recorder-design.md)).
+   - The start-up tidy also writes a page for each killed run's ledger it closes and signs, so those runs get one too.
    - `html = false` in `~/.config/seatbelt/config.toml` turns it off.
    - The org gateway does not write pages in this version.
 2. **On demand.** `seatbelt reconstruct [run] --html [path]` writes the page for any ledger and prints where.
@@ -52,7 +54,7 @@
      - sequence number;
      - local time with its UTC offset;
      - kind and actor;
-     - the one-line summary `reconstruct` prints.
+     - the one-line summary `reconstruct` prints, cut at 80 characters as there.
 
      Each row expands, with `<details>`, to show the event's full attributes as formatted JSON, its id, parent id, hash and previous hash.
    - **Large content:** each event's expanded JSON is cut at 64 KiB. The page says how much was left out and that the ledger holds all of it.
@@ -73,7 +75,7 @@
 8. **Code.**
    - `seatbelt/report/html.py` holds `render(ledger, pubkey) -> str` and `write(ledger, pubkey, out) -> Path`.
    - The template is `seatbelt/report/templates/run.html.j2`, shipped in the wheel.
-   - The one-line summary comes from the function `reconstruct` uses (`timeline._describe`, made public), so the terminal and the page say the same thing.
+   - The row's one-line summary comes from the function `reconstruct` uses (`timeline._summary`, made public), so the terminal and the page say the same thing. `_summary` is `_describe` passed through `printable`, with whitespace collapsed and cut at 80 characters.
    - The sums come from `fleet`'s `Usage`, through a function that sums one ledger's events, so the page and `seatbelt report` count the same way.
    - New dependency: Jinja2, and MarkupSafe with it. The floor follows the dependency-floors rule: the lowest release the tests pass with, and no release from the floor up with a known advisory.
 9. **A page that fails does not fail the run.** If a page cannot be written (disk full, a template error), seatbelt logs a warning and the run still ends signed. `seatbelt reconstruct <run> --html` makes it again.
@@ -96,6 +98,7 @@
 - The page's mode is 0600, and an interrupted write leaves no partial file.
 - `erase` removes the page; `pack` and the sink leave it out.
 - A run whose page fails to render still ends signed.
+- A killed run's ledger, closed by the next run's start-up tidy, gets a page.
 
 ## Not done
 
@@ -109,16 +112,18 @@
 | Section | Claim | Source |
 |---|---|---|
 | What exists | `reconstruct` prints seq, time, kind, actor, an 80-character summary and a 10-character hash | `src/seatbelt/report/timeline.py` (`_summary`, `timeline`) |
-| What exists | `reconstruct` refuses a broken chain or a forged signature | `src/seatbelt/cli.py` (`_check`, `reconstruct`) |
+| What exists | `reconstruct` refuses a broken chain, a forged signature, or with a key an unsigned ledger | `src/seatbelt/cli.py` (`_check`, `reconstruct`) |
 | What exists | `report` sums by person, model and tool, lists failed, incomplete, unattested, forged, unsigned, broken, missing; counts only verifying chains | `src/seatbelt/report/fleet.py` (module docstring, `Fleet`, `fleet`) |
 | What exists | `printable` makes control characters and bidirectional overrides visible | `src/seatbelt/terminal.py` (`_CODES`, `printable`) |
 | What exists | the local recorder's close callback collects paths and ships them | `src/seatbelt/gateway/local.py` (`closed`), `src/seatbelt/gateway/sessions.py` (`_close`, `on_close`) |
 | What exists | ledgers are created with mode 0600 | `src/seatbelt/ledger/store.py` (`self.path.touch(mode=0o600)`) |
-| What exists | `pack` collects `*.jsonl` only | `src/seatbelt/report/pack.py` (`runs_dir.glob("*.jsonl")`) |
+| What exists | `pack` collects ledgers, their signatures and `findings.json` only | `src/seatbelt/report/pack.py` (`runs_dir.glob("*.jsonl")`, the sidecar for each, `findings.json`) |
+| What exists | the start-up tidy closes killed runs' ledgers without the close callback; the sink catches up by scanning | `src/seatbelt/gateway/sessions.py` (`close_open_chains`); `src/seatbelt/gateway/local.py` (`tidy`); `src/seatbelt/gateway/sink.py` (`catch_up`) |
 | What exists | `erase` removes ledger, signature and ship mark | `src/seatbelt/erase.py` (`t.ledger.unlink`, `t.sidecar.unlink`, `t.mark.unlink`) |
 | What exists | the sink uploads a ledger and its signature only | `src/seatbelt/gateway/sink.py` (`_upload`) |
 | What exists | `STANDARDS.md` names Jinja2 for report templates; not in `pyproject.toml` or `uv.lock` | `STANDARDS.md` (Tooling table); `pyproject.toml`; `uv.lock` (no `jinja2` entry) |
 | What exists | BUILD.md: HTML or PDF report planned, not built; ADR 0004: "a later layer over the same pack" | `docs/BUILD.md` ("Planned, not built"); `docs/adr/0004-evidence-pack.md` (Rejected) |
+| Design 4, 8 | `_summary` is `_describe` through `printable`, whitespace collapsed, cut at 80 | `src/seatbelt/report/timeline.py` (`_summary`) |
 | Design 7 | `report`, `runs`, `verify` read `*.jsonl` | `src/seatbelt/report/fleet.py` (`d.glob("*.jsonl")`), `src/seatbelt/cli.py` (`runs`, `_resolve`) |
 | Design 5 | Jinja2 autoescaping is off in a plain `Environment`; `autoescape=True` turns it on | https://jinja.palletsprojects.com/en/stable/api/, read 2026-10-09: "autoescaping is not yet enabled by default"; "autoescape: If set to True the XML/HTML autoescaping feature is enabled by default." |
 | Design 5 | `select_autoescape` chooses by file extension, default off | same page: signature `select_autoescape(enabled_extensions=('html','htm','xml'), disabled_extensions=(), default_for_string=True, default=False)`; "If nothing matches then the initial value of autoescaping is set to the value of default." |
