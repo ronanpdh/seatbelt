@@ -34,6 +34,8 @@ export class TermPane {
     private readonly cli: Cli,
     private readonly folder: string,
     private readonly onExit: (code: number | null, report: Report | null) => void,
+    /** The conversation to continue in the CLI's own interface, by its own id. */
+    private readonly resume: string | null = null,
   ) {
     this.term = new Terminal({
       cursorBlink: true,
@@ -79,6 +81,7 @@ export class TermPane {
         cwd: this.folder,
         cols: this.term.cols,
         rows: this.term.rows,
+        resume: this.resume,
         events,
       });
     } catch (e) {

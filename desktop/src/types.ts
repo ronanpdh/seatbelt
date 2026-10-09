@@ -28,6 +28,8 @@ export type ChatEvent =
   | { kind: "resolved"; id: string }
   | { kind: "turn_end"; ok: boolean; error: string | null }
   | { kind: "sign_in"; reason: string }
+  | { kind: "conversation"; id: string }
+  | { kind: "resumed"; ok: boolean }
   | { kind: "log"; text: string }
   | { kind: "exit"; code: number | null; report: Report | null };
 

@@ -31,9 +31,22 @@ pub struct Claude {
     interrupted: bool,
     /// Sign-in failure seen this turn: said once, and the turn is interrupted, not retried.
     signin_said: bool,
+    /// The conversation to resume, and the one this session is in, by Claude Code's own id.
+    resume: Option<String>,
+    conversation: Option<String>,
+    /// A message has been sent: a result before one is Claude Code refusing to resume.
+    sent: bool,
 }
 
 impl Claude {
+    /// A session that resumes conversation `resume` (already checked as a plain id), if any.
+    pub fn resuming(resume: Option<&str>) -> Self {
+        Self {
+            resume: resume.map(str::to_string),
+            ..Self::default()
+        }
+    }
+
     fn next_message(&mut self) -> String {
         self.messages += 1;
         self.streamed = false;
@@ -121,7 +134,13 @@ impl Driver for Claude {
             "stdio",
         ]
         .map(String::from)
-        .to_vec()
+        .into_iter()
+        .chain(
+            self.resume
+                .iter()
+                .flat_map(|id| ["--resume".to_string(), id.clone()]),
+        )
+        .collect()
     }
 
     fn start(&mut self, _cwd: &str) -> Step {
@@ -253,6 +272,13 @@ impl Driver for Claude {
                 }
             }
             "control_request" => self.control(&line, &mut step),
+            "system" if str_of(&line, "subtype") == "init" => {
+                let id = str_of(&line, "session_id");
+                if !id.is_empty() && self.conversation.as_deref() != Some(id) {
+                    self.conversation = Some(id.to_string());
+                    step.show(ChatEvent::Conversation { id: id.to_string() });
+                }
+            }
             "system" => {
                 let auth = str_of(&line, "error") == "authentication_failed"
                     || line.get("error_status").and_then(Value::as_u64) == Some(401);
@@ -264,6 +290,11 @@ impl Driver for Claude {
                     let stop = self.interrupt_line();
                     step.send(stop);
                 }
+            }
+            "result" if !self.sent && self.resume.is_some() => {
+                // "No conversation found": the process ends; the window starts a new one
+                self.resume = None;
+                step.show(ChatEvent::Resumed { ok: false });
             }
             "result" => {
                 let failed = line.get("is_error").and_then(Value::as_bool) == Some(true)
@@ -294,6 +325,7 @@ impl Driver for Claude {
 
     fn send(&mut self, text: &str) -> Result<Step, String> {
         let mut step = Step::default();
+        self.sent = true;
         step.send(json!({
             "type": "user",
             "message": {"role": "user", "content": text},
@@ -616,6 +648,28 @@ mod tests {
                 id: "claude-1".into(),
                 text: "Hi".into()
             }]
+        );
+    }
+
+    #[test]
+    fn a_conversation_is_resumed_by_its_id_and_a_refusal_is_said_once() {
+        let mut c = Claude::resuming(Some("s-1"));
+        assert_eq!(c.args()[c.args().len() - 2..], ["--resume", "s-1"]);
+        assert!(!Claude::default().args().contains(&"--resume".to_string()));
+        let gone = c.read(line(r#"{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"s-1"}"#));
+        assert_eq!(gone.events, vec![ChatEvent::Resumed { ok: false }]);
+        let mut c = Claude::resuming(Some("s-1"));
+        c.send("hi").unwrap();
+        let init = feed(
+            &mut c,
+            vec![
+                line(r#"{"type":"system","subtype":"init","session_id":"s-1"}"#),
+                line(r#"{"type":"system","subtype":"init","session_id":"s-1"}"#),
+            ],
+        );
+        assert_eq!(
+            init.events,
+            vec![ChatEvent::Conversation { id: "s-1".into() }]
         );
     }
 

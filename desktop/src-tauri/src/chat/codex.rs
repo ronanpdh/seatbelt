@@ -31,9 +31,23 @@ pub struct Codex {
     changes: HashMap<String, String>,
     /// Reasoning items whose summary has streamed: their whole text is not sent again.
     reasoned: std::collections::HashSet<String>,
+    /// The thread to resume, by Codex's own id (already checked as a plain id).
+    resume: Option<String>,
 }
 
 impl Codex {
+    pub fn resuming(resume: Option<&str>) -> Self {
+        Self {
+            resume: resume.map(str::to_string),
+            ..Self::default()
+        }
+    }
+
+    fn thread_start(&mut self) -> Value {
+        let cwd = self.cwd.clone();
+        self.request("thread/start", json!({"cwd": cwd}))
+    }
+
     fn request(&mut self, method: &'static str, params: Value) -> Value {
         self.next_id += 1;
         self.pending.insert(self.next_id, method);
@@ -58,6 +72,16 @@ impl Codex {
         if let Some(error) = line.get("error") {
             let message = cut(str_of(error, "message"), 2000);
             match method {
+                "thread/resume" => {
+                    // the thread could not be continued: a new one, and the window is told
+                    self.resume = None;
+                    step.show(ChatEvent::Log {
+                        text: format!("could not continue the conversation: {message}"),
+                    });
+                    step.show(ChatEvent::Resumed { ok: false });
+                    let start = self.thread_start();
+                    step.send(start);
+                }
                 "turn/start" | "thread/start" => {
                     if about_sign_in(&message) {
                         step.show(ChatEvent::SignIn {
@@ -91,19 +115,29 @@ impl Codex {
                     step.show(ChatEvent::SignIn {
                         reason: "Codex is not signed in.".into(),
                     });
-                } else {
+                } else if let Some(thread) = self.resume.clone() {
                     let cwd = self.cwd.clone();
-                    let start = self.request("thread/start", json!({"cwd": cwd}));
+                    let resume = self.request(
+                        "thread/resume",
+                        json!({"threadId": thread, "cwd": cwd, "excludeTurns": true}),
+                    );
+                    step.send(resume);
+                } else {
+                    let start = self.thread_start();
                     step.send(start);
                 }
             }
-            "thread/start" => {
+            "thread/start" | "thread/resume" => {
                 let thread = result.pointer("/thread/id").and_then(Value::as_str);
                 if let Some(thread) = thread.map(str::to_string) {
                     for text in std::mem::take(&mut self.queued) {
                         let line = self.turn_start(&thread, &text);
                         step.send(line);
                     }
+                    if method == "thread/resume" {
+                        step.show(ChatEvent::Resumed { ok: true });
+                    }
+                    step.show(ChatEvent::Conversation { id: thread.clone() });
                     self.thread = Some(thread);
                 }
             }
@@ -470,8 +504,52 @@ mod tests {
                 json!({"id": 3, "method": "thread/start", "params": {"cwd": "/work"}}),
             ]
         );
-        assert!(step.events.is_empty());
+        assert_eq!(
+            step.events,
+            vec![ChatEvent::Conversation { id: "th-1".into() }]
+        );
         assert_eq!(c.thread.as_deref(), Some("th-1"));
+    }
+
+    #[test]
+    fn a_thread_is_resumed_by_its_id_or_a_new_one_starts() {
+        let mut c = Codex::resuming(Some("th-7"));
+        let mut all = c.start("/work");
+        for l in [
+            r#"{"id":1,"result":{}}"#,
+            r#"{"id":2,"result":{"account":null,"requiresOpenaiAuth":false}}"#,
+            r#"{"id":3,"result":{"thread":{"id":"th-7"}}}"#,
+        ] {
+            let step = c.read(line(l));
+            all.events.extend(step.events);
+            all.write.extend(step.write);
+        }
+        assert_eq!(
+            all.write[3],
+            json!({"id": 3, "method": "thread/resume",
+                "params": {"threadId": "th-7", "cwd": "/work", "excludeTurns": true}})
+        );
+        assert_eq!(
+            all.events,
+            vec![
+                ChatEvent::Resumed { ok: true },
+                ChatEvent::Conversation { id: "th-7".into() }
+            ]
+        );
+        let mut gone = Codex::resuming(Some("th-gone"));
+        gone.start("/w");
+        gone.read(line(r#"{"id":1,"result":{}}"#));
+        gone.read(line(
+            r#"{"id":2,"result":{"account":null,"requiresOpenaiAuth":false}}"#,
+        ));
+        let step = gone.read(line(
+            r#"{"id":3,"error":{"code":-32600,"message":"no rollout found"}}"#,
+        ));
+        assert!(step.events.contains(&ChatEvent::Resumed { ok: false }));
+        assert_eq!(
+            step.write,
+            vec![json!({"id": 4, "method": "thread/start", "params": {"cwd": "/w"}})]
+        );
     }
 
     #[test]

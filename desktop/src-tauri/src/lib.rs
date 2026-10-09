@@ -161,6 +161,7 @@ async fn pick_folder(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // a command's arguments are what the web view names
 fn open_tab(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -168,9 +169,18 @@ fn open_tab(
     cwd: String,
     cols: u16,
     rows: u16,
+    resume: Option<String>,
     events: Channel<TabEvent>,
 ) -> Result<u32, String> {
     let start = prepare(&app, &state, &cli, cwd)?;
+    // the CLI's own interface, continuing the chat's conversation when there is one
+    let args = match resume.as_deref() {
+        Some(id) => chat::protocol::resume_args(
+            &cli,
+            chat::protocol::conversation_id(id).ok_or("not a conversation id")?,
+        ),
+        None => Vec::new(),
+    };
     let launch = Launch {
         seatbelt: &start.seatbelt,
         cli: &cli,
@@ -180,6 +190,7 @@ fn open_tab(
         report: start.report,
         cols,
         rows,
+        args,
     };
     state.tabs.open(launch, events)
 }
@@ -191,6 +202,7 @@ fn open_chat(
     state: State<'_, AppState>,
     cli: String,
     cwd: String,
+    resume: Option<String>,
     events: Channel<ChatEvent>,
 ) -> Result<u32, String> {
     let start = prepare(&app, &state, &cli, cwd)?;
@@ -201,6 +213,7 @@ fn open_chat(
         cwd: &start.cwd,
         search_path: &start.search_path,
         report: start.report,
+        resume: resume.as_deref(),
     };
     state.chats.open(launch, events)
 }

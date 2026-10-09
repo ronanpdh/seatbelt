@@ -115,7 +115,6 @@ code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberat
   background: var(--panel);
   color: var(--ink);
   font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
-  text-overflow: ellipsis;
 }
 .folder-field input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .error { color: var(--bad); margin: 0 0 4px; overflow-wrap: anywhere; }
@@ -330,6 +329,10 @@ details.thinking.live summary { animation: pulse 1.6s infinite ease-in-out; }
 .line { font-size: 12px; margin-top: 10px; }
 .line.error { color: var(--bad); white-space: pre-wrap; overflow-wrap: anywhere; }
 .line.note { color: var(--muted); text-align: center; }
+.divider {
+  display: flex; align-items: center; gap: 10px; margin-top: 18px; color: var(--muted); font-size: 12px;
+}
+.divider::before, .divider::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
 
 .log { border-top: 1px solid var(--line); background: var(--panel); padding: 4px 14px; font-size: 12px; }
 .log summary { cursor: pointer; color: var(--muted); }

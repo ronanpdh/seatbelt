@@ -23,6 +23,10 @@ export type ChatHooks = {
   /** Something the sidebar shows changed. */
   changed: (state: "starting" | "running" | "ended", note: string) => void;
   ended: (report: Report | null) => void;
+  /** The CLI's own id for the conversation, to continue it later; null: a new one began. */
+  conversation: (id: string | null) => void;
+  /** The CLI would not continue the conversation and has ended: start a new one. */
+  startOver: () => void;
 };
 
 /** One reply: the agent's part of a turn. */
@@ -58,6 +62,13 @@ export class ChatPane {
   private readonly pendingRender = new Set<string>();
   private signInShown = false;
   private ticker: number | null = null;
+  /** This process was asked to continue a conversation, and the CLI refused. */
+  private refused = false;
+  private sentAny = false;
+  /** Each start is a new process whose ids begin again: what it shows is kept apart. */
+  private generation = 0;
+  private exited: Promise<void> = Promise.resolve();
+  private markExited: () => void = () => undefined;
 
   constructor(
     readonly box: HTMLElement,
@@ -105,12 +116,24 @@ export class ChatPane {
     box.append(this.feed, this.logBox, composer);
   }
 
-  async start(folder: string): Promise<void> {
+  /** Start the CLI's session: a new conversation, or `resume`, by the CLI's own id. What is
+   * already in the window stays; `divider`, if given, marks where this part begins. */
+  async start(folder: string, resume: string | null = null, divider = ""): Promise<void> {
+    this.id = null;
+    this.generation += 1;
+    this.ended = false;
+    this.busy = false;
+    this.refused = false;
+    this.sentAny = false;
+    this.signInShown = false;
+    this.exited = new Promise((done) => (this.markExited = done));
+    if (divider) this.feed.append(el("div", "divider", divider));
     const events = new Channel<ChatEvent>();
     events.onmessage = (event) => this.handle(event);
     this.hooks.changed("starting", "starting");
+    this.update();
     try {
-      this.id = await invoke<number>("open_chat", { cli: this.cli.name, cwd: folder, events });
+      this.id = await invoke<number>("open_chat", { cli: this.cli.name, cwd: folder, resume, events });
       if (!this.ended) this.hooks.changed("running", "recording");
     } catch (e) {
       this.note(plain(e), "error");
@@ -132,6 +155,17 @@ export class ChatPane {
     if (this.running) await invoke("close_chat", { id: this.id }).catch(() => undefined);
   }
 
+  /** End the chat and wait until it has, or `ms` has passed. */
+  async closeAndWait(ms: number): Promise<void> {
+    if (!this.running) return;
+    await this.close();
+    await Promise.race([this.exited, new Promise((r) => setTimeout(r, ms))]);
+  }
+
+  set hidden(hidden: boolean) {
+    this.box.hidden = hidden;
+  }
+
   dispose(): void {
     this.stopTicker();
     this.box.remove();
@@ -144,6 +178,7 @@ export class ChatPane {
     if (!text || !this.running) return;
     this.input.value = "";
     this.grow();
+    this.sentAny = true;
     this.closeReply();
     const turn = el("div", "turn-user");
     turn.append(el("div", "msg-user", text));
@@ -275,24 +310,25 @@ export class ChatPane {
 
   private handle(event: ChatEvent): void {
     const stick = this.nearBottom();
+    const key = (id: string) => `${this.generation}:${id}`;
     switch (event.kind) {
       case "text":
-        this.write(event.id, event.delta, false, false);
+        this.write(key(event.id), event.delta, false, false);
         break;
       case "message":
-        this.write(event.id, event.text, true, false);
+        this.write(key(event.id), event.text, true, false);
         break;
       case "thinking":
-        this.write(event.id, event.delta, false, true);
+        this.write(key(event.id), event.delta, false, true);
         break;
       case "tool":
-        this.step(event.id, event.name, event.detail, event.status);
+        this.step(key(event.id), event.name, event.detail, event.status);
         break;
       case "tool_input":
-        this.stepPart(event.id, "Input", event.input);
+        this.stepPart(key(event.id), "Input", event.input);
         break;
       case "tool_output":
-        this.stepPart(event.id, "Output", event.output || "(no output)");
+        this.stepPart(key(event.id), "Output", event.output || "(no output)");
         break;
       case "approval":
         this.approval(event.id, event.tool, event.detail);
@@ -312,6 +348,16 @@ export class ChatPane {
         break;
       case "sign_in":
         this.signInCard(event.reason);
+        break;
+      case "conversation":
+        this.hooks.conversation(event.id);
+        break;
+      case "resumed":
+        if (!event.ok) {
+          this.refused = true;
+          this.note(`${this.cli.label} could not continue the conversation, so this is a new one.`, "note");
+          this.hooks.conversation(null);
+        }
         break;
       case "log":
         this.logLine(event.text);
@@ -457,6 +503,12 @@ export class ChatPane {
   private finish(report: Report | null): void {
     if (this.ended) return;
     this.ended = true;
+    this.markExited();
+    if (this.refused && !this.sentAny && report?.recorded !== true) {
+      // Claude Code ends when it cannot resume: start again, on a new conversation
+      this.hooks.startOver();
+      return;
+    }
     this.approvals.forEach((card) =>
       card.querySelector(".approval-buttons")?.replaceChildren(el("span", "muted", "Session ended")),
     );
@@ -465,7 +517,7 @@ export class ChatPane {
     this.closeReply();
     this.busy = false;
     const note = report?.recorded ? `recorded ${report.run}` : report ? "nothing recorded" : "ended";
-    this.note(`Session ended: ${note}.`, "note");
+    this.note(`Chat closed: ${note}.`, "note");
     this.hooks.changed("ended", note);
     this.hooks.ended(report);
     this.update();

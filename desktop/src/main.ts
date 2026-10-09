@@ -30,6 +30,8 @@ type Session = {
   closing: boolean;
   /** The terminal is open to sign in, rather than because it was asked for. */
   signingIn: boolean;
+  /** The CLI's own id for the conversation, which the chat and the terminal both continue. */
+  conversation: string | null;
 };
 type View =
   | { kind: "session"; session: Session }
@@ -140,7 +142,7 @@ function remembered(): string | null {
 /** A long path shows its end, the folder's own name, rather than its start. */
 function showEnd(input: HTMLInputElement): void {
   requestAnimationFrame(() => {
-    if (document.activeElement !== input) input.scrollLeft = input.scrollWidth;
+    if (document.activeElement !== input) input.scrollLeft = Math.max(0, input.scrollWidth - input.clientWidth);
   });
 }
 
@@ -221,6 +223,7 @@ async function newSession(cli: Cli): Promise<void> {
     note: "starting",
     closing: false,
     signingIn: false,
+    conversation: null,
   };
   sessions.push(s);
   byId("tabs").append(s.item);
@@ -236,46 +239,67 @@ function setState(s: Session, state: State, note: string): void {
   renderHead(s);
 }
 
-async function startChat(s: Session): Promise<void> {
+/** The session's chat: made once, and kept, with all it shows, for the session's life. Each
+ * start is a new `seatbelt run` (a new run); `resume` continues the conversation in it. */
+async function startChat(s: Session, resume: string | null = null, divider = ""): Promise<void> {
   s.closing = false;
-  s.term?.dispose();
-  s.term = null;
-  s.chat?.dispose();
-  const box = el("div", "chat-box");
-  s.body.replaceChildren(box);
-  const chat = new ChatPane(box, s.cli, {
-    signIn: () => void openTerminal(s, true),
-    changed: (state, note) => {
-      if (s.chat === chat) setState(s, state, note);
-    },
-    ended: () => refreshRecords(),
-  });
-  s.chat = chat;
-  await chat.start(s.folder);
-  if (isShown(s)) chat.focus();
+  if (!s.chat) {
+    const box = el("div", "chat-box");
+    s.body.append(box);
+    const chat = new ChatPane(box, s.cli, {
+      signIn: () => void openTerminal(s, true),
+      changed: (state, note) => {
+        if (!s.term) setState(s, state, note); // while the terminal is open, it speaks for the session
+      },
+      ended: () => refreshRecords(),
+      conversation: (id) => {
+        s.conversation = id;
+      },
+      startOver: () => void startChat(s, null),
+    });
+    s.chat = chat;
+  }
+  s.chat.hidden = false;
+  await s.chat.start(s.folder, resume, divider);
+  if (isShown(s)) s.chat.focus();
 }
 
 /** The CLI's own interface, through `seatbelt run` in a terminal: to sign in, or because it
  * was asked for. The chat ends first, and starts again (a new run) when the terminal ends. */
 async function openTerminal(s: Session, signIn: boolean): Promise<void> {
   const chat = s.chat;
-  s.chat = null;
-  if (chat?.running) await chat.close();
-  chat?.dispose();
-  const box = el("div", "term");
-  s.body.replaceChildren(box);
   s.signingIn = signIn;
-  const term = new TermPane(box, s.cli, s.folder, (_code, report) => {
-    if (s.term !== term) return;
-    refreshRecords();
-    if (s.closing) {
-      setState(s, "ended", report?.recorded ? `recorded ${report.run}` : "ended");
-    } else {
-      void startChat(s);
-    }
-  });
+  // the chat's process ends first: the terminal continues the same conversation, and two
+  // processes must not write to it at once. The chat, and all it shows, stays.
+  const box = el("div", "term");
+  const term = new TermPane(
+    box,
+    s.cli,
+    s.folder,
+    (_code, report) => {
+      if (s.term !== term) return;
+      refreshRecords();
+      term.dispose();
+      s.term = null;
+      if (s.closing) {
+        if (s.chat) s.chat.hidden = false;
+        setState(s, "ended", report?.recorded ? `recorded ${report.run}` : "ended");
+      } else {
+        const note = s.conversation
+          ? `Back from ${s.cli.label}'s own interface: the conversation continues.`
+          : `Back from ${s.cli.label}'s own interface.`;
+        void startChat(s, s.conversation, note);
+      }
+    },
+    s.conversation,
+  );
   s.term = term;
   setState(s, "running", signIn ? "signing in" : "terminal");
+  if (chat) {
+    await chat.closeAndWait(8000);
+    chat.hidden = true;
+  }
+  s.body.append(box);
   await term.start();
   if (isShown(s)) term.focus();
 }
@@ -315,13 +339,20 @@ function renderHead(s: Session): void {
       button("Back to chat", "ghost", () => void s.term?.close(), "End the terminal session and go back to the chat"),
     );
   }
-  if (s.chat && s.state !== "ended") {
+  if (s.chat && !s.term && s.state !== "ended") {
     actions.append(
       button("Open in terminal", "ghost", () => void openTerminal(s, false), `${s.cli.label}'s own interface: to sign in, for example`),
     );
   }
   if (s.state === "ended") {
-    actions.append(button("New chat", "ghost", () => void startChat(s), "Start again in this folder, as a new run"));
+    if (s.conversation) {
+      actions.append(
+        button("Continue", "ghost", () => void startChat(s, s.conversation, "The conversation continues."), "Continue this conversation, as a new run"),
+      );
+    }
+    actions.append(
+      button("New chat", "ghost", () => void startChat(s, null, "A new conversation."), "Start a new conversation in this folder, as a new run"),
+    );
   } else {
     actions.append(button("End", "ghost danger", () => void endSession(s), "End the session; its run is closed and signed"));
   }
@@ -367,8 +398,8 @@ function show(next: View): void {
   byId("nav-runs").classList.toggle("active", next.kind === "runs" || next.kind === "run");
   byId("nav-usage").classList.toggle("active", next.kind === "usage");
   if (next.kind === "session") {
-    next.session.term?.focus();
-    next.session.chat?.focus();
+    if (next.session.term) next.session.term.focus();
+    else next.session.chat?.focus();
   } else if (next.kind === "runs") {
     void showRuns(records, (run) => show({ kind: "run", run }));
   } else if (next.kind === "run") {

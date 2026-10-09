@@ -31,11 +31,12 @@ const EOF_WAIT: Duration = Duration::from_secs(3);
 /// The longest line a CLI may print: anything longer is dropped, not buffered without end.
 const MAX_LINE: usize = 32 * 1024 * 1024;
 
-fn driver(cli: &str) -> Option<Box<dyn Driver>> {
+/// The driver for `cli`, resuming conversation `resume` (a plain id: see `conversation_id`).
+fn driver(cli: &str, resume: Option<&str>) -> Option<Box<dyn Driver>> {
     match cli {
-        "claude" => Some(Box::<claude::Claude>::default()),
-        "codex" => Some(Box::<codex::Codex>::default()),
-        "gemini" => Some(Box::<acp::Acp>::default()),
+        "claude" => Some(Box::new(claude::Claude::resuming(resume))),
+        "codex" => Some(Box::new(codex::Codex::resuming(resume))),
+        "gemini" => Some(Box::new(acp::Acp::resuming(resume))),
         _ => None,
     }
 }
@@ -48,6 +49,8 @@ pub struct Launch<'a> {
     pub cwd: &'a Path,
     pub search_path: &'a OsStr,
     pub report: PathBuf,
+    /// The conversation to continue, by the CLI's own id, checked by `conversation_id`.
+    pub resume: Option<&'a str>,
 }
 
 struct Session {
@@ -97,7 +100,11 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 impl Chats {
     /// Start a chat. Its events, and its end, arrive on `events`.
     pub fn open(&self, launch: Launch<'_>, events: Channel<ChatEvent>) -> Result<u32, String> {
-        let mut driver = driver(launch.cli).ok_or("no chat for that CLI")?;
+        let resume = match launch.resume {
+            Some(id) => Some(protocol::conversation_id(id).ok_or("not a conversation id")?),
+            None => None,
+        };
+        let mut driver = driver(launch.cli, resume).ok_or("no chat for that CLI")?;
         let mut child = Command::new(launch.seatbelt)
             .arg("run")
             .arg("--exe")
@@ -408,6 +415,7 @@ printf '{{"run": "claude-1", "recorded": true}}' > "$SEATBELT_RUN_REPORT"
                     cwd: dir,
                     search_path: OsStr::new("/usr/bin:/bin"),
                     report: dir.join("report.json"),
+                    resume: None,
                 },
                 events,
             )

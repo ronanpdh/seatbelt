@@ -42,6 +42,11 @@ pub enum ChatEvent {
     TurnEnd { ok: bool, error: Option<String> },
     /// The CLI is not signed in; the window offers its own sign-in, in a terminal.
     SignIn { reason: String },
+    /// The CLI's own id for this conversation: a later chat, or the CLI's own interface in a
+    /// terminal, resumes it.
+    Conversation { id: String },
+    /// Whether the conversation asked for was continued; if not, this is a new one.
+    Resumed { ok: bool },
     /// A line for the session's log, not the conversation.
     Log { text: String },
     /// The session has ended. `report` is what `seatbelt run` recorded.
@@ -123,6 +128,27 @@ pub fn summary(input: &Value) -> String {
             other => other.to_string(),
         });
     cut(&text, 2000)
+}
+
+/// A conversation id the app passes back to a CLI to resume it: letters, digits, `-` and `_`,
+/// starting with a letter or digit, at most 128 characters. Anything else is refused, so it
+/// can never be read as an option or as anything but an id.
+pub fn conversation_id(id: &str) -> Option<&str> {
+    let ok = !id.is_empty()
+        && id.len() <= 128
+        && id.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    ok.then_some(id)
+}
+
+/// The arguments that resume conversation `id` in the CLI's own interface.
+pub fn resume_args(cli: &str, id: &str) -> Vec<String> {
+    match cli {
+        "codex" => vec!["resume".into(), id.into()],
+        _ => vec!["--resume".into(), id.into()], // Claude Code and Gemini CLI
+    }
 }
 
 /// The most of one tool's input or output the window is sent; the ledger keeps all of it.
@@ -228,6 +254,30 @@ mod tests {
             shown(&json!("x".repeat(MAX_TOOL_TEXT + 5))).chars().count(),
             MAX_TOOL_TEXT + 1
         );
+    }
+
+    #[test]
+    fn only_plain_ids_are_passed_back_to_a_cli() {
+        assert_eq!(
+            conversation_id("57bedf4b-f1bf-464f-b5ae-fe4eb596e580"),
+            Some("57bedf4b-f1bf-464f-b5ae-fe4eb596e580")
+        );
+        assert_eq!(conversation_id("thread_1"), Some("thread_1"));
+        for bad in [
+            "",
+            "--dangerously-skip-permissions",
+            "-x",
+            "a b",
+            "a;b",
+            "a/b",
+            "ü",
+        ] {
+            assert_eq!(conversation_id(bad), None, "{bad}");
+        }
+        assert_eq!(conversation_id(&"a".repeat(129)), None);
+        assert_eq!(resume_args("codex", "t1"), ["resume", "t1"]);
+        assert_eq!(resume_args("claude", "s1"), ["--resume", "s1"]);
+        assert_eq!(resume_args("gemini", "g1"), ["--resume", "g1"]);
     }
 
     #[test]

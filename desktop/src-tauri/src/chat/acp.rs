@@ -35,6 +35,10 @@ pub struct Acp {
     /// Tool calls the user rejected, which the agent then reports as failed.
     declined: HashSet<String>,
     failed: bool,
+    /// The session to load, by its ACP id (already checked as a plain id); while it loads,
+    /// the agent replays its history, which the window already shows.
+    resume: Option<String>,
+    loading: bool,
 }
 
 /// What the chat calls a tool of an ACP kind.
@@ -89,6 +93,30 @@ fn tool_content(content: Option<&Value>) -> String {
 }
 
 impl Acp {
+    pub fn resuming(resume: Option<&str>) -> Self {
+        Self {
+            resume: resume.map(str::to_string),
+            ..Self::default()
+        }
+    }
+
+    fn session_new(&mut self) -> Value {
+        let cwd = self.cwd.clone();
+        self.request("session/new", json!({"cwd": cwd, "mcpServers": []}))
+    }
+
+    /// The session is ready: what was sent before it was goes now.
+    fn ready(&mut self, session: String, step: &mut Step) {
+        for text in std::mem::take(&mut self.queued) {
+            let line = self.prompt(&session, &text);
+            step.send(line);
+        }
+        step.show(ChatEvent::Conversation {
+            id: session.clone(),
+        });
+        self.session = Some(session);
+    }
+
     fn request(&mut self, method: &'static str, params: Value) -> Value {
         self.next_id += 1;
         self.pending.insert(self.next_id, method);
@@ -120,6 +148,17 @@ impl Acp {
                 );
             }
             let message = cut(&message, 2000);
+            if method == "session/load" {
+                // not continued: a new session, and the window is told
+                self.loading = false;
+                step.show(ChatEvent::Log {
+                    text: format!("could not continue the conversation: {message}"),
+                });
+                step.show(ChatEvent::Resumed { ok: false });
+                let new = self.session_new();
+                step.send(new);
+                return;
+            }
             if method == "session/new" {
                 self.failed = true;
             }
@@ -140,18 +179,36 @@ impl Acp {
         let result = line.get("result").cloned().unwrap_or_default();
         match method {
             "initialize" => {
-                let cwd = self.cwd.clone();
-                let new = self.request("session/new", json!({"cwd": cwd, "mcpServers": []}));
-                step.send(new);
+                let loads = result.pointer("/agentCapabilities/loadSession") == Some(&json!(true));
+                match self.resume.clone() {
+                    Some(session) if loads => {
+                        let cwd = self.cwd.clone();
+                        self.loading = true;
+                        let load = self.request(
+                            "session/load",
+                            json!({"sessionId": session, "cwd": cwd, "mcpServers": []}),
+                        );
+                        step.send(load);
+                    }
+                    resume => {
+                        if resume.is_some() {
+                            step.show(ChatEvent::Resumed { ok: false });
+                        }
+                        let new = self.session_new();
+                        step.send(new);
+                    }
+                }
+            }
+            "session/load" => {
+                self.loading = false;
+                if let Some(session) = self.resume.clone() {
+                    step.show(ChatEvent::Resumed { ok: true });
+                    self.ready(session, step);
+                }
             }
             "session/new" => {
                 if let Some(session) = result.get("sessionId").and_then(Value::as_str) {
-                    let session = session.to_string();
-                    for text in std::mem::take(&mut self.queued) {
-                        let line = self.prompt(&session, &text);
-                        step.send(line);
-                    }
-                    self.session = Some(session);
+                    self.ready(session.to_string(), step);
                 }
             }
             "session/prompt" => {
@@ -337,6 +394,7 @@ impl Driver for Acp {
         match line.get("method").and_then(Value::as_str) {
             None if has_id => self.response(&line, &mut step),
             Some(_) if has_id => self.server_request(&line, &mut step),
+            Some("session/update") if self.loading => {} // the history, replayed as it loads
             Some("session/update") => {
                 let params = line.get("params").cloned().unwrap_or_default();
                 self.update(&params, &mut step);
@@ -582,6 +640,47 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn a_session_is_loaded_without_its_replayed_history_or_a_new_one_starts() {
+        let mut a = Acp::resuming(Some("s-9"));
+        a.start("/w");
+        let load = a.read(line(r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}}"#));
+        assert_eq!(
+            load.write,
+            vec![json!({"jsonrpc": "2.0", "id": 2, "method": "session/load",
+                "params": {"sessionId": "s-9", "cwd": "/w", "mcpServers": []}})]
+        );
+        let replay = a.read(line(r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"old"}}}}"#));
+        assert!(replay.events.is_empty());
+        let loaded = a.read(line(r#"{"jsonrpc":"2.0","id":2,"result":null}"#));
+        assert_eq!(
+            loaded.events,
+            vec![
+                ChatEvent::Resumed { ok: true },
+                ChatEvent::Conversation { id: "s-9".into() }
+            ]
+        );
+        let after = a.read(line(r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"new"}}}}"#));
+        assert_eq!(after.events.len(), 1);
+
+        let mut b = Acp::resuming(Some("s-9"));
+        b.start("/w");
+        b.read(line(r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}}"#));
+        let failed = b.read(line(
+            r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32603,"message":"no such session"}}"#,
+        ));
+        assert!(failed.events.contains(&ChatEvent::Resumed { ok: false }));
+        assert_eq!(failed.write[0]["method"], "session/new");
+
+        let mut c = Acp::resuming(Some("s-9"));
+        c.start("/w");
+        let unsupported = c.read(line(
+            r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#,
+        ));
+        assert_eq!(unsupported.events, vec![ChatEvent::Resumed { ok: false }]);
+        assert_eq!(unsupported.write[0]["method"], "session/new");
     }
 
     #[test]

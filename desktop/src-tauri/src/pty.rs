@@ -55,6 +55,8 @@ pub struct Launch<'a> {
     pub report: PathBuf,
     pub cols: u16,
     pub rows: u16,
+    /// Arguments for the CLI, after `--`: those that resume a conversation, or none.
+    pub args: Vec<String>,
 }
 
 #[derive(Default)]
@@ -87,6 +89,10 @@ impl Tabs {
         cmd.arg("--exe");
         cmd.arg(launch.exe);
         cmd.arg(launch.cli);
+        if !launch.args.is_empty() {
+            cmd.arg("--");
+            cmd.args(&launch.args);
+        }
         cmd.cwd(launch.cwd);
         cmd.env("PATH", launch.search_path);
         cmd.env("TERM", "xterm-256color");
@@ -337,6 +343,7 @@ mod tests {
             report: dir.join("report.json"),
             cols: 100,
             rows: 30,
+            args: vec!["--resume".into(), "s-1".into()],
         };
         let id = tabs.open(launch, events).unwrap();
         (tabs, id, rx)
@@ -381,7 +388,7 @@ exit 3"#,
         );
         let (output, exit) = until_exit(&rx);
         assert!(
-            output.contains("args: run --exe /opt/claude claude"),
+            output.contains("args: run --exe /opt/claude claude -- --resume s-1"),
             "{output}"
         );
         assert!(output.contains("on a terminal"), "{output}");
