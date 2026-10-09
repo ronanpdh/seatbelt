@@ -192,9 +192,9 @@ impl Models {
     }
 }
 
-/// A permission mode a chat offers. Only modes that still ask before some tool uses are
-/// offered: one that skips every approval (Claude Code's `bypassPermissions`, Gemini CLI's
-/// `yolo`, Codex's full access) never is, whatever the CLI lists or the window asks for.
+/// A permission mode a chat offers. A mode that runs every tool without asking (Claude Code's
+/// `bypassPermissions`, Gemini CLI's `yolo`, Codex's full access) never is, whatever the CLI
+/// lists or the window asks for.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Mode {
     /// What the CLI is told, or for Codex the app's own name for a preset.

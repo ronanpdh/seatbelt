@@ -3,8 +3,8 @@
 // things happened: its reasoning (folded), its words (Markdown), its tool steps (each opens to
 // what it was given and what came back), and any approval it asks for. Model and tool text is
 // untrusted: it is only ever set as text, and Markdown is built as elements, never as HTML.
-// Under the message box, the model, effort and permission mode: the CLI's own lists (only the
-// modes that still ask before some tools), chosen from for the next message on.
+// Under the message box, the model, effort and permission mode: the CLI's own lists (never a
+// mode that runs every tool without asking), chosen from for the next message on.
 
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { button, el, plain } from "./dom";

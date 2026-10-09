@@ -27,7 +27,7 @@ export type Model = {
   default_effort: string | null;
 };
 
-/** A permission mode a chat offers: only those that still ask before some tool uses. */
+/** A permission mode a chat offers: never one that runs every tool without asking. */
 export type Mode = { id: string; name: string; description: string };
 
 /** A model, and an effort (null: the model's own default), by the CLI's own ids. */
