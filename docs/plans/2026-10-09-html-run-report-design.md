@@ -57,9 +57,10 @@
      Each row expands, with `<details>`, to show the event's full attributes as formatted JSON, its id, parent id, hash and previous hash.
    - **Large content:** each event's expanded JSON is cut at 64 KiB. The page says how much was left out and that the ledger holds all of it.
 5. **Safe to open.** Everything from the ledger is untrusted: prompts, model output and tool results can all contain HTML.
-   - Templates are Jinja2 with autoescaping turned on, so every value is escaped unless a template says otherwise. No template says otherwise.
+   - Templates are Jinja2 with `autoescape=True`, so every value is escaped unless a template says otherwise. No template says otherwise. Autoescaping is off in a plain Jinja2 `Environment`, and `select_autoescape` chooses by the template's file extension with a default of off. So seatbelt sets `True` outright, and a test fails if a value reaches the page unescaped.
    - Every string from the ledger also goes through `printable`, as in the terminal, so bidirectional overrides and control characters are visible.
-   - A Content-Security-Policy `<meta>` tag allows no scripts, no network and inline styles only, as a second line of defence if a value ever escapes the template.
+   - A Content-Security-Policy `<meta>` tag is the first child of `<head>`. It allows no scripts, no network and inline styles only, as a second line of defence if a value ever escapes the template. It comes first because a policy in a `<meta>` tag does not apply to content before it.
+   - Whether browsers enforce a CSP on a page opened from disk (`file://`) is not stated in the CSP or HTML specs, or on MDN. Before this ships, the page's tests are run in Chrome, Firefox and Safari to find out. Autoescaping is the defence that must hold either way.
    - The page has no JavaScript, web fonts or images, and fetches nothing. Its styles are inline. It works offline and sends no request when opened.
 6. **Same protection as the ledger.**
    - Mode 0600.
@@ -87,6 +88,7 @@
 ## Tests
 
 - A prompt, a tool result and a model reply containing `<script>`, an `<img onerror>`, a closing `</details>` and a `javascript:` URL all render as text. This is a golden-file test.
+- In Chrome, Firefox and Safari, a page opened from `file://` with a `<script>` deliberately put after the CSP tag does not run it. This records whether the second line of defence exists there. It does not replace the escaping tests.
 - The page loads nothing: no `<script>`, `<link>`, `<img>`, `<iframe>`, `@import` or `url(`, and no `href` other than an in-page `#` anchor.
 - A property test: random strings in any attribute never produce a `<` in the page outside the template's own markup.
 - A ledger with a broken chain, or a forged signature, gets no page, and the command exits 1.
@@ -118,4 +120,10 @@
 | What exists | `STANDARDS.md` names Jinja2 for report templates; not in `pyproject.toml` or `uv.lock` | `STANDARDS.md` (Tooling table); `pyproject.toml`; `uv.lock` (no `jinja2` entry) |
 | What exists | BUILD.md: HTML or PDF report planned, not built; ADR 0004: "a later layer over the same pack" | `docs/BUILD.md` ("Planned, not built"); `docs/adr/0004-evidence-pack.md` (Rejected) |
 | Design 7 | `report`, `runs`, `verify` read `*.jsonl` | `src/seatbelt/report/fleet.py` (`d.glob("*.jsonl")`), `src/seatbelt/cli.py` (`runs`, `_resolve`) |
+| Design 5 | Jinja2 autoescaping is off in a plain `Environment`; `autoescape=True` turns it on | https://jinja.palletsprojects.com/en/stable/api/, read 2026-10-09: "autoescaping is not yet enabled by default"; "autoescape: If set to True the XML/HTML autoescaping feature is enabled by default." |
+| Design 5 | `select_autoescape` chooses by file extension, default off | same page: signature `select_autoescape(enabled_extensions=('html','htm','xml'), disabled_extensions=(), default_for_string=True, default=False)`; "If nothing matches then the initial value of autoescaping is set to the value of default." |
+| Design 5 | a CSP may be delivered in a `<meta>` tag, and does not apply to content before it | https://www.w3.org/TR/CSP3/, read 2026-10-09: "A Document may deliver a policy via one or more HTML meta elements"; "policies in meta elements are not applied to content which precedes them." |
+| Design 5 | whether a CSP applies to `file://` pages: not stated | CSP3, the HTML standard (https://html.spec.whatwg.org/multipage/semantics.html) and MDN (https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Content-Security-Policy), read 2026-10-09: no statement found |
+| Design 4 | `<details>` opens and closes without script | https://html.spec.whatwg.org/multipage/interactive-elements.html, read 2026-10-09: "The activation behavior of summary elements is to run the following steps: … If the open attribute is present on parent, then remove it. Otherwise, set parent's open attribute" |
+| Design 8 | Jinja2's latest release is 3.1.6 and needs Python 3.7 or newer; seatbelt needs 3.12 | https://pypi.org/pypi/Jinja2/json, read 2026-10-09: `"version": "3.1.6"`, `"requires_python": ">=3.7"`; `STANDARDS.md` (Python 3.12 or newer) |
 | Design 8 | dependency-floors rule | `docs/plans/2026-09-29-dependency-floors-design.md` ("Floors") |
