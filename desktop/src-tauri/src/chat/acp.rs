@@ -845,6 +845,22 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#,
         ));
         assert!(same.read(line(NEW)).write.is_empty());
+        // one it no longer offers is left out, and the log says so
+        let mut gone = Acp::new(None, Some(pick("gemini-1.0")));
+        gone.start("/w");
+        gone.read(line(
+            r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#,
+        ));
+        gone.send("hi").unwrap();
+        let step = gone.read(line(NEW));
+        assert!(matches!(&step.events[0], ChatEvent::Log { text } if text.contains("gemini-1.0")));
+        assert_eq!(
+            step.write
+                .iter()
+                .map(|l| l["method"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["session/prompt"]
+        );
     }
 
     #[test]

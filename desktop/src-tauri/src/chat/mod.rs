@@ -442,11 +442,25 @@ printf '{{"run": "claude-1", "recorded": true}}' > "$SEATBELT_RUN_REPORT"
         (chats, id, rx)
     }
 
-    fn next(rx: &mpsc::Receiver<Value>, kind: &str) -> Value {
-        loop {
-            let event = rx.recv_timeout(Duration::from_secs(10)).expect(kind);
-            if event["kind"] == kind {
-                return event;
+    /// A chat's events as the test reads them. The log (stderr) and the protocol (stdout) are
+    /// read by threads of their own, so their events can come in either order: one passed
+    /// over while waiting for another kind is kept for when it is asked for.
+    struct Events {
+        rx: mpsc::Receiver<Value>,
+        kept: Vec<Value>,
+    }
+
+    impl Events {
+        fn next(&mut self, kind: &str) -> Value {
+            if let Some(at) = self.kept.iter().position(|e| e["kind"] == kind) {
+                return self.kept.remove(at);
+            }
+            loop {
+                let event = self.rx.recv_timeout(Duration::from_secs(10)).expect(kind);
+                if event["kind"] == kind {
+                    return event;
+                }
+                self.kept.push(event);
             }
         }
     }
@@ -455,11 +469,12 @@ printf '{{"run": "claude-1", "recorded": true}}' > "$SEATBELT_RUN_REPORT"
     fn a_chat_runs_through_seatbelt_and_an_approval_goes_back_to_the_cli() {
         let dir = scratch("approve");
         let (chats, id, rx) = start(&dir);
+        let mut rx = Events { rx, kept: vec![] };
         assert_eq!(
-            next(&rx, "log")["text"],
+            rx.next("log")["text"],
             "seatbelt recording claude on this machine"
         );
-        let models = next(&rx, "models");
+        let models = rx.next("models");
         assert_eq!(
             (models["models"][1]["id"].as_str(), models["model"].as_str()),
             (Some("haiku"), None)
@@ -470,18 +485,18 @@ printf '{{"run": "claude-1", "recorded": true}}' > "$SEATBELT_RUN_REPORT"
         };
         assert!(chats.choose(id, haiku(Some("low"))).is_err()); // Haiku takes no effort here
         chats.choose(id, haiku(None)).unwrap();
-        assert_eq!(next(&rx, "models")["model"], "haiku");
+        assert_eq!(rx.next("models")["model"], "haiku");
         chats.send(id, "hello").unwrap();
-        let ask = next(&rx, "approval");
+        let ask = rx.next("approval");
         assert_eq!(
             (ask["id"].as_str(), ask["detail"].as_str()),
             (Some("r1"), Some("ls"))
         );
         chats.answer(id, "r1", true).unwrap();
-        assert_eq!(next(&rx, "turn_end")["ok"], true);
+        assert_eq!(rx.next("turn_end")["ok"], true);
         assert_eq!(chats.running(), 1);
         chats.close(id).unwrap(); // closes its input: the stand-in's last read ends
-        let exit = next(&rx, "exit");
+        let exit = rx.next("exit");
         assert_eq!(
             (exit["code"].as_i64(), exit["report"]["run"].as_str()),
             (Some(0), Some("claude-1"))
