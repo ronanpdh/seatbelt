@@ -4,7 +4,7 @@
 
 This replaces the [desktop recorder design](2026-10-09-desktop-recorder-design.md), which is on hold: pointing the vendors' desktop apps at a gateway costs Claude Desktop its claude.ai sign-in.
 
-**Status:** a design for review; phase 0 is built. Facts come from the repository and the sources in the source map, read 2026-10-09. A second reader checked every claim against its source the same day and corrected eight. Everything under "Design (ours)" and "Rejected (ours)" is our decision. "Before building" lists what must be checked against the real CLIs.
+**Status:** a design for review; phases 0 and 1 are built, and phase 3 (a chat window and run views, below) is being built, not to ship until K1 and K9 are answered. Facts come from the repository and the sources in the source map, read 2026-10-09. A second reader checked every claim against its source the same day and corrected eight. Everything under "Design (ours)" and "Rejected (ours)" is our decision. "Before building" lists what must be checked against the real CLIs.
 
 ## Why a terminal
 
@@ -120,7 +120,8 @@ The design keeps every condition it can:
 1. **Phase 0 (built):** `seatbelt runs --json` and `SEATBELT_RUN_REPORT`.
 2. **Phase 1:** the macOS app. Tabs, PTYs, runs list, pages. It needs `seatbelt` and the CLIs installed.
 3. **Phase 2:** the Windows app (ConPTY), Windows CI for `seatbelt run`, and signed installers for both.
-4. **Later:** Conductor-style workspaces, a tab started in its own git worktree with a diff view; and seatbelt bundled as a sidecar.
+4. **Phase 3:** a chat window over each CLI's headless mode, the terminal kept for sign-in, and views of runs, verification and usage. See "Phase 3" below.
+5. **Later:** Conductor-style workspaces, a tab started in its own git worktree with a diff view; and seatbelt bundled as a sidecar.
 
 ## As built (phase 1, first build)
 
@@ -152,6 +153,79 @@ The app was run on Ubuntu 24.04 (WebKitGTK 2.52.6), on a virtual display (Xvfb, 
 | L8 | The in-window quit question: close the window with a session running; Escape; close again; Quit | the question showed, Escape kept the app open, Quit ended the session, the run was attested with its page and prompt, and the app exited |
 | L9 | macOS, run by the maintainer with `npm run tauri dev` (first build) | the app opened; choosing a folder panicked as above. Fixed by removing the dialog plugin; not yet rerun on macOS |
 
+## Phase 3: a chat window, and run views (design, 2026-10-09)
+
+The maintainer asked for two changes after trying phase 1:
+- **The terminal should only sign the CLI in;** the session should then be an ordinary chat window.
+- **Runs, ledgers and reports should be viewable in the app,** as the CLI shows them: a run viewer, verification status, a usage report, and search and filters over runs.
+
+They chose to build the chat now and ship it only once Anthropic has answered (K1); this phase adds the same question for OpenAI (K9). Tool approvals are asked in the chat, one card per tool use the CLI would ask about under its own permission rules.
+
+### What each CLI offers for a chat client
+
+**Claude Code**
+- **A long-lived headless session.** `-p` takes `--input-format stream-json` and `--output-format stream-json`. Streaming input lets the agent "operate as a long lived process that takes in user input, handles interruptions, surfaces permission requests, and handles session management". The Agent SDK starts the CLI this way.
+- **Permission prompts go to a host.** In print mode they go "to the Agent SDK host or the `--permission-prompt-tool` tool"; in a `-p` run with no host, they are denied.
+- **The host protocol is only partly documented.** The docs describe `control_request` messages (`{type, request_id, request}`) and the allow or deny answer (`PermissionResult`). The `can_use_tool` request and `--permission-prompt-tool stdio`, which sends prompts over that protocol instead of to an MCP tool, appear only in the Python Agent SDK's source.
+- **Interrupting a turn:** SIGINT, or the SDK's `interrupt()`, which the SDK source sends as a control request with subtype `interrupt`.
+- **Bare mode** skips hooks, skills, plugins, MCP servers and CLAUDE.md, never reads OAuth credentials, and "will become the default for `-p` in a future release". No flag or variable to opt out is documented on the pages read.
+
+**Codex**
+- **`codex exec --json`** prints JSONL events for one turn. Another turn is another process (`codex exec resume`). No approval requests are documented for it, and by default it runs in a read-only sandbox.
+- **`codex app-server`** is "the interface Codex uses to power rich clients (for example, the Codex VS Code extension)": JSON-RPC 2.0 over stdio, newline-delimited.
+  - A thread is started with `thread/start`; each message is a `turn/start`, interrupted with `turn/interrupt`.
+  - Approvals are a "server-initiated JSON-RPC request to the client, and the client responds with a decision payload": `accept`, `acceptForSession`, `decline` or `cancel`.
+- **Two cautions on app-server.** The developer commands page says it "may change without notice". The app-server page says: "App-server authentication has never been permitted for commercial or hosted services."
+
+**Gemini CLI**
+- **`gemini --acp`** speaks the Agent Client Protocol: JSON-RPC over stdio.
+- **Approvals:** its ACP session asks the client to approve a tool call, with options such as allow once and reject once (ACP's `session/request_permission`).
+- **Its plain headless mode** treats a tool that would ask as denied.
+
+### Checked against the real CLIs (2026-10-09)
+
+Each CLI was installed from npm and driven by a short script, with a stand-in provider API on localhost that asks for one shell command and then answers in text. These did not go through `seatbelt run`, used API keys rather than any sign-in, and ran on Linux.
+
+| Ref | CLI and mode | Result |
+|---|---|---|
+| P1 | Claude Code 2.1.295: `-p --input-format stream-json --output-format stream-json --verbose --permission-prompt-tool stdio` | a `system`/`init` event, then `assistant` events; before running Bash, a `control_request` with subtype `can_use_tool`, the tool's name and input, a description and `permission_suggestions`. Answering allow (with the input unchanged) ran the command; a second user message on stdin started a second turn in the same process |
+| P2 | the same, answering deny with a message | the tool did not run; its `tool_result` was the message |
+| P3 | the same, with a provider that answers 401 | `system` events with subtype `api_retry`, `error_status` 401 and `error` "authentication_failed", with `max_retries` 10 |
+| P4 | Codex 0.162.0: `codex -c <provider> app-server` | `initialize`, then `account/read` (`account` null with an API key provider), `thread/start`, `turn/start`; the command came as `item/started` (a `commandExecution`), then an `item/commandExecution/requestApproval` request. `accept` ran it; `item/agentMessage/delta` and `turn/completed` followed. `-c` overrides before `app-server` were accepted, as `seatbelt run codex` puts them |
+| P5 | Gemini CLI 0.63.0: `gemini --acp` | `initialize` listed its sign-in methods; `session/new` worked with an API key in the environment; the shell call came as a `tool_call` update, then `session/request_permission` with options `proceed_always`, `proceed_once` and `cancel` (kinds `allow_always`, `allow_once`, `reject_once`). Choosing `proceed_once` ran it; `session/prompt` returned `stopReason` "end_turn" |
+
+### Design (ours)
+
+- **One protocol per CLI,** the one that can ask for approvals:
+  - Claude Code: stream-json in and out, with `--permission-prompt-tool stdio`;
+  - Codex: `app-server`;
+  - Gemini CLI: `--acp`.
+- **Each chat is `seatbelt run --exe <path> <cli> -- <those arguments>`** with pipes instead of a terminal. One chat is one run, recorded exactly as a terminal session is. seatbelt prints its own lines to stderr, so stdout carries only the CLI's protocol.
+- **The protocols stay on the Rust side.** It turns each into a few events for the window: text, a finished message, a tool's state, an approval request, end of turn, sign-in needed, a notice, exit. The window can only send a message, answer an approval, interrupt, or end the chat; it never writes protocol messages itself.
+- **Approvals follow the CLI's own rules.** The app sets no permission mode, approval policy or sandbox. Each request becomes a card with Allow and Deny:
+  - Claude Code: allow with the tool's input unchanged, or deny with a message;
+  - Codex: `accept` or `decline`;
+  - Gemini CLI: its allow-once or reject-once option.
+
+  A request the app does not handle (another control request, a Codex user-input or permissions request, ACP file or terminal access, none of which the app offers) is answered with an error, so the CLI never waits on it.
+- **The terminal is for signing in.** The chat says sign-in is needed when:
+  - Claude Code reports `api_retry` with "authentication_failed" (the turn is then interrupted, not retried ten times);
+  - Codex's `account/read` finds no account where one is required;
+  - Gemini CLI cannot start a session.
+
+  "Sign in" then runs the CLI in a terminal in the same pane; when that ends, the chat starts again as a new run. A "Terminal" button opens the CLI's own interface at any time.
+- **Model text is untrusted.** It is shown as text, never HTML. Code fences become code blocks built element by element; there are no links or images.
+- **Run views,** all from seatbelt's JSON, never from ledgers read by the app:
+  - **Runs:** search by name, id or client; filter by state, CLI and date.
+  - **A run:** what its page shows (`seatbelt reconstruct --json`): times, usage by model, tools, refusals, failures, and the events, with search and a filter by kind. Verification (`seatbelt verify --json`) shows beside it, and its page still opens in the browser.
+  - **Usage:** `seatbelt report --json` for this machine's runs, by model, person and tool, with failed, open, unsigned and broken runs listed.
+
+### Risks
+
+- **Terms.** A chat over a subscription login is the use K1 asks about; Codex's app-server statement on authentication is K9. Nothing ships until both are answered.
+- **Bare mode becoming the `-p` default** would take the subscription login away from Claude Code chats, with no documented opt-out. The chat would then say sign-in is needed, which signing in cannot fix; the terminal would still work. K11 watches for it.
+- **Undocumented or experimental protocols:** Claude Code's `stdio` permission tool and Codex's app-server can change in any release. K11 rechecks them.
+
 ## Before building
 
 | Id | Check | If it fails |
@@ -164,10 +238,15 @@ The app was run on Ubuntu 24.04 (WebKitGTK 2.52.6), on a virtual display (Xvfb, 
 | K6 | Closing a tab: which signal the PTY's process gets on each platform, and that the run ends signed | the app ends the run itself before it closes the PTY |
 | K7 | A run's page opened in the default browser (Safari, Edge): it renders and loads nothing. The CSP was checked in Chromium only | as in the HTML report design: escaping is the defence that must hold |
 | K8 | xterm.js and untrusted output: clipboard writes and links from escape sequences | turn them off, or ask before each one |
+| K9 | OpenAI's answer: may a local app drive the user's own Codex through `app-server` with their ChatGPT login ("App-server authentication has never been permitted for commercial or hosted services") | Codex chat ships for API-key and gateway users only, or Codex stays in the terminal |
+| K10 | macOS, through `seatbelt run`, with real sign-ins: a Claude Code chat on a subscription (non-bare `-p`), Codex on a ChatGPT login, Gemini CLI on a Google login; each run recorded and signed, approvals working | the CLIs that fail keep the terminal only |
+| K11 | On each new release of Claude Code and Codex: P1 to P5 again, and whether bare mode has become the `-p` default | the chat for that CLI says it needs updating and offers the terminal |
 
 ## Rejected (ours)
 
-- **A chat UI of our own over Claude Code's headless mode or the Agent SDK.** Headless mode cannot run `/login`, bare mode never reads OAuth credentials and is to become the default for `-p`, and the Agent SDK's docs say third-party apps may not offer claude.ai login without approval. A terminal keeps the CLI unmodified and its sign-in its own.
+- **A chat UI of our own, in the first design.** Headless mode cannot run `/login`, bare mode never reads OAuth credentials and is to become the default for `-p`, and the Agent SDK's docs say third-party apps may not offer claude.ai login without approval. The maintainer has since chosen to build one over the unmodified CLIs, keep the terminal for sign-in, and ship only once K1 and K9 are answered (phase 3).
+- **Driving Claude Code through the Agent SDK or an ACP adapter** (Zed's adapter is built on the Agent SDK). Either adds a dependency between the app and the CLI, and the SDK's docs bar offering claude.ai login without approval. The app speaks the CLI's own stream-json instead.
+- **`codex exec --json` for Codex chats:** one process per turn, and no approval requests.
 - **Bundling Claude Code and Codex,** as Conductor does by default. That is preinstalling Claude Code in a product, under the conditions above, and pins versions the user would otherwise update.
 - **Recording agents inside Conductor** through its environment settings, or a Big Terminal Mode preset that runs `seatbelt run claude`. Either is possible later, but Conductor is macOS-only and closed source, and nothing documents whether a subscription login survives a custom base URL there. Through its environment settings it would also need an always-on recorder, as the on-hold design did.
 - **Pointing the vendors' desktop apps at a gateway:** the [on-hold design](2026-10-09-desktop-recorder-design.md). It costs Claude Desktop its subscription sign-in.
@@ -218,3 +297,21 @@ All web pages read 2026-10-09.
 | Why a terminal | through a gateway, the CLI uses the issued key, not its own login | `src/seatbelt/gateway/launcher.py` (gateway preset `ANTHROPIC_AUTH_TOKEN`; Codex `requires_openai_auth=false` unless local); `docs/local-recording.md` ("Through a gateway": "The CLI uses the gateway, with your issued key."); https://code.claude.com/docs/en/llm-gateway: a gateway credential is carried "in place of a developer's claude.ai subscription login" |
 | Design | the buckle needs more than 121 columns and 34 rows; a smaller terminal gets a line of belt | `docs/local-recording.md` ("How it works") |
 | Design | the launcher's tests stand in for the CLI with a `#!` script | `tests/helpers.py` (`fake_claude`) |
+| Phase 3 | `-p` with `--input-format`/`--output-format stream-json` | https://code.claude.com/docs/en/cli-reference: `--input-format` "Specify input format for print mode (options: `text`, `stream-json`)"; `--output-format` "(options: `text`, `json`, `stream-json`)" |
+| Phase 3 | streaming input: a long-lived process that surfaces permission requests | https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode: "allows the agent to operate as a long lived process that takes in user input, handles interruptions, surfaces permission requests, and handles session management." |
+| Phase 3 | the Agent SDK starts the CLI with stream-json in and out | https://github.com/anthropics/claude-agent-sdk-python, `src/claude_agent_sdk/_internal/transport/subprocess_cli.py`: `"--output-format", "stream-json", "--verbose"`; "Always use streaming mode with stdin"; `"--input-format", "stream-json"` |
+| Phase 3 | prompts go to the SDK host or the permission prompt tool; denied in `-p` with no host | https://code.claude.com/docs/en/cli-reference (`--permission-prompts`): "With the default `host`, Claude Code sends them to the Agent SDK host or the `--permission-prompt-tool` tool."; https://code.claude.com/docs/en/headless: "In a `-p` run with no host, these requests are denied either way" |
+| Phase 3 | `control_request` shape and `PermissionResult` documented | https://code.claude.com/docs/en/agent-sdk/typescript: "the same `{ type: "control_request", request_id, request }` shape the session streams for permission requests while running"; `PermissionResult` (`behavior: "allow"` / `"deny"`) |
+| Phase 3 | `can_use_tool` and `permission_prompt_tool_name="stdio"` only in the Python SDK source | https://github.com/anthropics/claude-agent-sdk-python, `src/claude_agent_sdk/types.py`: `subtype: Literal["can_use_tool"]`; "returns a copy with ``permission_prompt_tool_name="stdio"`` so the CLI sends permission requests over the control protocol." Not found on the docs pages read |
+| Phase 3 | interrupt: SIGINT or `interrupt()`; SDK sends subtype `interrupt` | https://code.claude.com/docs/en/headless: "send SIGINT, or call the Agent SDK's `interrupt()`"; Python SDK `_internal/query.py`: `{"subtype": "interrupt"}` |
+| Phase 3 | bare mode: what it skips; no OAuth; to become the `-p` default; no documented opt-out | https://code.claude.com/docs/en/headless: "skipping auto-discovery of hooks, skills, custom commands, subagents, installed plugins, MCP servers, auto memory, and CLAUDE.md"; "In bare mode, Claude Code never reads OAuth credentials or the system keychain."; "will become the default for `-p` in a future release". Opt-out: none found in the CLI reference or https://code.claude.com/docs/en/env-vars |
+| Phase 3 | `codex exec --json`: JSONL events; resume is a new process; read-only sandbox by default | https://learn.chatgpt.com/docs/non-interactive-mode: "When you enable `--json`, `stdout` becomes a JSON Lines (JSONL) stream"; `codex exec resume --last`; "By default, `codex exec` runs in a read-only sandbox." |
+| Phase 3 | app-server: powers rich clients; JSON-RPC 2.0 over stdio JSONL; thread/turn methods; approvals and decisions | https://learn.chatgpt.com/docs/app-server: "the interface Codex uses to power rich clients (for example, the Codex VS Code extension)"; "bidirectional communication using JSON-RPC 2.0 messages"; "`stdio` (`--listen stdio://`, default): newline-delimited JSON (JSONL)"; `thread/start`, `turn/start`, `turn/interrupt`; "server-initiated JSON-RPC request to the client, and the client responds with a decision payload"; "`accept`, `acceptForSession`, `decline`, `cancel`" |
+| Phase 3 | app-server may change; its authentication never permitted for commercial or hosted services | https://learn.chatgpt.com/docs/developer-commands: "may change without notice"; https://learn.chatgpt.com/docs/app-server: "App-server authentication has never been permitted for commercial or hosted services." |
+| Phase 3 | `gemini --acp`: JSON-RPC over stdio | https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/acp-mode.md: "It uses a JSON-RPC protocol over stdio to communicate between Gemini CLI agent and a client." |
+| Phase 3 | ACP permission requests and option kinds | https://agentclientprotocol.com/protocol/tool-calls: "The Agent **MAY** request permission from the user before executing a tool call by calling the `session/request_permission` method"; `allow_once`, `allow_always`, `reject_once`, `reject_always` |
+| Phase 3 | Gemini headless treats asking as deny | https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/policy-engine.md: "(In non-interactive mode, this is treated as `deny`.)" |
+| Phase 3 | Zed's Claude ACP adapter uses the Agent SDK | https://github.com/zed-industries/claude-agent-acp (README): "implements an ACP agent by using the official Claude Agent SDK" |
+| Phase 3 | seatbelt prints its own lines to stderr | `src/seatbelt/gateway/badge.py` (`say`, `buckle`, `unbuckle`: stderr by default) |
+| Phase 3 | arguments after `--` go to the CLI; Codex `-c` overrides apply before a subcommand | `src/seatbelt/cli.py` (`run`: "Arguments after -- go to the CLI."); `src/seatbelt/gateway/launcher.py` (`arguments` docstring) |
+| Phase 3 | P1 to P5 | run in this repository's development container on 2026-10-09; Codex's message types from `codex app-server generate-ts` (0.162.0) |

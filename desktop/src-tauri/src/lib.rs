@@ -2,8 +2,9 @@
 //! `seatbelt run`, so each is recorded and keeps its own sign-in.
 //!
 //! The web view can do only what these commands allow: open a tab for one of the three CLIs
-//! in a folder; write to, resize or close a tab; list runs; open a run's page by its id; check
-//! a folder; quit. It never names a program to run or a file to open.
+//! in a folder; write to, resize or close a tab; list runs; show, verify or open the page of a
+//! run by its id; report usage; check a folder; quit. It never names a program to run or a
+//! file to open.
 //!
 //! No native dialogs: macOS's `+[NSOpenPanel openPanel]` can return nil (a code-signature
 //! mismatch after an in-place update is one reported cause), and the binding the dialog plugin
@@ -157,6 +158,33 @@ async fn list_runs(state: State<'_, AppState>) -> Result<serde_json::Value, Stri
         .map_err(|e| e.to_string())?
 }
 
+/// What the run's page shows, for the run viewer.
+#[tauri::command]
+async fn run_detail(state: State<'_, AppState>, id: String) -> Result<serde_json::Value, String> {
+    let found = state.tools();
+    tauri::async_runtime::spawn_blocking(move || runs::detail(&found, &id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// `seatbelt verify` on one run: its chain, completeness and signature.
+#[tauri::command]
+async fn verify_run(state: State<'_, AppState>, id: String) -> Result<serde_json::Value, String> {
+    let found = state.tools();
+    tauri::async_runtime::spawn_blocking(move || runs::verify(&found, &id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Usage across this machine's runs, by model, person and tool.
+#[tauri::command]
+async fn usage_report(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let found = state.tools();
+    tauri::async_runtime::spawn_blocking(move || runs::usage(&found))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 /// Open a run's page in the system's default browser, outside the app's web view.
 #[tauri::command]
 async fn open_page(
@@ -220,6 +248,9 @@ pub fn run() {
             resize_tab,
             close_tab,
             list_runs,
+            run_detail,
+            verify_run,
+            usage_report,
             open_page,
             quit,
         ])

@@ -29,7 +29,7 @@ const MARK: &str = "__SEATBELT_PATH__";
 pub struct Seatbelt {
     pub path: PathBuf,
     pub version: String,
-    /// `seatbelt runs --json` works: the installed release has what the app needs
+    /// `seatbelt verify --json` works: the installed release has what the app needs
     pub supported: bool,
 }
 
@@ -93,9 +93,17 @@ fn inspect(path: &Path, search_path: &OsString) -> Seatbelt {
             .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
     };
     let version = run(&["version"]).unwrap_or_default();
-    let supported = run(&["runs", "--json", "--limit", "1"])
-        .and_then(|out| serde_json::from_str::<serde_json::Value>(&out).ok())
-        .is_some_and(|v| v.get("runs").is_some());
+    // the newest thing the app reads: on a ledger that is not there, it still prints JSON
+    let missing = std::env::temp_dir().join(format!("seatbelt-probe-{}.jsonl", std::process::id()));
+    let supported = Command::new(path)
+        .args(["verify", &missing.to_string_lossy(), "--json"])
+        .env("PATH", search_path)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .and_then(|out| serde_json::from_slice::<serde_json::Value>(&out.stdout).ok())
+        .is_some_and(|v| v.get("chain").is_some());
     Seatbelt {
         path: path.to_path_buf(),
         version,
