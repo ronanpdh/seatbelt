@@ -6,7 +6,7 @@ Design, its sources and the checks still open: [docs/plans/2026-10-09-desktop-te
 
 **Not to be released yet.** A chat drives the CLI's headless mode with the user's own sign-in. Whether Anthropic and OpenAI permit that for an app like this is the design's questions K1 and K9; it ships only once they have answered.
 
-**Status:** built and run on Linux, with the real CLIs (Claude Code 2.1.295, Codex 0.162.0, Gemini CLI 0.63.0) talking to stand-in providers on localhost (the design's checks L10 to L18). CI builds and tests it on Linux and macOS. It has not been run on macOS with real sign-ins (check K10). Windows is phase 2.
+**Status:** built and run on Linux, with the real CLIs (Claude Code 2.1.295, Codex 0.162.0, Gemini CLI 0.63.0) talking to stand-in providers on localhost (the design's checks L10 to L23). CI builds and tests it on Linux and macOS. It has not been run on macOS with real sign-ins (check K10). Windows is phase 2.
 
 ## What it needs
 
@@ -22,8 +22,9 @@ The app looks for these on its own `PATH`, then on the `PATH` your login shell p
   - Codex: `app-server`;
   - Gemini CLI: `--acp`.
 
-  The Rust side speaks each protocol and gives the window a few events: text, reasoning, tools with their input and output, approvals, end of turn, sign-in needed. The window can only send a message, answer an approval, interrupt, or end the chat.
+  The Rust side speaks each protocol and gives the window a few events: text, reasoning, tools with their input and output, approvals, end of turn, sign-in needed. The window can only send a message, answer an approval, choose a model the CLI offers, interrupt, or end the chat.
 - **A reply** is shown under the agent's name, in the order things happened: its reasoning (folded), its words as Markdown, its tool steps (each opens to what it was given and what came back), and any approval it asks for. A "Working" line shows while it runs. Markdown is built as elements, never parsed as HTML; a link opens in your browser, and only `http` and `https` links do.
+- **Model and effort** are picked under the message box, from the CLI's own list: Claude Code's answer to `initialize`, Codex's `model/list`, Gemini CLI's session (which offers no effort). A choice applies from the next message, and only an id on that list is sent. The last choice for each CLI is remembered on this computer and set before a new chat's first message, if the CLI still offers it; otherwise the CLI's own setting stays, and the chat says so.
 - **Approvals** follow the CLI's own rules: the app sets no permission mode, approval policy or sandbox. Each request is a card with Allow and Deny.
 - **Signing in:** when a CLI reports it is not signed in, the chat offers its own sign-in in a terminal (a pseudo-terminal running `seatbelt run <cli>`, shown with xterm.js). When that ends, the chat starts again. "Open in terminal" does the same at any time.
 - **Ending a chat** closes its input, which ends the CLI's session; `seatbelt run` then closes and signs the run. One still running 3 seconds later gets SIGTERM (on Unix), and is killed after 20 more.

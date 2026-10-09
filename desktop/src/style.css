@@ -344,7 +344,18 @@ details.thinking.live summary { animation: pulse 1.6s infinite ease-in-out; }
   border: 1px solid var(--line); background: var(--bg); color: var(--ink); font: inherit; line-height: 1.45;
 }
 .composer textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-.composer-hint { max-width: 820px; margin: 4px auto 0; font-size: 11px; }
+.composer-foot {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap; max-width: 820px; margin: 6px auto 0;
+}
+.composer-hint { margin-left: auto; font-size: 11px; }
+.picker { display: flex; gap: 12px; flex-wrap: wrap; min-width: 0; }
+.picker[hidden], .pick[hidden] { display: none; }
+.pick { display: flex; align-items: center; gap: 6px; font-size: 12px; min-width: 0; }
+.pick select {
+  max-width: 260px; min-width: 0; padding: 3px 6px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--bg); color: var(--ink); font: inherit; text-overflow: ellipsis;
+}
+.pick select:disabled { opacity: 0.6; }
 .send { min-width: 72px; height: 40px; }
 
 /* -- records: runs, a run, usage --------------------------------------------------------- */

@@ -7,7 +7,8 @@ use std::collections::{HashMap, HashSet};
 use serde_json::{json, Value};
 
 use super::protocol::{
-    content_text, cut, shown, str_of, summary, ChatEvent, Driver, Step, ToolStatus,
+    checked, content_text, cut, shown, str_of, summary, ChatEvent, Choice, Driver, Model, Models,
+    Step, ToolStatus,
 };
 
 /// The message a denied tool use gets, which Claude reads.
@@ -36,14 +37,144 @@ pub struct Claude {
     conversation: Option<String>,
     /// A message has been sent: a result before one is Claude Code refusing to resume.
     sent: bool,
+    models: Models,
+    /// Control requests this app sent, by number: what each asked.
+    requests: u32,
+    asked: HashMap<String, Asked>,
+    /// Messages held until the model chosen at the start is set.
+    queued: Vec<String>,
+}
+
+/// A control request this app sent, for its response.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Asked {
+    Initialize,
+    Settings,
+    Model,
+    Effort,
+}
+
+/// Claude Code's models, from its answer to `initialize`.
+fn models_of(answer: &Value) -> Vec<Model> {
+    answer
+        .get("models")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|m| {
+            let id = str_of(m, "value");
+            (!id.is_empty()).then(|| Model {
+                id: id.to_string(),
+                name: match str_of(m, "displayName") {
+                    "" => id.to_string(),
+                    name => name.to_string(),
+                },
+                description: str_of(m, "description").to_string(),
+                efforts: if m.get("supportsEffort").and_then(Value::as_bool) == Some(true) {
+                    m.get("supportedEffortLevels")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|e| e.as_str().map(str::to_string))
+                        .collect()
+                } else {
+                    vec![]
+                },
+                default_effort: None,
+            })
+        })
+        .collect()
 }
 
 impl Claude {
-    /// A session that resumes conversation `resume` (already checked as a plain id), if any.
-    pub fn resuming(resume: Option<&str>) -> Self {
+    /// A session that resumes conversation `resume` (already checked as a plain id), if any,
+    /// on the model and effort `choice`, if it is one Claude Code offers.
+    pub fn new(resume: Option<&str>, choice: Option<Choice>) -> Self {
         Self {
             resume: resume.map(str::to_string),
+            models: Models::wanting(choice),
             ..Self::default()
+        }
+    }
+
+    fn ask(&mut self, asked: Asked, request: Value) -> Value {
+        self.requests += 1;
+        let id = format!("seatbelt-{}", self.requests);
+        self.asked.insert(id.clone(), asked);
+        json!({"type": "control_request", "request_id": id, "request": request})
+    }
+
+    fn user_line(text: &str) -> Value {
+        json!({
+            "type": "user",
+            "message": {"role": "user", "content": text},
+            "parent_tool_use_id": null,
+        })
+    }
+
+    /// Set the model and effort, as far as they differ from what was chosen before; the
+    /// effort is reset to the model's own default with null.
+    fn apply(&mut self, choice: Choice, step: &mut Step) {
+        let before = self.models.chosen.take();
+        if before.as_ref().map(|c| c.model.as_str()) != Some(choice.model.as_str()) {
+            let line = self.ask(
+                Asked::Model,
+                json!({"subtype": "set_model", "model": choice.model}),
+            );
+            step.send(line);
+        }
+        if before.and_then(|c| c.effort) != choice.effort {
+            let line = self.ask(
+                Asked::Effort,
+                json!({"subtype": "apply_flag_settings", "settings": {"effortLevel": choice.effort}}),
+            );
+            step.send(line);
+        }
+        self.models.chosen = Some(choice);
+    }
+
+    /// Claude Code's answer to a control request this app sent.
+    fn answered(&mut self, line: &Value, step: &mut Step) {
+        let response = line.get("response").cloned().unwrap_or_default();
+        let Some(asked) = self.asked.remove(str_of(&response, "request_id")) else {
+            return;
+        };
+        let answer = response.get("response").cloned().unwrap_or_default();
+        let failed = str_of(&response, "subtype") == "error";
+        match asked {
+            Asked::Initialize => {
+                let list = if failed { vec![] } else { models_of(&answer) };
+                if let Some(choice) = self.models.listed(list, step) {
+                    self.apply(choice, step);
+                }
+                for text in std::mem::take(&mut self.queued) {
+                    step.send(Self::user_line(&text));
+                }
+                if !self.models.list.is_empty() {
+                    step.show(self.models.event());
+                }
+            }
+            Asked::Settings if !failed => {
+                let using = answer
+                    .pointer("/applied/model")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if self.models.using(using) && self.models.known {
+                    step.show(self.models.event());
+                }
+            }
+            Asked::Model | Asked::Effort if failed => step.show(ChatEvent::Log {
+                text: format!(
+                    "Claude Code did not change the {}: {}",
+                    if asked == Asked::Model {
+                        "model"
+                    } else {
+                        "effort"
+                    },
+                    cut(str_of(&response, "error"), 2000)
+                ),
+            }),
+            _ => {}
         }
     }
 
@@ -144,7 +275,14 @@ impl Driver for Claude {
     }
 
     fn start(&mut self, _cwd: &str) -> Step {
-        Step::default() // the session starts with the first message
+        // the conversation starts with the first message; these ask for the models it offers
+        // and the one it is set to use
+        let mut step = Step::default();
+        let init = self.ask(Asked::Initialize, json!({"subtype": "initialize"}));
+        step.send(init);
+        let settings = self.ask(Asked::Settings, json!({"subtype": "get_settings"}));
+        step.send(settings);
+        step
     }
 
     fn read(&mut self, line: Value) -> Step {
@@ -272,11 +410,15 @@ impl Driver for Claude {
                 }
             }
             "control_request" => self.control(&line, &mut step),
+            "control_response" => self.answered(&line, &mut step),
             "system" if str_of(&line, "subtype") == "init" => {
                 let id = str_of(&line, "session_id");
                 if !id.is_empty() && self.conversation.as_deref() != Some(id) {
                     self.conversation = Some(id.to_string());
                     step.show(ChatEvent::Conversation { id: id.to_string() });
+                }
+                if self.models.using(str_of(&line, "model")) && self.models.known {
+                    step.show(self.models.event());
                 }
             }
             "system" => {
@@ -326,11 +468,11 @@ impl Driver for Claude {
     fn send(&mut self, text: &str) -> Result<Step, String> {
         let mut step = Step::default();
         self.sent = true;
-        step.send(json!({
-            "type": "user",
-            "message": {"role": "user", "content": text},
-            "parent_tool_use_id": null,
-        }));
+        if self.models.holds() {
+            self.queued.push(text.to_string());
+        } else {
+            step.send(Self::user_line(text));
+        }
         Ok(step)
     }
 
@@ -367,6 +509,14 @@ impl Driver for Claude {
         let stop = self.interrupt_line();
         step.send(stop);
         step
+    }
+
+    fn choose(&mut self, choice: Choice) -> Result<Step, String> {
+        checked(&self.models.list, &choice)?;
+        let mut step = Step::default();
+        self.apply(choice, &mut step);
+        step.show(self.models.event());
+        Ok(step)
     }
 }
 
@@ -653,12 +803,12 @@ mod tests {
 
     #[test]
     fn a_conversation_is_resumed_by_its_id_and_a_refusal_is_said_once() {
-        let mut c = Claude::resuming(Some("s-1"));
+        let mut c = Claude::new(Some("s-1"), None);
         assert_eq!(c.args()[c.args().len() - 2..], ["--resume", "s-1"]);
         assert!(!Claude::default().args().contains(&"--resume".to_string()));
         let gone = c.read(line(r#"{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"s-1"}"#));
         assert_eq!(gone.events, vec![ChatEvent::Resumed { ok: false }]);
-        let mut c = Claude::resuming(Some("s-1"));
+        let mut c = Claude::new(Some("s-1"), None);
         c.send("hi").unwrap();
         let init = feed(
             &mut c,
@@ -671,6 +821,113 @@ mod tests {
             init.events,
             vec![ChatEvent::Conversation { id: "s-1".into() }]
         );
+    }
+
+    /// Claude Code 2.1.295's answer to `initialize`, cut to the fields that matter.
+    const MODELS: &str = r#"{"type":"control_response","response":{"subtype":"success","request_id":"seatbelt-1","response":{"models":[
+        {"value":"default","displayName":"Default (recommended)","description":"Opus 5.5","supportsEffort":true,"supportedEffortLevels":["low","medium","high","xhigh","max"]},
+        {"value":"haiku","displayName":"Haiku","description":"Fastest","supportsEffort":true,"supportedEffortLevels":["low","medium","high","xhigh","max"]},
+        {"value":"old","displayName":"Old","supportsEffort":false}
+        ],"current_permission_mode":"default"}}}"#;
+
+    fn pick(model: &str, effort: Option<&str>) -> Choice {
+        Choice {
+            model: model.into(),
+            effort: effort.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn the_models_are_asked_for_and_a_choice_is_set_by_control_requests() {
+        let mut c = Claude::default();
+        let start = c.start("/w");
+        assert_eq!(
+            start.write,
+            vec![
+                json!({"type": "control_request", "request_id": "seatbelt-1", "request": {"subtype": "initialize"}}),
+                json!({"type": "control_request", "request_id": "seatbelt-2", "request": {"subtype": "get_settings"}}),
+            ]
+        );
+        assert!(c.choose(pick("haiku", None)).is_err()); // not before the list is known
+        let listed = c.read(line(MODELS));
+        let [ChatEvent::Models {
+            models,
+            model: None,
+            effort: None,
+            current: None,
+        }] = &listed.events[..]
+        else {
+            panic!("{:?}", listed.events);
+        };
+        assert_eq!(models.len(), 3);
+        assert_eq!(models[0].name, "Default (recommended)");
+        assert_eq!(models[1].efforts.len(), 5);
+        assert!(models[2].efforts.is_empty()); // no effort to choose
+        let settings = c.read(line(r#"{"type":"control_response","response":{"subtype":"success","request_id":"seatbelt-2","response":{"effective":{},"applied":{"model":"claude-opus-5-5","effort":"medium"}}}}"#));
+        assert!(matches!(&settings.events[..],
+            [ChatEvent::Models { current: Some(m), model: None, .. }] if m == "claude-opus-5-5"));
+
+        assert!(c.choose(pick("sonnet-9", None)).is_err());
+        assert!(c.choose(pick("old", Some("low"))).is_err());
+        let chosen = c.choose(pick("haiku", Some("low"))).unwrap();
+        assert_eq!(
+            chosen.write,
+            vec![
+                json!({"type": "control_request", "request_id": "seatbelt-3",
+                    "request": {"subtype": "set_model", "model": "haiku"}}),
+                json!({"type": "control_request", "request_id": "seatbelt-4",
+                    "request": {"subtype": "apply_flag_settings", "settings": {"effortLevel": "low"}}}),
+            ]
+        );
+        assert!(matches!(&chosen.events[..],
+            [ChatEvent::Models { model: Some(m), effort: Some(e), .. }] if m == "haiku" && e == "low"));
+        // back to the model's own effort: null, which Claude Code takes as its default
+        let reset = c.choose(pick("haiku", None)).unwrap();
+        assert_eq!(
+            reset.write,
+            vec![
+                json!({"type": "control_request", "request_id": "seatbelt-5",
+                "request": {"subtype": "apply_flag_settings", "settings": {"effortLevel": null}}})
+            ]
+        );
+        let refused = c.read(line(r#"{"type":"control_response","response":{"subtype":"error","request_id":"seatbelt-5","error":"no"}}"#));
+        assert!(
+            matches!(&refused.events[..], [ChatEvent::Log { text }] if text.contains("effort: no"))
+        );
+        let init = c.read(line(
+            r#"{"type":"system","subtype":"init","session_id":"s","model":"claude-haiku-5-5"}"#,
+        ));
+        assert!(matches!(&init.events[1],
+            ChatEvent::Models { current: Some(m), .. } if m == "claude-haiku-5-5"));
+    }
+
+    #[test]
+    fn a_choice_from_before_is_set_before_the_first_message() {
+        let mut c = Claude::new(None, Some(pick("haiku", Some("high"))));
+        c.start("/w");
+        assert!(c.send("hi").unwrap().write.is_empty()); // held until the model is set
+        let step = c.read(line(MODELS));
+        let asked: Vec<&Value> = step
+            .write
+            .iter()
+            .map(|l| l.get("request").unwrap_or(&l["message"]))
+            .collect();
+        assert_eq!(
+            asked,
+            [
+                &json!({"subtype": "set_model", "model": "haiku"}),
+                &json!({"subtype": "apply_flag_settings", "settings": {"effortLevel": "high"}}),
+                &json!({"role": "user", "content": "hi"}),
+            ]
+        );
+
+        let mut gone = Claude::new(None, Some(pick("opus-3", None)));
+        gone.start("/w");
+        gone.send("hi").unwrap();
+        let step = gone.read(line(MODELS));
+        assert!(matches!(&step.events[0], ChatEvent::Log { text } if text.contains("opus-3")));
+        assert_eq!(step.write.len(), 1);
+        assert_eq!(step.write[0]["message"]["content"], "hi");
     }
 
     #[test]

@@ -8,7 +8,8 @@ use std::collections::{HashMap, HashSet};
 use serde_json::{json, Value};
 
 use super::protocol::{
-    about_sign_in, cut, shown, str_of, ChatEvent, Driver, Step, ToolStatus, MAX_TOOL_TEXT,
+    about_sign_in, checked, cut, shown, str_of, ChatEvent, Choice, Driver, Model, Models, Step,
+    ToolStatus, MAX_TOOL_TEXT,
 };
 
 /// A permission request: its JSON-RPC id, the agent's options, and the tool call's id.
@@ -39,6 +40,36 @@ pub struct Acp {
     /// the agent replays its history, which the window already shows.
     resume: Option<String>,
     loading: bool,
+    models: Models,
+}
+
+/// The models a session offers, from its `session/new` or `session/load` result, and the one
+/// it uses.
+fn models_of(result: &Value) -> (Vec<Model>, &str) {
+    let list = result
+        .pointer("/models/availableModels")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|m| {
+            let id = str_of(m, "modelId");
+            (!id.is_empty()).then(|| Model {
+                id: id.to_string(),
+                name: match str_of(m, "name") {
+                    "" => id.to_string(),
+                    name => name.to_string(),
+                },
+                description: str_of(m, "description").to_string(),
+                efforts: vec![],
+                default_effort: None,
+            })
+        })
+        .collect();
+    let current = result
+        .pointer("/models/currentModelId")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    (list, current)
 }
 
 /// What the chat calls a tool of an ACP kind.
@@ -93,10 +124,36 @@ fn tool_content(content: Option<&Value>) -> String {
 }
 
 impl Acp {
-    pub fn resuming(resume: Option<&str>) -> Self {
+    /// A session that loads session `resume` (already checked as a plain id), if any, on the
+    /// model `choice`, if it is one Gemini CLI offers.
+    pub fn new(resume: Option<&str>, choice: Option<Choice>) -> Self {
         Self {
             resume: resume.map(str::to_string),
+            models: Models::wanting(choice),
             ..Self::default()
+        }
+    }
+
+    fn set_model(&mut self, session: &str, model: &str) -> Value {
+        self.request(
+            "session/set_model",
+            json!({"sessionId": session, "modelId": model}),
+        )
+    }
+
+    /// The session's models: the one chosen at the start is set before anything is sent.
+    fn listed(&mut self, session: &str, result: &Value, step: &mut Step) {
+        let (list, current) = models_of(result);
+        self.models.using(current);
+        if let Some(choice) = self.models.listed(list, step) {
+            if self.models.current.as_deref() != Some(choice.model.as_str()) {
+                let line = self.set_model(session, &choice.model);
+                step.send(line);
+            }
+            self.models.chosen = Some(choice);
+        }
+        if !self.models.list.is_empty() {
+            step.show(self.models.event());
         }
     }
 
@@ -159,6 +216,12 @@ impl Acp {
                 step.send(new);
                 return;
             }
+            if method == "session/set_model" {
+                step.show(ChatEvent::Log {
+                    text: format!("Gemini CLI did not change the model: {message}"),
+                });
+                return;
+            }
             if method == "session/new" {
                 self.failed = true;
             }
@@ -203,12 +266,15 @@ impl Acp {
                 self.loading = false;
                 if let Some(session) = self.resume.clone() {
                     step.show(ChatEvent::Resumed { ok: true });
+                    self.listed(&session, &result, step);
                     self.ready(session, step);
                 }
             }
             "session/new" => {
                 if let Some(session) = result.get("sessionId").and_then(Value::as_str) {
-                    self.ready(session.to_string(), step);
+                    let session = session.to_string();
+                    self.listed(&session, &result, step);
+                    self.ready(session, step);
                 }
             }
             "session/prompt" => {
@@ -447,6 +513,17 @@ impl Driver for Acp {
         }
         step
     }
+
+    fn choose(&mut self, choice: Choice) -> Result<Step, String> {
+        checked(&self.models.list, &choice)?;
+        let session = self.session.clone().ok_or("the session has not started")?;
+        let mut step = Step::default();
+        let line = self.set_model(&session, &choice.model);
+        step.send(line);
+        self.models.chosen = Some(choice);
+        step.show(self.models.event());
+        Ok(step)
+    }
 }
 
 #[cfg(test)]
@@ -644,7 +721,7 @@ mod tests {
 
     #[test]
     fn a_session_is_loaded_without_its_replayed_history_or_a_new_one_starts() {
-        let mut a = Acp::resuming(Some("s-9"));
+        let mut a = Acp::new(Some("s-9"), None);
         a.start("/w");
         let load = a.read(line(r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}}"#));
         assert_eq!(
@@ -665,7 +742,7 @@ mod tests {
         let after = a.read(line(r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"new"}}}}"#));
         assert_eq!(after.events.len(), 1);
 
-        let mut b = Acp::resuming(Some("s-9"));
+        let mut b = Acp::new(Some("s-9"), None);
         b.start("/w");
         b.read(line(r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}}"#));
         let failed = b.read(line(
@@ -674,13 +751,100 @@ mod tests {
         assert!(failed.events.contains(&ChatEvent::Resumed { ok: false }));
         assert_eq!(failed.write[0]["method"], "session/new");
 
-        let mut c = Acp::resuming(Some("s-9"));
+        let mut c = Acp::new(Some("s-9"), None);
         c.start("/w");
         let unsupported = c.read(line(
             r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#,
         ));
         assert_eq!(unsupported.events, vec![ChatEvent::Resumed { ok: false }]);
         assert_eq!(unsupported.write[0]["method"], "session/new");
+    }
+
+    /// `session/new` as Gemini CLI 0.63.0 answered it, cut to the fields that matter.
+    const NEW: &str = r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s-1",
+        "modes":{"availableModes":[{"id":"default","name":"Default"}],"currentModeId":"default"},
+        "models":{"availableModels":[{"modelId":"auto","name":"Auto","description":"Let Gemini CLI decide"},
+            {"modelId":"gemini-2.5-pro","name":"gemini-2.5-pro"}],"currentModelId":"auto"}}}"#;
+
+    fn pick(model: &str) -> Choice {
+        Choice {
+            model: model.into(),
+            effort: None,
+        }
+    }
+
+    #[test]
+    fn the_sessions_models_are_shown_and_a_choice_is_set_on_it() {
+        let mut a = Acp::default();
+        a.start("/w");
+        a.read(line(
+            r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#,
+        ));
+        let new = a.read(line(NEW));
+        let ChatEvent::Models {
+            models,
+            model,
+            effort,
+            current,
+        } = &new.events[0]
+        else {
+            panic!("{:?}", new.events);
+        };
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].description, "Let Gemini CLI decide");
+        assert!(models[1].efforts.is_empty()); // Gemini CLI offers no effort to choose
+        assert_eq!(
+            (model.as_deref(), effort, current.as_deref()),
+            (Some("auto"), &None, Some("auto"))
+        );
+        assert!(a.choose(pick("gemini-9")).is_err());
+        assert!(a
+            .choose(Choice {
+                model: "auto".into(),
+                effort: Some("high".into())
+            })
+            .is_err());
+        let chosen = a.choose(pick("gemini-2.5-pro")).unwrap();
+        assert_eq!(
+            chosen.write,
+            vec![
+                json!({"jsonrpc": "2.0", "id": 3, "method": "session/set_model",
+                "params": {"sessionId": "s-1", "modelId": "gemini-2.5-pro"}})
+            ]
+        );
+        assert!(matches!(&chosen.events[..],
+            [ChatEvent::Models { model: Some(m), .. }] if m == "gemini-2.5-pro"));
+        let refused = a.read(line(
+            r#"{"jsonrpc":"2.0","id":3,"error":{"code":-32603,"message":"no such model"}}"#,
+        ));
+        assert!(
+            matches!(&refused.events[..], [ChatEvent::Log { text }] if text.contains("no such model"))
+        );
+    }
+
+    #[test]
+    fn a_choice_from_before_is_set_before_the_first_prompt() {
+        let mut a = Acp::new(None, Some(pick("gemini-2.5-pro")));
+        a.start("/w");
+        a.read(line(
+            r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#,
+        ));
+        assert!(a.send("hi").unwrap().write.is_empty());
+        let step = a.read(line(NEW));
+        assert_eq!(
+            step.write
+                .iter()
+                .map(|l| l["method"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["session/set_model", "session/prompt"]
+        );
+        // what it already uses is not set again
+        let mut same = Acp::new(None, Some(pick("auto")));
+        same.start("/w");
+        same.read(line(
+            r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#,
+        ));
+        assert!(same.read(line(NEW)).write.is_empty());
     }
 
     #[test]

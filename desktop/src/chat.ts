@@ -3,11 +3,13 @@
 // things happened: its reasoning (folded), its words (Markdown), its tool steps (each opens to
 // what it was given and what came back), and any approval it asks for. Model and tool text is
 // untrusted: it is only ever set as text, and Markdown is built as elements, never as HTML.
+// Under the message box, the model and effort: the CLI's own list, chosen from for the next
+// message on.
 
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { button, el, plain } from "./dom";
 import { markdown } from "./markdown";
-import type { ChatEvent, Cli, Report, ToolStatus } from "./types";
+import type { ChatEvent, Choice, Cli, Model, Report, ToolStatus } from "./types";
 
 const STATUS_TEXT: Record<ToolStatus, string> = {
   running: "running",
@@ -27,7 +29,12 @@ export type ChatHooks = {
   conversation: (id: string | null) => void;
   /** The CLI would not continue the conversation and has ended: start a new one. */
   startOver: () => void;
+  /** A model and effort were chosen: the session starts with them again, as new chats do. */
+  chose: (choice: Choice) => void;
 };
+
+/** What the CLI said of its models, last. */
+type Models = Extract<ChatEvent, { kind: "models" }>;
 
 /** One reply: the agent's part of a turn. */
 type Reply = {
@@ -69,6 +76,16 @@ export class ChatPane {
   private generation = 0;
   private exited: Promise<void> = Promise.resolve();
   private markExited: () => void = () => undefined;
+  private readonly modelSelect: HTMLSelectElement;
+  private readonly effortSelect: HTMLSelectElement;
+  private readonly picker: HTMLElement;
+  private models: Models | null = null;
+  /** Asked for as this process started: said if the CLI does not offer it. */
+  private wanted: Choice | null = null;
+  private choosing = false;
+  /** The last "your next messages go to" line: changed again, rather than added to, while it
+   * is the last thing in the conversation. */
+  private choiceNote: HTMLElement | null = null;
 
   constructor(
     readonly box: HTMLElement,
@@ -104,10 +121,25 @@ export class ChatPane {
     this.input.addEventListener("input", () => this.grow());
     this.sendButton = el("button", "send", "Send");
     this.sendButton.type = "submit";
-    const hint = el("div", "composer-hint muted", "Enter to send · Shift+Enter for a new line");
+    const hint = el("span", "composer-hint muted", "Enter to send · Shift+Enter for a new line");
     const row = el("div", "composer-row");
     row.append(this.input, this.sendButton);
-    composer.append(row, hint);
+    this.modelSelect = el("select", "pick-model");
+    this.modelSelect.setAttribute("aria-label", "Model");
+    this.effortSelect = el("select", "pick-effort");
+    this.effortSelect.setAttribute("aria-label", "Reasoning effort");
+    this.modelSelect.addEventListener("change", () => void this.choose(true));
+    this.effortSelect.addEventListener("change", () => void this.choose(false));
+    this.picker = el("div", "picker");
+    this.picker.hidden = true;
+    const effortLabel = el("label", "pick");
+    effortLabel.append(el("span", "muted", "Effort"), this.effortSelect);
+    const modelLabel = el("label", "pick");
+    modelLabel.append(el("span", "muted", "Model"), this.modelSelect);
+    this.picker.append(modelLabel, effortLabel);
+    const foot = el("div", "composer-foot");
+    foot.append(this.picker, hint);
+    composer.append(row, foot);
     composer.addEventListener("submit", (e) => {
       e.preventDefault();
       if (this.busy) void this.interrupt();
@@ -116,9 +148,10 @@ export class ChatPane {
     box.append(this.feed, this.logBox, composer);
   }
 
-  /** Start the CLI's session: a new conversation, or `resume`, by the CLI's own id. What is
-   * already in the window stays; `divider`, if given, marks where this part begins. */
-  async start(folder: string, resume: string | null = null, divider = ""): Promise<void> {
+  /** Start the CLI's session: a new conversation, or `resume`, by the CLI's own id, on the
+   * model and effort `choice` if the CLI offers them. What is already in the window stays;
+   * `divider`, if given, marks where this part begins. */
+  async start(folder: string, resume: string | null = null, divider = "", choice: Choice | null = null): Promise<void> {
     this.id = null;
     this.generation += 1;
     this.ended = false;
@@ -126,6 +159,8 @@ export class ChatPane {
     this.refused = false;
     this.sentAny = false;
     this.signInShown = false;
+    this.wanted = choice;
+    this.models = null; // a new process: its own list, when it says
     this.exited = new Promise((done) => (this.markExited = done));
     if (divider) this.feed.append(el("div", "divider", divider));
     const events = new Channel<ChatEvent>();
@@ -133,7 +168,14 @@ export class ChatPane {
     this.hooks.changed("starting", "starting");
     this.update();
     try {
-      this.id = await invoke<number>("open_chat", { cli: this.cli.name, cwd: folder, resume, events });
+      this.id = await invoke<number>("open_chat", {
+        cli: this.cli.name,
+        cwd: folder,
+        resume,
+        model: choice?.model ?? null,
+        effort: choice?.effort ?? null,
+        events,
+      });
       if (!this.ended) this.hooks.changed("running", "recording");
     } catch (e) {
       this.note(plain(e), "error");
@@ -210,6 +252,100 @@ export class ChatPane {
     this.sendButton.title = this.busy ? "Stop this turn" : "Send (Enter)";
     this.sendButton.disabled = !this.running;
     this.input.disabled = !this.running;
+    // a choice is for the next message: not while a turn runs
+    const fixed = !this.running || this.busy || this.choosing || !this.models;
+    this.modelSelect.disabled = fixed;
+    this.effortSelect.disabled = fixed;
+    this.picker.title = this.busy ? "Choose when this turn is done" : "";
+  }
+
+  // -- the model and effort ---------------------------------------------------------------
+
+  /** The CLI's models and what is in use, as the selects show them. */
+  private showModels(m: Models): void {
+    this.models = m;
+    this.picker.hidden = m.models.length === 0;
+    if (this.wanted) {
+      if (m.model !== this.wanted.model) {
+        const was = this.wanted.effort ? `${this.wanted.model} with ${this.wanted.effort} effort` : this.wanted.model;
+        this.note(`${this.cli.label} does not offer ${was} now, so it uses its own setting.`, "note");
+      }
+      this.wanted = null;
+    }
+    const models = this.modelSelect;
+    models.replaceChildren();
+    if (m.model === null) {
+      // the CLI's own setting, which is not one of its list: shown, not chosen again
+      const own = el("option", undefined, m.current ? `${m.current} (current)` : "Current setting");
+      own.value = "";
+      own.disabled = true;
+      own.title = `${this.cli.label}'s own setting`;
+      models.append(own);
+    }
+    for (const model of m.models) {
+      const option = el("option", undefined, model.name);
+      option.value = model.id;
+      option.title = model.description;
+      models.append(option);
+    }
+    models.value = m.model ?? "";
+    const chosen = this.model(m.model);
+    models.title = chosen?.description ?? "";
+    this.showEfforts(chosen, m.effort);
+    this.update();
+  }
+
+  private model(id: string | null): Model | undefined {
+    return this.models?.models.find((x) => x.id === id);
+  }
+
+  private showEfforts(model: Model | undefined, effort: string | null): void {
+    const select = this.effortSelect;
+    select.replaceChildren();
+    const label = select.parentElement as HTMLElement;
+    label.hidden = !model || model.efforts.length === 0;
+    if (label.hidden || !model) return;
+    const own = el("option", undefined, model.default_effort ? `Default (${model.default_effort})` : "Default");
+    own.value = "";
+    select.append(own);
+    for (const e of model.efforts) {
+      const option = el("option", undefined, e);
+      option.value = e;
+      select.append(option);
+    }
+    select.value = effort && model.efforts.includes(effort) ? effort : "";
+  }
+
+  /** The user chose a model or an effort: it applies from the next message. */
+  private async choose(modelChanged: boolean): Promise<void> {
+    const m = this.models;
+    if (!m || !this.running || this.busy) return;
+    const model = this.model(this.modelSelect.value);
+    if (!model) return;
+    // a new model keeps the effort if it takes it; else it is the model's own default
+    const kept = m.effort !== null && model.efforts.includes(m.effort) ? m.effort : null;
+    const effort = modelChanged ? kept : this.effortSelect.value || null;
+    const choice: Choice = { model: model.id, effort };
+    this.choosing = true;
+    this.update();
+    try {
+      await invoke("chat_choose", { id: this.id, model: choice.model, effort: choice.effort });
+      const effortText = model.efforts.length ? `, with ${effort ?? "its default"} effort` : "";
+      const text = `Your next messages go to ${model.name}${effortText}.`;
+      if (this.choiceNote && this.feed.lastElementChild === this.choiceNote) this.choiceNote.textContent = text;
+      else {
+        this.choiceNote = el("div", "line note", text);
+        this.feed.append(this.choiceNote);
+      }
+      this.hooks.chose(choice);
+    } catch (e) {
+      this.note(plain(e), "error");
+      this.showModels(m); // back to what is in use
+    } finally {
+      this.choosing = false;
+      this.update();
+      this.scroll(true);
+    }
   }
 
   // -- the reply in progress --------------------------------------------------------------
@@ -358,6 +494,9 @@ export class ChatPane {
           this.note(`${this.cli.label} could not continue the conversation, so this is a new one.`, "note");
           this.hooks.conversation(null);
         }
+        break;
+      case "models":
+        this.showModels(event);
         break;
       case "log":
         this.logLine(event.text);

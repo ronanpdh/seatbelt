@@ -8,8 +8,8 @@ use std::collections::HashMap;
 use serde_json::{json, Value};
 
 use super::protocol::{
-    about_sign_in, content_text, cut, shown, str_of, ChatEvent, Driver, Step, ToolStatus,
-    MAX_TOOL_TEXT,
+    about_sign_in, checked, content_text, cut, shown, str_of, ChatEvent, Choice, Driver, Model,
+    Models, Step, ToolStatus, MAX_TOOL_TEXT,
 };
 
 const APP: &str = "seatbelt-desktop";
@@ -33,13 +33,69 @@ pub struct Codex {
     reasoned: std::collections::HashSet<String>,
     /// The thread to resume, by Codex's own id (already checked as a plain id).
     resume: Option<String>,
+    /// The model and effort are given with each turn, once one is chosen.
+    models: Models,
+}
+
+/// Codex's models, from `model/list`: those its own picker shows.
+fn models_of(result: &Value) -> Vec<Model> {
+    result
+        .get("data")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|m| m.get("hidden").and_then(Value::as_bool) != Some(true))
+        .filter_map(|m| {
+            let id = match str_of(m, "model") {
+                "" => str_of(m, "id"),
+                model => model,
+            };
+            (!id.is_empty()).then(|| Model {
+                id: id.to_string(),
+                name: match str_of(m, "displayName") {
+                    "" => id.to_string(),
+                    name => name.to_string(),
+                },
+                description: str_of(m, "description").to_string(),
+                efforts: m
+                    .get("supportedReasoningEfforts")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .map(|e| str_of(e, "reasoningEffort").to_string())
+                    .filter(|e| !e.is_empty())
+                    .collect(),
+                default_effort: Some(str_of(m, "defaultReasoningEffort"))
+                    .filter(|e| !e.is_empty())
+                    .map(str::to_string),
+            })
+        })
+        .collect()
 }
 
 impl Codex {
-    pub fn resuming(resume: Option<&str>) -> Self {
+    /// A session that resumes thread `resume` (already checked as a plain id), if any, on the
+    /// model and effort `choice`, if it is one Codex offers.
+    pub fn new(resume: Option<&str>, choice: Option<Choice>) -> Self {
         Self {
             resume: resume.map(str::to_string),
+            models: Models::wanting(choice),
             ..Self::default()
+        }
+    }
+
+    /// Messages sent before the thread started, or before the model chosen at the start could
+    /// be checked, go now.
+    fn flush(&mut self, step: &mut Step) {
+        let Some(thread) = self.thread.clone() else {
+            return;
+        };
+        if self.models.holds() {
+            return;
+        }
+        for text in std::mem::take(&mut self.queued) {
+            let line = self.turn_start(&thread, &text);
+            step.send(line);
         }
     }
 
@@ -55,10 +111,22 @@ impl Codex {
     }
 
     fn turn_start(&mut self, thread: &str, text: &str) -> Value {
-        self.request(
-            "turn/start",
-            json!({"threadId": thread, "input": [{"type": "text", "text": text, "text_elements": []}]}),
-        )
+        let mut params = json!({"threadId": thread,
+            "input": [{"type": "text", "text": text, "text_elements": []}]});
+        // the model and effort chosen, for this turn and the ones after; no effort chosen is
+        // the model's own default, said rather than left to the effort of an earlier turn
+        if let Some(choice) = &self.models.chosen {
+            params["model"] = json!(choice.model);
+            let model = self.models.list.iter().find(|m| m.id == choice.model);
+            let effort = choice
+                .effort
+                .clone()
+                .or_else(|| model.and_then(|m| m.default_effort.clone()));
+            if let Some(effort) = effort {
+                params["effort"] = json!(effort);
+            }
+        }
+        self.request("turn/start", params)
     }
 
     fn response(&mut self, line: &Value, step: &mut Step) {
@@ -93,6 +161,13 @@ impl Codex {
                         error: Some(message),
                     });
                 }
+                "model/list" => {
+                    step.show(ChatEvent::Log {
+                        text: format!("could not list Codex's models: {message}"),
+                    });
+                    self.models.listed(vec![], step);
+                    self.flush(step);
+                }
                 _ => step.show(ChatEvent::Log {
                     text: format!("{method}: {message}"),
                 }),
@@ -115,30 +190,41 @@ impl Codex {
                     step.show(ChatEvent::SignIn {
                         reason: "Codex is not signed in.".into(),
                     });
-                } else if let Some(thread) = self.resume.clone() {
-                    let cwd = self.cwd.clone();
-                    let resume = self.request(
-                        "thread/resume",
-                        json!({"threadId": thread, "cwd": cwd, "excludeTurns": true}),
-                    );
-                    step.send(resume);
                 } else {
-                    let start = self.thread_start();
-                    step.send(start);
+                    if let Some(thread) = self.resume.clone() {
+                        let cwd = self.cwd.clone();
+                        let resume = self.request(
+                            "thread/resume",
+                            json!({"threadId": thread, "cwd": cwd, "excludeTurns": true}),
+                        );
+                        step.send(resume);
+                    } else {
+                        let start = self.thread_start();
+                        step.send(start);
+                    }
+                    let list = self.request("model/list", json!({}));
+                    step.send(list);
                 }
+            }
+            "model/list" => {
+                if let Some(choice) = self.models.listed(models_of(&result), step) {
+                    self.models.chosen = Some(choice);
+                }
+                step.show(self.models.event());
+                self.flush(step);
             }
             "thread/start" | "thread/resume" => {
                 let thread = result.pointer("/thread/id").and_then(Value::as_str);
                 if let Some(thread) = thread.map(str::to_string) {
-                    for text in std::mem::take(&mut self.queued) {
-                        let line = self.turn_start(&thread, &text);
-                        step.send(line);
-                    }
                     if method == "thread/resume" {
                         step.show(ChatEvent::Resumed { ok: true });
                     }
                     step.show(ChatEvent::Conversation { id: thread.clone() });
                     self.thread = Some(thread);
+                    if self.models.using(str_of(&result, "model")) && self.models.known {
+                        step.show(self.models.event());
+                    }
+                    self.flush(step);
                 }
             }
             "turn/start" => {
@@ -425,13 +511,8 @@ impl Driver for Codex {
             return Err("Codex is not signed in: sign in, then start the chat again".into());
         }
         let mut step = Step::default();
-        match self.thread.clone() {
-            Some(thread) => {
-                let line = self.turn_start(&thread, text);
-                step.send(line);
-            }
-            None => self.queued.push(text.to_string()),
-        }
+        self.queued.push(text.to_string());
+        self.flush(&mut step);
         Ok(step)
     }
 
@@ -463,6 +544,14 @@ impl Driver for Codex {
         }
         step
     }
+
+    fn choose(&mut self, choice: Choice) -> Result<Step, String> {
+        checked(&self.models.list, &choice)?;
+        self.models.chosen = Some(choice);
+        let mut step = Step::default();
+        step.show(self.models.event());
+        Ok(step)
+    }
 }
 
 #[cfg(test)]
@@ -473,7 +562,19 @@ mod tests {
         serde_json::from_str(s).unwrap()
     }
 
-    /// Start a session as P4 did: initialize, account, thread.
+    /// `model/list`'s answer, cut to the fields that matter, as Codex 0.162.0 gave it.
+    const LIST: &str = r#"{"id":4,"result":{"data":[
+        {"id":"gpt","model":"gpt","displayName":"GPT","description":"Workhorse.","hidden":false,
+         "isDefault":true,"defaultReasoningEffort":"low",
+         "supportedReasoningEfforts":[{"reasoningEffort":"low","description":""},{"reasoningEffort":"high","description":""}]},
+        {"id":"gpt-mini","model":"gpt-mini","displayName":"GPT mini","description":"Fast.","hidden":false,
+         "isDefault":false,"defaultReasoningEffort":"medium",
+         "supportedReasoningEfforts":[{"reasoningEffort":"medium","description":""}]},
+        {"id":"secret","model":"secret","displayName":"Secret","description":"","hidden":true,
+         "isDefault":false,"defaultReasoningEffort":"low","supportedReasoningEfforts":[]}
+        ],"nextCursor":null}}"#;
+
+    /// Start a session as P4 did: initialize, account, thread, models.
     fn started(account: &str) -> (Codex, Step) {
         let mut c = Codex::default();
         let mut all = c.start("/work");
@@ -481,6 +582,7 @@ mod tests {
             r#"{"id":1,"result":{"userAgent":"x","codexHome":"/h","platformFamily":"unix","platformOs":"linux"}}"#.to_string(),
             format!(r#"{{"id":2,"result":{account}}}"#),
             r#"{"id":3,"result":{"thread":{"id":"th-1"},"model":"gpt"}}"#.to_string(),
+            LIST.to_string(),
         ] {
             let step = c.read(line(&l));
             all.events.extend(step.events);
@@ -502,18 +604,117 @@ mod tests {
                 json!({"method": "initialized"}),
                 json!({"id": 2, "method": "account/read", "params": {}}),
                 json!({"id": 3, "method": "thread/start", "params": {"cwd": "/work"}}),
+                json!({"id": 4, "method": "model/list", "params": {}}),
             ]
         );
         assert_eq!(
-            step.events,
-            vec![ChatEvent::Conversation { id: "th-1".into() }]
+            step.events[0],
+            ChatEvent::Conversation { id: "th-1".into() }
+        );
+        let ChatEvent::Models {
+            models,
+            model,
+            effort,
+            current,
+        } = &step.events[1]
+        else {
+            panic!("{:?}", step.events[1]);
+        };
+        // the hidden model is left out, as Codex's own picker leaves it out
+        assert_eq!(
+            models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["gpt", "gpt-mini"]
+        );
+        assert_eq!(models[0].efforts, ["low", "high"]);
+        assert_eq!(models[0].default_effort.as_deref(), Some("low"));
+        assert_eq!(
+            (model.as_deref(), effort, current.as_deref()),
+            (Some("gpt"), &None, Some("gpt"))
         );
         assert_eq!(c.thread.as_deref(), Some("th-1"));
     }
 
+    fn turn(c: &mut Codex, text: &str) -> Value {
+        let step = c.send(text).unwrap();
+        assert_eq!(step.write.len(), 1);
+        step.write[0]["params"].clone()
+    }
+
+    #[test]
+    fn a_model_and_effort_chosen_go_with_each_turn_after() {
+        let (mut c, _) = started(r#"{"account":null,"requiresOpenaiAuth":false}"#);
+        // nothing chosen: Codex's own setting
+        assert!(turn(&mut c, "a").get("model").is_none());
+        let pick = |model: &str, effort: Option<&str>| Choice {
+            model: model.into(),
+            effort: effort.map(str::to_string),
+        };
+        assert!(c.choose(pick("gpt-9", None)).is_err());
+        assert!(c.choose(pick("secret", None)).is_err());
+        assert!(c.choose(pick("gpt-mini", Some("high"))).is_err());
+        let chosen = c.choose(pick("gpt", Some("high"))).unwrap();
+        assert!(chosen.write.is_empty()); // it goes with the next turn
+        assert!(matches!(&chosen.events[..],
+            [ChatEvent::Models { model: Some(m), effort: Some(e), .. }] if m == "gpt" && e == "high"));
+        let params = turn(&mut c, "b");
+        assert_eq!(
+            (&params["model"], &params["effort"]),
+            (&json!("gpt"), &json!("high"))
+        );
+        // the model's own default effort is said, not left to the one before
+        c.choose(pick("gpt-mini", None)).unwrap();
+        let params = turn(&mut c, "c");
+        assert_eq!(
+            (&params["model"], &params["effort"]),
+            (&json!("gpt-mini"), &json!("medium"))
+        );
+    }
+
+    #[test]
+    fn a_choice_from_before_is_used_if_offered_and_waits_for_the_list() {
+        let mut c = Codex::new(
+            None,
+            Some(Choice {
+                model: "gpt-mini".into(),
+                effort: None,
+            }),
+        );
+        c.start("/w");
+        c.read(line(r#"{"id":1,"result":{}}"#));
+        c.read(line(
+            r#"{"id":2,"result":{"account":null,"requiresOpenaiAuth":false}}"#,
+        ));
+        c.read(line(
+            r#"{"id":3,"result":{"thread":{"id":"th-1"},"model":"gpt"}}"#,
+        ));
+        assert!(c.send("early").unwrap().write.is_empty());
+        let step = c.read(line(LIST));
+        assert_eq!(step.write[0]["params"]["model"], "gpt-mini");
+        assert_eq!(step.write[0]["params"]["effort"], "medium");
+
+        let mut gone = Codex::new(
+            None,
+            Some(Choice {
+                model: "gpt-old".into(),
+                effort: None,
+            }),
+        );
+        gone.start("/w");
+        gone.read(line(r#"{"id":1,"result":{}}"#));
+        gone.read(line(
+            r#"{"id":2,"result":{"account":null,"requiresOpenaiAuth":false}}"#,
+        ));
+        gone.read(line(
+            r#"{"id":3,"result":{"thread":{"id":"th-1"},"model":"gpt"}}"#,
+        ));
+        let step = gone.read(line(LIST));
+        assert!(matches!(&step.events[0], ChatEvent::Log { text } if text.contains("gpt-old")));
+        assert!(turn(&mut gone, "x").get("model").is_none());
+    }
+
     #[test]
     fn a_thread_is_resumed_by_its_id_or_a_new_one_starts() {
-        let mut c = Codex::resuming(Some("th-7"));
+        let mut c = Codex::new(Some("th-7"), None);
         let mut all = c.start("/work");
         for l in [
             r#"{"id":1,"result":{}}"#,
@@ -536,7 +737,7 @@ mod tests {
                 ChatEvent::Conversation { id: "th-7".into() }
             ]
         );
-        let mut gone = Codex::resuming(Some("th-gone"));
+        let mut gone = Codex::new(Some("th-gone"), None);
         gone.start("/w");
         gone.read(line(r#"{"id":1,"result":{}}"#));
         gone.read(line(
@@ -548,7 +749,7 @@ mod tests {
         assert!(step.events.contains(&ChatEvent::Resumed { ok: false }));
         assert_eq!(
             step.write,
-            vec![json!({"id": 4, "method": "thread/start", "params": {"cwd": "/w"}})]
+            vec![json!({"id": 5, "method": "thread/start", "params": {"cwd": "/w"}})]
         );
     }
 
@@ -573,7 +774,7 @@ mod tests {
         assert_eq!(
             step.write,
             vec![
-                json!({"id": 4, "method": "turn/start", "params": {"threadId": "th-9",
+                json!({"id": 5, "method": "turn/start", "params": {"threadId": "th-9",
             "input": [{"type": "text", "text": "early", "text_elements": []}]}})
             ]
         );
@@ -584,7 +785,7 @@ mod tests {
         let (mut c, _) = started(r#"{"account":null,"requiresOpenaiAuth":false}"#);
         c.send("please run it").unwrap();
         let lines = [
-            r#"{"id":4,"result":{"turn":{"id":"tu-1","status":"inProgress"}}}"#,
+            r#"{"id":5,"result":{"turn":{"id":"tu-1","status":"inProgress"}}}"#,
             r#"{"method":"item/started","params":{"item":{"type":"commandExecution","id":"call_1","command":"/bin/bash -lc 'echo hi > out.txt'","cwd":"/work","status":"inProgress"},"threadId":"th-1","turnId":"tu-1"}}"#,
             r#"{"method":"item/commandExecution/requestApproval","id":0,"params":{"kind":"command","threadId":"th-1","turnId":"tu-1","itemId":"call_1","command":"/bin/bash -lc 'echo hi > out.txt'","cwd":"/work"}}"#,
         ];
@@ -672,7 +873,7 @@ mod tests {
     fn declining_interrupting_and_unhandled_requests() {
         let (mut c, _) = started(r#"{"account":null,"requiresOpenaiAuth":false}"#);
         c.send("x").unwrap();
-        c.read(line(r#"{"id":4,"result":{"turn":{"id":"tu-1"}}}"#));
+        c.read(line(r#"{"id":5,"result":{"turn":{"id":"tu-1"}}}"#));
         c.read(line(r#"{"method":"item/started","params":{"item":{"type":"fileChange","id":"fc","changes":[{"path":"a.rs","kind":"update","diff":""}],"status":"inProgress"}}}"#));
         let ask = c.read(line(r#"{"method":"item/fileChange/requestApproval","id":"s-1","params":{"itemId":"fc","reason":"needs write"}}"#));
         assert_eq!(
@@ -693,7 +894,7 @@ mod tests {
             stop.write,
             vec![
                 json!({"id": 7, "result": {"decision": "cancel"}}),
-                json!({"id": 5, "method": "turn/interrupt", "params": {"threadId": "th-1", "turnId": "tu-1"}}),
+                json!({"id": 6, "method": "turn/interrupt", "params": {"threadId": "th-1", "turnId": "tu-1"}}),
             ]
         );
         let other = c.read(line(

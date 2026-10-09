@@ -17,6 +17,19 @@ export type Report = {
 };
 
 export type ToolStatus = "running" | "done" | "failed" | "declined";
+/** A model a CLI offers, as its own list gives it. */
+export type Model = {
+  id: string;
+  name: string;
+  description: string;
+  /** The reasoning efforts it takes; empty when there is no choice. */
+  efforts: string[];
+  default_effort: string | null;
+};
+
+/** A model, and an effort (null: the model's own default), by the CLI's own ids. */
+export type Choice = { model: string; effort: string | null };
+
 export type ChatEvent =
   | { kind: "text"; id: string; delta: string }
   | { kind: "message"; id: string; text: string }
@@ -30,6 +43,7 @@ export type ChatEvent =
   | { kind: "sign_in"; reason: string }
   | { kind: "conversation"; id: string }
   | { kind: "resumed"; ok: boolean }
+  | { kind: "models"; models: Model[]; model: string | null; effort: string | null; current: string | null }
   | { kind: "log"; text: string }
   | { kind: "exit"; code: number | null; report: Report | null };
 

@@ -14,6 +14,7 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
   - **Chats with your own Claude Code, Codex and Gemini CLI,** each through `seatbelt run`, so each chat is recorded as a signed run. They run in their headless modes: Claude Code's stream-json, Codex's `app-server`, Gemini CLI's ACP.
   - **Tool approvals in the chat:** an Allow or Deny card for each tool use the CLI asks about, under its own permission rules.
   - **The terminal is for signing in:** a CLI that is not signed in opens in a terminal for its own sign-in, then the chat starts again.
+  - **Model and effort:** pick the model, and the reasoning effort where the model takes one, from the CLI's own list, under the message box. It applies from the next message; the last choice for each CLI is remembered for new chats, if the CLI still offers it.
   - **Runs, a run and usage:** search and filter runs by name, outcome, verification, CLI and date; a run shows what its page shows, with its verification; usage counts this machine's runs by model, person and tool.
 - With `SEATBELT_RUN_REPORT=<file>` in its environment, `seatbelt run` writes a JSON report there as it exits: the run's name, the CLI, whether it recorded locally or through a gateway, its ledgers and pages, and the CLI's exit code. Mode 0600, written whole; the variable is not passed on to the CLI.
 

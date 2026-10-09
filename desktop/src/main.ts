@@ -11,7 +11,7 @@ import { ChatPane } from "./chat";
 import { basename, button, byId, el, plain } from "./dom";
 import { showRun, showRuns, showUsage } from "./records";
 import { TermPane } from "./terminal";
-import type { Cli, Run, Tools } from "./types";
+import type { Choice, Cli, Run, Tools } from "./types";
 import "./style.css";
 
 type State = "starting" | "running" | "ended";
@@ -32,6 +32,8 @@ type Session = {
   signingIn: boolean;
   /** The CLI's own id for the conversation, which the chat and the terminal both continue. */
   conversation: string | null;
+  /** The model and effort the chat starts with; null: the CLI's own setting. */
+  choice: Choice | null;
 };
 type View =
   | { kind: "session"; session: Session }
@@ -198,6 +200,32 @@ function updateCliButtons(): void {
   for (const { cli, button: b } of cliButtons.values()) b.disabled = !ready() || cli.path === null;
 }
 
+// -- the model and effort last chosen for each CLI, remembered on this computer: a new chat
+// starts with them, if the CLI still offers them ---------------------------------------------
+
+const CHOICE_KEY = "seatbelt.model.";
+
+function rememberedChoice(cli: Cli): Choice | null {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(CHOICE_KEY + cli.name) ?? "null");
+    if (saved && typeof saved === "object") {
+      const { model, effort } = saved as Record<string, unknown>;
+      if (typeof model === "string" && (effort === null || typeof effort === "string")) return { model, effort };
+    }
+  } catch {
+    // storage can be unavailable, or hold something else: the CLI's own setting then
+  }
+  return null;
+}
+
+function rememberChoice(cli: Cli, choice: Choice): void {
+  try {
+    localStorage.setItem(CHOICE_KEY + cli.name, JSON.stringify(choice));
+  } catch {
+    // not remembered this time; this session still uses it
+  }
+}
+
 // -- sessions: a chat, or the CLI's own interface in a terminal ------------------------------
 
 async function newSession(cli: Cli): Promise<void> {
@@ -224,6 +252,7 @@ async function newSession(cli: Cli): Promise<void> {
     closing: false,
     signingIn: false,
     conversation: null,
+    choice: rememberedChoice(cli),
   };
   sessions.push(s);
   byId("tabs").append(s.item);
@@ -256,11 +285,15 @@ async function startChat(s: Session, resume: string | null = null, divider = "")
         s.conversation = id;
       },
       startOver: () => void startChat(s, null),
+      chose: (choice) => {
+        s.choice = choice;
+        rememberChoice(s.cli, choice);
+      },
     });
     s.chat = chat;
   }
   s.chat.hidden = false;
-  await s.chat.start(s.folder, resume, divider);
+  await s.chat.start(s.folder, resume, divider, s.choice);
   if (isShown(s)) s.chat.focus();
 }
 

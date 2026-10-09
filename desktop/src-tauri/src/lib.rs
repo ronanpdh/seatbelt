@@ -29,7 +29,7 @@ use tauri::ipc::Channel;
 use tauri::{Emitter, Manager, RunEvent, State, WindowEvent};
 use tauri_plugin_opener::OpenerExt;
 
-use crate::chat::protocol::ChatEvent;
+use crate::chat::protocol::{ChatEvent, Choice};
 use crate::chat::Chats;
 use crate::pty::{Launch, TabEvent, Tabs, CLOSE_WAIT};
 use crate::tools::Tools;
@@ -195,14 +195,18 @@ fn open_tab(
     state.tabs.open(launch, events)
 }
 
-/// Start a chat: the CLI's headless session, through `seatbelt run`.
+/// Start a chat: the CLI's headless session, through `seatbelt run`, on `model` and `effort`
+/// if the CLI offers them.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // a command's arguments are what the web view names
 fn open_chat(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     cli: String,
     cwd: String,
     resume: Option<String>,
+    model: Option<String>,
+    effort: Option<String>,
     events: Channel<ChatEvent>,
 ) -> Result<u32, String> {
     let start = prepare(&app, &state, &cli, cwd)?;
@@ -214,6 +218,7 @@ fn open_chat(
         search_path: &start.search_path,
         report: start.report,
         resume: resume.as_deref(),
+        choice: model.map(|model| Choice { model, effort }),
     };
     state.chats.open(launch, events)
 }
@@ -231,6 +236,17 @@ fn chat_answer(
     allow: bool,
 ) -> Result<(), String> {
     state.chats.answer(id, &request, allow)
+}
+
+/// Use `model` and `effort` (none: the model's own default) from the chat's next message on.
+#[tauri::command]
+fn chat_choose(
+    state: State<'_, AppState>,
+    id: u32,
+    model: String,
+    effort: Option<String>,
+) -> Result<(), String> {
+    state.chats.choose(id, Choice { model, effort })
 }
 
 #[tauri::command]
@@ -391,6 +407,7 @@ pub fn run() {
             open_chat,
             chat_send,
             chat_answer,
+            chat_choose,
             chat_interrupt,
             close_chat,
             list_runs,

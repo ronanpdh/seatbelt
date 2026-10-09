@@ -1,8 +1,8 @@
 //! Chats: each is `seatbelt run --exe <path> <cli> -- <headless arguments>` with pipes instead
 //! of a terminal, so it is recorded exactly as a terminal session is. seatbelt says its own
 //! lines on stderr; stdout carries only the CLI's protocol, which a driver turns into chat
-//! events. The window can send a message, answer an approval, interrupt, or end the chat;
-//! it never writes to the CLI itself.
+//! events. The window can send a message, answer an approval, choose a model the CLI offers,
+//! interrupt, or end the chat; it never writes to the CLI itself.
 
 mod acp;
 mod claude;
@@ -23,7 +23,7 @@ use serde_json::Value;
 use tauri::ipc::Channel;
 
 use crate::pty::{take_report, CLOSE_WAIT, RUN_REPORT_ENV};
-use protocol::{ChatEvent, Driver, Step};
+use protocol::{ChatEvent, Choice, Driver, Step};
 
 /// How long an ended chat's CLI has, once its input is closed, before `seatbelt run` is asked
 /// to end it as closing a terminal would.
@@ -31,12 +31,13 @@ const EOF_WAIT: Duration = Duration::from_secs(3);
 /// The longest line a CLI may print: anything longer is dropped, not buffered without end.
 const MAX_LINE: usize = 32 * 1024 * 1024;
 
-/// The driver for `cli`, resuming conversation `resume` (a plain id: see `conversation_id`).
-fn driver(cli: &str, resume: Option<&str>) -> Option<Box<dyn Driver>> {
+/// The driver for `cli`, resuming conversation `resume` (a plain id: see `conversation_id`),
+/// on the model and effort `choice` if the CLI offers it.
+fn driver(cli: &str, resume: Option<&str>, choice: Option<Choice>) -> Option<Box<dyn Driver>> {
     match cli {
-        "claude" => Some(Box::new(claude::Claude::resuming(resume))),
-        "codex" => Some(Box::new(codex::Codex::resuming(resume))),
-        "gemini" => Some(Box::new(acp::Acp::resuming(resume))),
+        "claude" => Some(Box::new(claude::Claude::new(resume, choice))),
+        "codex" => Some(Box::new(codex::Codex::new(resume, choice))),
+        "gemini" => Some(Box::new(acp::Acp::new(resume, choice))),
         _ => None,
     }
 }
@@ -51,6 +52,8 @@ pub struct Launch<'a> {
     pub report: PathBuf,
     /// The conversation to continue, by the CLI's own id, checked by `conversation_id`.
     pub resume: Option<&'a str>,
+    /// The model and effort to use, if the CLI offers them; else its own setting.
+    pub choice: Option<Choice>,
 }
 
 struct Session {
@@ -104,7 +107,7 @@ impl Chats {
             Some(id) => Some(protocol::conversation_id(id).ok_or("not a conversation id")?),
             None => None,
         };
-        let mut driver = driver(launch.cli, resume).ok_or("no chat for that CLI")?;
+        let mut driver = driver(launch.cli, resume, launch.choice).ok_or("no chat for that CLI")?;
         let mut child = Command::new(launch.seatbelt)
             .arg("run")
             .arg("--exe")
@@ -182,6 +185,14 @@ impl Chats {
         let session = self.session(id)?;
         let mut session = lock(&session);
         let step = session.driver.answer(request, allow)?;
+        session.apply(step);
+        Ok(())
+    }
+
+    pub fn choose(&self, id: u32, choice: Choice) -> Result<(), String> {
+        let session = self.session(id)?;
+        let mut session = lock(&session);
+        let step = session.driver.choose(choice)?;
         session.apply(step);
         Ok(())
     }
@@ -375,16 +386,23 @@ mod tests {
     }
 
     /// A stand-in `seatbelt` that writes a line to stderr, records its arguments, then plays
-    /// a Claude Code session: it reads one message, asks to run a tool, and ends the turn
-    /// once answered.
+    /// a Claude Code session: it answers `initialize` with two models, reads a model change
+    /// and one message, asks to run a tool, and ends the turn once answered.
     fn start(dir: &Path) -> (Chats, u32, mpsc::Receiver<Value>) {
         use std::os::unix::fs::PermissionsExt;
         let script = format!(
             r#"#!/bin/sh
 echo "$@" > "{args}"
 printf '\033[1mseatbelt\033[0m recording claude on this machine\n' >&2
+read -r init
+echo "$init" > "{got}"
+read -r settings
+echo "$settings" >> "{got}"
+echo '{{"type":"control_response","response":{{"subtype":"success","request_id":"seatbelt-1","response":{{"models":[{{"value":"default","displayName":"Default","supportsEffort":true,"supportedEffortLevels":["low","high"]}},{{"value":"haiku","displayName":"Haiku"}}]}}}}}}'
+read -r chosen
+echo "$chosen" >> "{got}"
 read -r first
-echo "$first" > "{got}"
+echo "$first" >> "{got}"
 echo '{{"type":"control_request","request_id":"r1","request":{{"subtype":"can_use_tool","tool_name":"Bash","input":{{"command":"ls"}},"tool_use_id":"t1"}}}}'
 read -r answer
 echo "$answer" >> "{got}"
@@ -416,6 +434,7 @@ printf '{{"run": "claude-1", "recorded": true}}' > "$SEATBELT_RUN_REPORT"
                     search_path: OsStr::new("/usr/bin:/bin"),
                     report: dir.join("report.json"),
                     resume: None,
+                    choice: None,
                 },
                 events,
             )
@@ -440,6 +459,18 @@ printf '{{"run": "claude-1", "recorded": true}}' > "$SEATBELT_RUN_REPORT"
             next(&rx, "log")["text"],
             "seatbelt recording claude on this machine"
         );
+        let models = next(&rx, "models");
+        assert_eq!(
+            (models["models"][1]["id"].as_str(), models["model"].as_str()),
+            (Some("haiku"), None)
+        );
+        let haiku = |effort: Option<&str>| Choice {
+            model: "haiku".into(),
+            effort: effort.map(str::to_string),
+        };
+        assert!(chats.choose(id, haiku(Some("low"))).is_err()); // Haiku takes no effort here
+        chats.choose(id, haiku(None)).unwrap();
+        assert_eq!(next(&rx, "models")["model"], "haiku");
         chats.send(id, "hello").unwrap();
         let ask = next(&rx, "approval");
         assert_eq!(
@@ -463,8 +494,14 @@ printf '{{"run": "claude-1", "recorded": true}}' > "$SEATBELT_RUN_REPORT"
             .lines()
             .map(|l| serde_json::from_str(l).unwrap())
             .collect();
-        assert_eq!(lines[0]["message"]["content"], "hello");
-        assert_eq!(lines[1]["response"]["response"]["behavior"], "allow");
+        assert_eq!(lines[0]["request"]["subtype"], "initialize");
+        assert_eq!(lines[1]["request"]["subtype"], "get_settings");
+        assert_eq!(
+            lines[2]["request"],
+            serde_json::json!({"subtype": "set_model", "model": "haiku"})
+        );
+        assert_eq!(lines[3]["message"]["content"], "hello");
+        assert_eq!(lines[4]["response"]["response"]["behavior"], "allow");
         assert!(chats.send(id, "again").is_err());
         let _ = std::fs::remove_dir_all(dir);
     }
