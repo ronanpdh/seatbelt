@@ -71,6 +71,9 @@ fn prepare(
             seatbelt.version
         ));
     }
+    if let Some(problem) = &seatbelt.problem {
+        return Err(format!("seatbelt reports a problem: {problem}"));
+    }
     let exe = found
         .cli(cli)
         .and_then(|c| c.path.clone())
@@ -326,7 +329,7 @@ async fn open_page(
 ) -> Result<(), String> {
     let found = state.tools();
     let page = tauri::async_runtime::spawn_blocking(move || {
-        runs::list(&found).and_then(|listing| runs::page_of(&listing, &id))
+        runs::folder(&found).and_then(|folder| runs::file_of(&folder, &id, "html"))
     })
     .await
     .map_err(|e| e.to_string())??;

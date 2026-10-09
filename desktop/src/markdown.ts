@@ -237,7 +237,23 @@ function link(text: string, at: number): { label: string; url: string; end: numb
     else if (text[i] === "]" && --depth === 0) break;
   }
   if (i >= text.length || text[i + 1] !== "(") return null;
-  const close = text.indexOf(")", i + 2);
+  // the url ends at the `)` that closes the link: one that opens a pair in it, as in
+  // wikipedia.org/wiki/Rust_(programming_language), is part of it
+  let close = -1;
+  let open = 0;
+  for (let j = i + 2; j < text.length; j++) {
+    if (text[j] === "\\") {
+      j++;
+    } else if (text[j] === "(") {
+      open++;
+    } else if (text[j] === ")") {
+      if (open === 0) {
+        close = j;
+        break;
+      }
+      open--;
+    }
+  }
   if (close < 0) return null;
   const url = text.slice(i + 2, close).trim().split(/\s+/)[0].replace(/^<|>$/g, "");
   return { label: text.slice(at + 1, i), url, end: close + 1 };

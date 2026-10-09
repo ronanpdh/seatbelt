@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 
 use super::protocol::{
     checked, content_text, cut, shown, str_of, summary, ChatEvent, Choice, Driver, Mode, Model,
-    Models, Modes, Step, ToolStatus,
+    Models, Modes, Setting, Step, ToolStatus,
 };
 
 /// The message a denied tool use gets, which Claude reads.
@@ -35,6 +35,10 @@ pub struct Claude {
     /// The conversation to resume, and the one this session is in, by Claude Code's own id.
     resume: Option<String>,
     conversation: Option<String>,
+    /// Claude Code has been told to trust the folder: its project settings may load. Until
+    /// then they are left out (`--setting-sources user`), since in `-p` Claude Code asks no
+    /// trust question and would run a cloned repository's hooks and MCP servers unasked.
+    project_settings: bool,
     /// A message has been sent: a result before one is Claude Code refusing to resume.
     sent: bool,
     models: Models,
@@ -54,8 +58,10 @@ pub struct Claude {
 enum Asked {
     Initialize,
     Settings,
-    Model,
-    Effort,
+    /// A model, and the choice before it, to go back to if it is refused.
+    Model(Option<Choice>),
+    /// An effort, and the one before it.
+    Effort(Option<String>),
     /// A permission mode, and the one before it, to go back to if it is refused.
     Mode(Option<String>),
 }
@@ -133,6 +139,12 @@ impl Claude {
     }
 
     /// Set permission mode `mode`; the window shows it at once, and goes back if refused.
+    /// Load the folder's project settings too: for a folder Claude Code trusts.
+    pub fn with_project_settings(mut self, trusted: bool) -> Self {
+        self.project_settings = trusted;
+        self
+    }
+
     fn set_mode_line(&mut self, mode: &str, step: &mut Step) {
         let before = self.modes.current.replace(mode.to_string());
         let line = self.ask(
@@ -163,14 +175,15 @@ impl Claude {
         let before = self.models.chosen.take();
         if before.as_ref().map(|c| c.model.as_str()) != Some(choice.model.as_str()) {
             let line = self.ask(
-                Asked::Model,
+                Asked::Model(before.clone()),
                 json!({"subtype": "set_model", "model": choice.model}),
             );
             step.send(line);
         }
-        if before.and_then(|c| c.effort) != choice.effort {
+        let effort_before = before.and_then(|c| c.effort);
+        if effort_before != choice.effort {
             let line = self.ask(
-                Asked::Effort,
+                Asked::Effort(effort_before),
                 json!({"subtype": "apply_flag_settings", "settings": {"effortLevel": choice.effort}}),
             );
             step.send(line);
@@ -212,8 +225,34 @@ impl Claude {
                         "Claude Code did not change the permission mode: {}",
                         cut(str_of(&response, "error"), 2000)
                     ),
+                    refused: Setting::Mode,
                 });
                 step.show(self.modes.event());
+            }
+            // refused: the window shows the model or effort still in use, and says why
+            Asked::Model(before) if failed => {
+                self.models.chosen = before;
+                step.show(ChatEvent::Notice {
+                    text: format!(
+                        "Claude Code did not change the model: {}",
+                        cut(str_of(&response, "error"), 2000)
+                    ),
+                    refused: Setting::Model,
+                });
+                step.show(self.models.event());
+            }
+            Asked::Effort(before) if failed => {
+                if let Some(chosen) = self.models.chosen.as_mut() {
+                    chosen.effort = before;
+                }
+                step.show(ChatEvent::Notice {
+                    text: format!(
+                        "Claude Code did not change the effort: {}",
+                        cut(str_of(&response, "error"), 2000)
+                    ),
+                    refused: Setting::Model,
+                });
+                step.show(self.models.event());
             }
             Asked::Settings if !failed => {
                 let using = answer
@@ -224,17 +263,6 @@ impl Claude {
                     step.show(self.models.event());
                 }
             }
-            Asked::Model | Asked::Effort if failed => step.show(ChatEvent::Log {
-                text: format!(
-                    "Claude Code did not change the {}: {}",
-                    if asked == Asked::Model {
-                        "model"
-                    } else {
-                        "effort"
-                    },
-                    cut(str_of(&response, "error"), 2000)
-                ),
-            }),
             _ => {}
         }
     }
@@ -338,6 +366,12 @@ impl Driver for Claude {
         ]
         .map(String::from)
         .into_iter()
+        .chain(
+            (!self.project_settings)
+                .then(|| ["--setting-sources".to_string(), "user".to_string()])
+                .into_iter()
+                .flatten(),
+        )
         .chain(
             self.resume
                 .iter()
@@ -985,9 +1019,11 @@ mod tests {
             ]
         );
         let refused = c.read(line(r#"{"type":"control_response","response":{"subtype":"error","request_id":"seatbelt-5","error":"no"}}"#));
-        assert!(
-            matches!(&refused.events[..], [ChatEvent::Log { text }] if text.contains("effort: no"))
-        );
+        // refused: said, and the effort still in use shown again
+        assert!(matches!(&refused.events[..], [
+            ChatEvent::Notice { text, refused: Setting::Model },
+            ChatEvent::Models { effort: Some(e), .. },
+        ] if text.contains("effort: no") && e == "low"));
         let init = c.read(line(
             r#"{"type":"system","subtype":"init","session_id":"s","model":"claude-haiku-5-5"}"#,
         ));
@@ -1065,7 +1101,7 @@ mod tests {
         assert!(said.events.is_empty());
         let refused = c.read(line(r#"{"type":"control_response","response":{"subtype":"error","request_id":"seatbelt-3","error":"not now"}}"#));
         assert!(
-            matches!(&refused.events[0], ChatEvent::Notice { text } if text.contains("not now"))
+            matches!(&refused.events[0], ChatEvent::Notice { text, .. } if text.contains("not now"))
         );
         assert!(
             matches!(&refused.events[1], ChatEvent::Modes { mode: Some(m), .. } if m == "default")
@@ -1109,6 +1145,18 @@ mod tests {
         );
         assert_eq!(step.write.len(), 1);
         assert_eq!(step.write[0]["message"]["content"], "hi");
+    }
+
+    #[test]
+    fn a_folder_claude_code_does_not_trust_has_its_project_settings_left_out() {
+        let untrusted = Claude::default().args();
+        let at = untrusted
+            .iter()
+            .position(|a| a == "--setting-sources")
+            .unwrap();
+        assert_eq!(untrusted[at + 1], "user");
+        let trusted = Claude::default().with_project_settings(true).args();
+        assert!(!trusted.contains(&"--setting-sources".to_string()));
     }
 
     #[test]

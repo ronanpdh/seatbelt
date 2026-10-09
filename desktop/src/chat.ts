@@ -29,8 +29,9 @@ export type ChatHooks = {
   conversation: (id: string | null) => void;
   /** The CLI would not continue the conversation and has ended: start a new one. */
   startOver: () => void;
-  /** A model and effort were chosen: the session starts with them again, as new chats do. */
-  chose: (choice: Choice) => void;
+  /** A model and effort were chosen: the session starts with them again, as new chats do.
+   * After a refusal, the choice still in use (null: the CLI's own setting). */
+  chose: (choice: Choice | null) => void;
   /** A permission mode was chosen: the same. After a refusal, the mode still in use (null:
    * one not offered, so none is remembered). */
   choseMode: (mode: string | null) => void;
@@ -89,6 +90,10 @@ export class ChatPane {
   private wantedMode: string | null = null;
   /** A mode was refused: the one the CLI says it is still in is what to remember. */
   private refusedMode = false;
+  /** The same for a model or effort. */
+  private refusedModel = false;
+  /** The chat was ended by the user (or the app): nothing starts again on its own. */
+  private closeAsked = false;
   private models: Models | null = null;
   /** Asked for as this process started: said if the CLI does not offer it. */
   private wanted: Choice | null = null;
@@ -125,7 +130,8 @@ export class ChatPane {
     this.input.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
         e.preventDefault();
-        composer.requestSubmit();
+        // during a turn, Enter keeps what is typed for after it: only Stop stops a turn
+        if (!this.busy) composer.requestSubmit();
       }
     });
     this.input.addEventListener("input", () => this.grow());
@@ -187,12 +193,19 @@ export class ChatPane {
     this.wanted = choice;
     this.wantedMode = mode;
     this.refusedMode = false;
+    this.refusedModel = false;
+    this.closeAsked = false;
     this.models = null; // a new process: its own lists, when it says
     this.modes = null;
     this.exited = new Promise((done) => (this.markExited = done));
     if (divider) this.feed.append(el("div", "divider", divider));
     const events = new Channel<ChatEvent>();
-    events.onmessage = (event) => this.handle(event);
+    // a process from an earlier start may still say something, its end included: not to
+    // this one
+    const generation = this.generation;
+    events.onmessage = (event) => {
+      if (generation === this.generation) this.handle(event);
+    };
     this.hooks.changed("starting", "starting");
     this.update();
     try {
@@ -223,14 +236,25 @@ export class ChatPane {
 
   /** End the chat: the CLI's input closes, and `seatbelt run` closes and signs the run. */
   async close(): Promise<void> {
+    this.closeAsked = true;
     if (this.running) await invoke("close_chat", { id: this.id }).catch(() => undefined);
   }
 
-  /** End the chat and wait until it has, or `ms` has passed. */
-  async closeAndWait(ms: number): Promise<void> {
-    if (!this.running) return;
+  /** End the chat and wait until it has, or `ms` has passed; true if it has ended. */
+  async closeAndWait(ms: number): Promise<boolean> {
+    if (!this.running) return true;
     await this.close();
-    await Promise.race([this.exited, new Promise((r) => setTimeout(r, ms))]);
+    const ended = await Promise.race([
+      this.exited.then(() => true),
+      new Promise<boolean>((r) => setTimeout(() => r(false), ms)),
+    ]);
+    return ended;
+  }
+
+  /** A line in the conversation, from the session. */
+  tell(text: string, kind: "error" | "note" = "note"): void {
+    this.note(text, kind);
+    this.scroll(true);
   }
 
   set hidden(hidden: boolean) {
@@ -377,6 +401,10 @@ export class ChatPane {
   /** The CLI's models and what is in use, as the selects show them. */
   private showModels(m: Models): void {
     this.models = m;
+    if (this.refusedModel) {
+      this.refusedModel = false;
+      this.hooks.chose(m.model ? { model: m.model, effort: m.effort } : null);
+    }
     if (this.wanted) {
       if (m.model !== this.wanted.model) {
         const was = this.wanted.effort ? `${this.wanted.model} with ${this.wanted.effort} effort` : this.wanted.model;
@@ -609,12 +637,16 @@ export class ChatPane {
         this.showModes(event);
         break;
       case "notice":
-        // a mode refused: the line that announced it, if nothing came after, goes, and it is
-        // not remembered for the next chat
+        // a change refused: the line that announced it, if nothing came after, goes, and what
+        // is remembered for the next chat is what is still in use
         if (this.choiceNote && this.feed.lastElementChild === this.choiceNote) this.choiceNote.remove();
         this.choiceNote = null;
-        this.refusedMode = true;
+        if (event.refused === "mode") this.refusedMode = true;
+        else this.refusedModel = true;
         this.note(event.text, "error");
+        break;
+      case "note":
+        this.note(event.text, "note");
         break;
       case "log":
         this.logLine(event.text);
@@ -734,7 +766,7 @@ export class ChatPane {
     this.approvals.set(id, card);
     this.add(card);
     this.tick();
-    (buttons.firstElementChild as HTMLButtonElement).focus({ preventScroll: true });
+    // the card does not take the keyboard: a key meant for the message box must not answer it
   }
 
   private signInCard(reason: string): void {
@@ -761,8 +793,9 @@ export class ChatPane {
     if (this.ended) return;
     this.ended = true;
     this.markExited();
-    if (this.refused && !this.sentAny && report?.recorded !== true) {
-      // Claude Code ends when it cannot resume: start again, on a new conversation
+    if (this.refused && !this.sentAny && !this.closeAsked && report?.recorded !== true) {
+      // Claude Code ends when it cannot resume: start again, on a new conversation (not when
+      // the chat was ended: Codex and Gemini CLI go on in a new one, and end when asked)
       this.hooks.startOver();
       return;
     }

@@ -347,6 +347,16 @@ def test_seatbelt_runs_json_gives_each_runs_ledger_page_and_state(home: Path) ->
     assert [x["id"] for x in json.loads(r.output)["runs"]] == ["rh-x-1"]
 
 
+def test_seatbelt_runs_lists_a_ledger_with_no_events_yet(home: Path) -> None:
+    """A run killed as its ledger was made leaves it empty: listed as open, not a crash."""
+    _local_run(home, "claude-11111111", 1_000_000)
+    (home / "runs" / "rh-empty.jsonl").write_text("")
+    r = runner.invoke(app, ["runs"])
+    assert r.exit_code == 0, r.output
+    assert "rh-empty" in r.output and "claude-11111111" in r.output
+    assert "2 runs in" in r.output
+
+
 def test_seatbelt_runs_lists_local_runs_by_name_newest_first(home: Path) -> None:
     r = runner.invoke(app, ["runs"])
     assert r.exit_code == 0 and "No runs recorded yet" in r.output

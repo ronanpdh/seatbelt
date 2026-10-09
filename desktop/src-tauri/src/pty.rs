@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -39,10 +39,14 @@ pub enum TabEvent {
 }
 
 struct Tab {
-    writer: Box<dyn Write + Send>,
+    /// What is typed, written to the terminal in order by a thread of the tab's own: a CLI
+    /// that is not reading never holds up the app, nor any other tab.
+    input: mpsc::Sender<Vec<u8>>,
     master: Box<dyn MasterPty + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     pid: Option<u32>,
+    /// Its process has exited and been reaped: its pid may be another process's by now.
+    exited: Arc<AtomicBool>,
 }
 
 /// What a tab runs: `seatbelt run --exe <exe> <cli>` in `cwd`.
@@ -106,15 +110,30 @@ impl Tabs {
             .map_err(|e| format!("could not start seatbelt: {e}"))?;
         drop(pair.slave); // the child holds it now; the reader sees the end when it exits
         let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
-        let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+        let mut writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+        let (input, typed) = mpsc::channel::<Vec<u8>>();
+        thread::spawn(move || {
+            // ends when the tab is removed (its sender goes) or the terminal is gone
+            for data in typed {
+                if writer
+                    .write_all(&data)
+                    .and_then(|()| writer.flush())
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let exited = Arc::new(AtomicBool::new(false));
         let id = self.next.fetch_add(1, Ordering::SeqCst) + 1;
         lock(&self.open).insert(
             id,
             Tab {
-                writer,
+                input,
                 master: pair.master,
                 killer: child.clone_killer(),
                 pid: child.process_id(),
+                exited: Arc::clone(&exited),
             },
         );
         let (drained, done) = mpsc::channel::<()>();
@@ -127,6 +146,7 @@ impl Tabs {
         let report = launch.report;
         thread::spawn(move || {
             let code = child.wait().ok().map(|status| status.exit_code());
+            exited.store(true, Ordering::SeqCst);
             let _ = done.recv_timeout(DRAIN_WAIT);
             lock(&open).remove(&id); // closes the terminal: a reader still blocked ends
             let _ = events.send(TabEvent::Exit {
@@ -137,13 +157,13 @@ impl Tabs {
         Ok(id)
     }
 
+    /// Queue what was typed for the tab's writer: it never waits on the CLI.
     pub fn write(&self, id: u32, data: &str) -> Result<(), String> {
-        let mut open = lock(&self.open);
-        let tab = open.get_mut(&id).ok_or("that tab has ended")?;
-        tab.writer
-            .write_all(data.as_bytes())
-            .and_then(|()| tab.writer.flush())
-            .map_err(|e| e.to_string())
+        let open = lock(&self.open);
+        let tab = open.get(&id).ok_or("that tab has ended")?;
+        tab.input
+            .send(data.as_bytes().to_vec())
+            .map_err(|_| "that tab has ended".to_string())
     }
 
     pub fn resize(&self, id: u32, cols: u16, rows: u16) -> Result<(), String> {
@@ -158,7 +178,14 @@ impl Tabs {
     /// it on to the CLI, then closes and signs the run. A tab still running after CLOSE_WAIT
     /// is killed; its ledger is then closed by the next `seatbelt run`, as a killed run's is.
     pub fn close(&self, id: u32) -> Result<(), String> {
-        let pid = lock(&self.open).get(&id).ok_or("that tab has ended")?.pid;
+        let (pid, exited) = {
+            let open = lock(&self.open);
+            let tab = open.get(&id).ok_or("that tab has ended")?;
+            (tab.pid, Arc::clone(&tab.exited))
+        };
+        if exited.load(Ordering::SeqCst) {
+            return Ok(()); // it is ending already; its pid is no longer its own
+        }
         if !terminate(pid) {
             return self.kill(id);
         }
@@ -172,7 +199,9 @@ impl Tabs {
                 thread::sleep(Duration::from_millis(100));
             }
             if let Some(tab) = lock(&open).get_mut(&id) {
-                let _ = tab.killer.kill();
+                if !tab.exited.load(Ordering::SeqCst) {
+                    let _ = tab.killer.kill();
+                }
             }
         });
         Ok(())

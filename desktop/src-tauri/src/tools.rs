@@ -31,6 +31,9 @@ pub struct Seatbelt {
     pub version: String,
     /// `seatbelt verify --json` works: the installed release has what the app needs
     pub supported: bool,
+    /// What seatbelt said instead of a verification, such as a config it cannot read: the
+    /// app shows it, and starts nothing until it is fixed.
+    pub problem: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -95,19 +98,35 @@ fn inspect(path: &Path, search_path: &OsString) -> Seatbelt {
     let version = run(&["version"]).unwrap_or_default();
     // the newest thing the app reads: on a ledger that is not there, it still prints JSON
     let missing = std::env::temp_dir().join(format!("seatbelt-probe-{}.jsonl", std::process::id()));
-    let supported = Command::new(path)
+    let answer = Command::new(path)
         .args(["verify", &missing.to_string_lossy(), "--json"])
         .env("PATH", search_path)
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
         .ok()
-        .and_then(|out| serde_json::from_slice::<serde_json::Value>(&out.stdout).ok())
-        .is_some_and(|v| v.get("chain").is_some());
+        .and_then(|out| serde_json::from_slice::<serde_json::Value>(&out.stdout).ok());
+    let (supported, problem) = probed(answer.as_ref());
     Seatbelt {
         path: path.to_path_buf(),
         version,
         supported,
+        problem,
+    }
+}
+
+/// What `seatbelt verify --json` on a missing ledger says of the release: a verification,
+/// as one that has what the app needs gives; an `{"error": ...}` that release gives for a
+/// problem of its own (its config, say), which is no sign of its age; or nothing, as an older
+/// release, without `--json`, prints.
+fn probed(answer: Option<&serde_json::Value>) -> (bool, Option<String>) {
+    match answer {
+        Some(v) if v.get("chain").is_some() => (true, None),
+        Some(v) => match v.get("error").and_then(serde_json::Value::as_str) {
+            Some(error) => (true, Some(error.to_string())),
+            None => (false, None),
+        },
+        None => (false, None),
     }
 }
 
@@ -190,6 +209,25 @@ pub fn known_clis() -> BTreeMap<&'static str, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_config_problem_is_said_as_it_is_not_as_an_old_release() {
+        use serde_json::json;
+        assert_eq!(
+            probed(Some(
+                &json!({"ledger": "x", "ok": false, "chain": "broken"})
+            )),
+            (true, None)
+        );
+        assert_eq!(
+            probed(Some(
+                &json!({"error": "config.toml: unknown keys bogus_key"})
+            )),
+            (true, Some("config.toml: unknown keys bogus_key".into()))
+        );
+        assert_eq!(probed(Some(&json!({"other": 1}))), (false, None));
+        assert_eq!(probed(None), (false, None)); // no --json: an older release
+    }
 
     #[test]
     fn the_marked_path_is_taken_from_whatever_a_profile_prints() {

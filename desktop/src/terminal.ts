@@ -26,6 +26,8 @@ export class TermPane {
   private readonly fitAddon = new FitAddon();
   private readonly host: HTMLDivElement;
   private id: number | null = null;
+  /** Asked to end before it had started: it ends as soon as it does, or never starts. */
+  private closeRequested = false;
   private resizer: ResizeObserver;
   running = false;
 
@@ -43,8 +45,15 @@ export class TermPane {
       fontSize: 13,
       scrollback: 10000,
       theme: termTheme(),
+      // a link a program prints (OSC 8) opens as the chat's links do: in the browser, from
+      // the Rust side, http and https only; never in the app's own window
+      linkHandler: {
+        activate: (_event, uri) => void invoke("open_link", { url: uri }).catch(() => undefined),
+        allowNonHttpProtocols: false,
+      },
     });
-    // no clipboard or links addon: output cannot write the clipboard or open links
+    // no clipboard or links addon: output cannot write the clipboard, nor turn plain text
+    // into links
     this.term.loadAddon(this.fitAddon);
     // the fit addon sizes the terminal to its parent's height, padding included: the margin
     // goes on the frame, and the terminal's own parent has none, so no row is cut off
@@ -58,6 +67,10 @@ export class TermPane {
   }
 
   async start(): Promise<void> {
+    if (this.closeRequested) {
+      this.onExit(null, null);
+      return;
+    }
     const events = new Channel<TabEvent>();
     events.onmessage = (event) => {
       if (event.kind === "output") this.term.write(event.data);
@@ -84,6 +97,7 @@ export class TermPane {
         resume: this.resume,
         events,
       });
+      if (this.closeRequested) await invoke("close_tab", { id: this.id }).catch(() => undefined);
     } catch (e) {
       this.running = false;
       this.term.write(`\r\n${plain(e)}\r\n`);
@@ -104,6 +118,7 @@ export class TermPane {
 
   /** End the CLI as closing a terminal would; its exit arrives through onExit. */
   async close(): Promise<void> {
+    this.closeRequested = true;
     if (this.id !== null && this.running) await invoke("close_tab", { id: this.id }).catch(() => undefined);
   }
 

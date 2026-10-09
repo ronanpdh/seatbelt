@@ -1,7 +1,7 @@
 // What the Rust side and seatbelt's JSON give the window.
 
 export type Cli = { name: string; label: string; path: string | null };
-export type Seatbelt = { path: string; version: string; supported: boolean };
+export type Seatbelt = { path: string; version: string; supported: boolean; problem: string | null };
 export type Tools = { seatbelt: Seatbelt | null; clis: Cli[]; home: string | null };
 
 /** What `seatbelt run` recorded, from its run report. */
@@ -48,7 +48,8 @@ export type ChatEvent =
   | { kind: "resumed"; ok: boolean }
   | { kind: "models"; models: Model[]; model: string | null; effort: string | null; current: string | null }
   | { kind: "modes"; modes: Mode[]; mode: string | null; current: string | null }
-  | { kind: "notice"; text: string }
+  | { kind: "notice"; text: string; refused: "model" | "mode" }
+  | { kind: "note"; text: string }
   | { kind: "log"; text: string }
   | { kind: "exit"; code: number | null; report: Report | null };
 

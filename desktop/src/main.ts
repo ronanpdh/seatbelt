@@ -45,6 +45,9 @@ type View =
   | { kind: "empty" };
 
 const sessions: Session[] = [];
+/** How long a chat may take to end before its terminal opens: its process gets 3 seconds,
+ * then seatbelt run 20 more before it is killed. */
+const CHAT_END_WAIT = 30_000;
 let tools: Tools | null = null;
 let folder: string | null = null;
 let view: View = { kind: "empty" };
@@ -65,6 +68,8 @@ async function check(): Promise<void> {
     showSetup("seatbelt is not installed, or not on your PATH. Install it with:", "uv tool install seatbelt-ai");
   } else if (!sb.supported) {
     showSetup(`seatbelt ${sb.version} is too old for this app. Upgrade it with:`, "uv tool upgrade seatbelt-ai");
+  } else if (sb.problem) {
+    showSetup(`seatbelt reports a problem, which needs fixing before a session can start: ${plain(sb.problem)}`, "");
   } else {
     byId("setup").hidden = true;
   }
@@ -81,7 +86,7 @@ function showSetup(text: string, command: string): void {
 }
 
 function ready(): boolean {
-  return Boolean(tools?.seatbelt?.supported) && folder !== null;
+  return Boolean(tools?.seatbelt?.supported) && !tools?.seatbelt?.problem && folder !== null;
 }
 
 // -- the folder a session starts in: picked, typed or dropped; checked by the app; recent ones
@@ -241,9 +246,10 @@ function rememberedChoice(cli: Cli): Choice | null {
   return null;
 }
 
-function rememberChoice(cli: Cli, choice: Choice): void {
+function rememberChoice(cli: Cli, choice: Choice | null): void {
   try {
-    localStorage.setItem(CHOICE_KEY + cli.name, JSON.stringify(choice));
+    if (choice === null) localStorage.removeItem(CHOICE_KEY + cli.name);
+    else localStorage.setItem(CHOICE_KEY + cli.name, JSON.stringify(choice));
   } catch {
     // not remembered this time; this session still uses it
   }
@@ -357,12 +363,21 @@ async function openTerminal(s: Session, signIn: boolean): Promise<void> {
   s.term = term;
   setState(s, "running", signIn ? "signing in" : "terminal");
   if (chat) {
-    await chat.closeAndWait(8000);
+    // its process gets EOF_WAIT, then seatbelt run's own grace, then is killed: by then it
+    // has ended, or the terminal is not opened at all
+    const ended = await chat.closeAndWait(CHAT_END_WAIT);
+    if (!ended) {
+      term.dispose();
+      if (s.term === term) s.term = null;
+      chat.tell(`The chat did not end in time, so ${s.cli.label}'s own interface was not opened.`, "error");
+      setState(s, s.state, "ending");
+      return;
+    }
     chat.hidden = true;
   }
   s.body.append(box);
-  await term.start();
-  if (isShown(s)) term.focus();
+  await term.start(); // Back to chat or End while the chat ended: it ends at once
+  if (isShown(s) && s.term === term) term.focus();
 }
 
 function renderItem(s: Session): void {

@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 
 use super::protocol::{
     about_sign_in, checked, cut, shown, str_of, ChatEvent, Choice, Driver, Mode, Model, Models,
-    Modes, Step, ToolStatus, MAX_TOOL_TEXT,
+    Modes, Setting, Step, ToolStatus, MAX_TOOL_TEXT,
 };
 
 /// A permission request: its JSON-RPC id, the agent's options, and the tool call's id.
@@ -44,6 +44,8 @@ pub struct Acp {
     modes: Modes,
     /// `session/set_mode` requests in flight, by id: the mode before, to go back to if refused.
     mode_before: HashMap<u64, Option<String>>,
+    /// `session/set_model` requests in flight, by id: the choice before, the same way.
+    model_before: HashMap<u64, Option<Choice>>,
 }
 
 /// The permission modes Gemini CLI lists that the chat offers: not `yolo`, which approves
@@ -187,11 +189,15 @@ impl Acp {
         line
     }
 
+    /// Set model `model`; if it is refused, the window goes back to the choice before.
     fn set_model(&mut self, session: &str, model: &str) -> Value {
-        self.request(
+        let line = self.request(
             "session/set_model",
             json!({"sessionId": session, "modelId": model}),
-        )
+        );
+        self.model_before
+            .insert(self.next_id, self.models.chosen.clone());
+        line
     }
 
     /// The session's models: the one chosen at the start is set before anything is sent.
@@ -255,6 +261,7 @@ impl Acp {
             return;
         };
         let before = id.and_then(|id| self.mode_before.remove(&id));
+        let model_before = id.and_then(|id| self.model_before.remove(&id));
         if let Some(error) = line.get("error") {
             let mut message = str_of(error, "message").to_string();
             if let Some(data) = error.get("data").filter(|d| !d.is_null()) {
@@ -283,14 +290,18 @@ impl Acp {
                 self.modes.current = before;
                 step.show(ChatEvent::Notice {
                     text: format!("Gemini CLI did not change the permission mode: {message}"),
+                    refused: Setting::Mode,
                 });
                 step.show(self.modes.event());
                 return;
             }
-            if method == "session/set_model" {
-                step.show(ChatEvent::Log {
+            if let Some(before) = model_before {
+                self.models.chosen = before;
+                step.show(ChatEvent::Notice {
                     text: format!("Gemini CLI did not change the model: {message}"),
+                    refused: Setting::Model,
                 });
+                step.show(self.models.event());
                 return;
             }
             if method == "session/new" {
@@ -919,9 +930,11 @@ mod tests {
         let refused = a.read(line(
             r#"{"jsonrpc":"2.0","id":3,"error":{"code":-32603,"message":"no such model"}}"#,
         ));
-        assert!(
-            matches!(&refused.events[..], [ChatEvent::Log { text }] if text.contains("no such model"))
-        );
+        // refused: said, and the model still in use shown again
+        assert!(matches!(&refused.events[..], [
+            ChatEvent::Notice { text, refused: Setting::Model },
+            ChatEvent::Models { model: Some(m), .. },
+        ] if text.contains("no such model") && m == "auto"));
     }
 
     #[test]
@@ -998,7 +1011,7 @@ mod tests {
         );
         let refused = a.read(line(r#"{"jsonrpc":"2.0","id":3,"error":{"code":-32603,"message":"Internal error","data":{"details":"Cannot enable privileged approval modes in an untrusted folder."}}}"#));
         assert!(
-            matches!(&refused.events[0], ChatEvent::Notice { text } if text.ends_with("Internal error: Cannot enable privileged approval modes in an untrusted folder."))
+            matches!(&refused.events[0], ChatEvent::Notice { text, .. } if text.ends_with("Internal error: Cannot enable privileged approval modes in an untrusted folder."))
         );
         assert!(
             matches!(&refused.events[1], ChatEvent::Modes { mode: Some(m), .. } if m == "default")

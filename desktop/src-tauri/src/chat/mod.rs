@@ -14,8 +14,8 @@ use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -28,19 +28,87 @@ use protocol::{ChatEvent, Choice, Driver, Step};
 /// How long an ended chat's CLI has, once its input is closed, before `seatbelt run` is asked
 /// to end it as closing a terminal would.
 const EOF_WAIT: Duration = Duration::from_secs(3);
+/// Said when a chat leaves out a folder's Claude Code settings.
+const UNTRUSTED: &str = "Claude Code has not been told to trust this folder, so this chat \
+leaves out the folder's own Claude Code settings (.claude/settings.json, .mcp.json): their \
+hooks, permissions and MCP servers. To use them, open Claude Code in a terminal here and \
+accept its trust prompt; the chat then starts with them.";
+
+/// Whether Claude Code has been told to trust `cwd`: the trust prompt accepted, by its own
+/// record in `.claude.json` (in `CLAUDE_CONFIG_DIR`, else the home folder), for the folder
+/// or one above it within its git repository (see `trusted_in`). A record that cannot be read
+/// is no.
+fn claude_trusts(cwd: &Path) -> bool {
+    let record = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(crate::tools::home_dir)
+        .map(|dir| dir.join(".claude.json"));
+    record
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .is_some_and(|record| trusted_in(&record, cwd))
+}
+
+/// `cwd`, or a folder above it, is one `record` says the trust prompt was accepted for. As in
+/// Claude Code, the folders above stop at the repository's root (the nearest folder holding
+/// `.git`), so a repository cloned into a trusted folder is not trusted with it; outside a
+/// repository they go to the top.
+fn trusted_in(record: &Value, cwd: &Path) -> bool {
+    let Some(projects) = record.get("projects").and_then(Value::as_object) else {
+        return false;
+    };
+    let trusted: Vec<PathBuf> = projects
+        .iter()
+        .filter(|(_, p)| p.get("hasTrustDialogAccepted") == Some(&Value::Bool(true)))
+        .map(|(path, _)| {
+            Path::new(path)
+                .canonicalize()
+                .unwrap_or_else(|_| PathBuf::from(path))
+        })
+        .collect();
+    let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    for folder in cwd.ancestors() {
+        if trusted.iter().any(|t| t == folder) {
+            return true;
+        }
+        if folder.join(".git").exists() {
+            return false;
+        }
+    }
+    false
+}
+
+/// The folder has Claude Code settings of its own that a chat would leave out.
+fn has_project_settings(cwd: &Path) -> bool {
+    [
+        ".claude/settings.json",
+        ".claude/settings.local.json",
+        ".mcp.json",
+    ]
+    .iter()
+    .any(|file| cwd.join(file).exists())
+}
+
 /// The longest line a CLI may print: anything longer is dropped, not buffered without end.
 const MAX_LINE: usize = 32 * 1024 * 1024;
+/// How long a chat's output may keep coming once its process has exited: a process the CLI
+/// started may hold the pipes open past it.
+const DRAIN_WAIT: Duration = Duration::from_secs(2);
 
 /// The driver for `cli`, resuming conversation `resume` (a plain id: see `conversation_id`),
 /// on the model and effort `choice` and the permission mode `mode`, if the CLI offers them.
+/// `trusted`: Claude Code trusts the folder, so its project settings may load.
 fn driver(
     cli: &str,
     resume: Option<&str>,
     choice: Option<Choice>,
     mode: Option<String>,
+    trusted: bool,
 ) -> Option<Box<dyn Driver>> {
     match cli {
-        "claude" => Some(Box::new(claude::Claude::new(resume, choice, mode))),
+        "claude" => Some(Box::new(
+            claude::Claude::new(resume, choice, mode).with_project_settings(trusted),
+        )),
         "codex" => Some(Box::new(codex::Codex::new(resume, choice, mode))),
         "gemini" => Some(Box::new(acp::Acp::new(resume, choice, mode))),
         _ => None,
@@ -65,29 +133,43 @@ pub struct Launch<'a> {
 
 struct Session {
     driver: Box<dyn Driver>,
-    stdin: Option<ChildStdin>,
+    /// Lines for the CLI, written in order by a thread of the chat's own, so a CLI that is
+    /// not reading never holds up the app or this session. None once the chat is closing:
+    /// the writer then ends, and the CLI's input closes.
+    input: Option<mpsc::Sender<Vec<u8>>>,
     events: Channel<ChatEvent>,
 }
 
 impl Session {
-    /// Show the step's events and write its lines, in that order.
+    /// Show the step's events and queue its lines, in that order.
     fn apply(&mut self, step: Step) {
         for event in step.events {
             let _ = self.events.send(event);
         }
         for line in step.write {
-            let wrote = self.stdin.as_mut().map(|stdin| {
-                let mut text = line.to_string();
-                text.push('\n');
-                stdin
-                    .write_all(text.as_bytes())
-                    .and_then(|()| stdin.flush())
-            });
-            if let Some(Err(e)) = wrote {
+            let mut text = line.to_string();
+            text.push('\n');
+            let queued = self
+                .input
+                .as_ref()
+                .is_some_and(|input| input.send(text.into_bytes()).is_ok());
+            if !queued {
                 let _ = self.events.send(ChatEvent::Log {
-                    text: format!("could not write to the CLI: {e}"),
+                    text: "could not write to the CLI: its input is closed".into(),
                 });
             }
+        }
+    }
+}
+
+/// Write each line for the CLI to its input, in order, until the session lets go of it.
+fn write_input(mut stdin: ChildStdin, lines: mpsc::Receiver<Vec<u8>>, events: Channel<ChatEvent>) {
+    for line in lines {
+        if let Err(e) = stdin.write_all(&line).and_then(|()| stdin.flush()) {
+            let _ = events.send(ChatEvent::Log {
+                text: format!("could not write to the CLI: {e}"),
+            });
+            break;
         }
     }
 }
@@ -95,6 +177,8 @@ impl Session {
 struct Chat {
     session: Arc<Mutex<Session>>,
     child: Arc<Mutex<Child>>,
+    /// Its process has exited and been reaped: its pid may be another process's by now.
+    exited: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
@@ -114,8 +198,14 @@ impl Chats {
             Some(id) => Some(protocol::conversation_id(id).ok_or("not a conversation id")?),
             None => None,
         };
-        let mut driver =
-            driver(launch.cli, resume, launch.choice, launch.mode).ok_or("no chat for that CLI")?;
+        let trusted = launch.cli == "claude" && claude_trusts(launch.cwd);
+        let mut driver = driver(launch.cli, resume, launch.choice, launch.mode, trusted)
+            .ok_or("no chat for that CLI")?;
+        if launch.cli == "claude" && !trusted && has_project_settings(launch.cwd) {
+            let _ = events.send(ChatEvent::Note {
+                text: UNTRUSTED.into(),
+            });
+        }
         let mut child = Command::new(launch.seatbelt)
             .arg("run")
             .arg("--exe")
@@ -133,27 +223,41 @@ impl Chats {
             .map_err(|e| format!("could not start seatbelt: {e}"))?;
         let stdout = child.stdout.take().ok_or("no output from seatbelt")?;
         let stderr = child.stderr.take().ok_or("no output from seatbelt")?;
+        let stdin = child.stdin.take().ok_or("no input for seatbelt")?;
+        let (input, lines) = mpsc::channel::<Vec<u8>>();
+        let writer_events = events.clone();
+        thread::spawn(move || write_input(stdin, lines, writer_events));
         let start = driver.start(&launch.cwd.to_string_lossy());
         let session = Arc::new(Mutex::new(Session {
             driver,
-            stdin: child.stdin.take(),
+            input: Some(input),
             events: events.clone(),
         }));
         lock(&session).apply(start);
         let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
         let child = Arc::new(Mutex::new(child));
+        let exited = Arc::new(AtomicBool::new(false));
         lock(&self.open).insert(
             id,
             Chat {
                 session: Arc::clone(&session),
                 child: Arc::clone(&child),
+                exited: Arc::clone(&exited),
             },
         );
 
+        let (drained, done) = mpsc::channel::<()>();
         let reading = Arc::clone(&session);
-        let out = thread::spawn(move || read_protocol(stdout, &reading));
+        let out_done = drained.clone();
+        thread::spawn(move || {
+            read_protocol(stdout, &reading);
+            let _ = out_done.send(());
+        });
         let log = events.clone();
-        let err = thread::spawn(move || read_log(stderr, &log));
+        thread::spawn(move || {
+            read_log(stderr, &log);
+            let _ = drained.send(());
+        });
         let open = Arc::clone(&self.open);
         let report = launch.report;
         thread::spawn(move || {
@@ -164,8 +268,16 @@ impl Chats {
                     Err(_) => break None,
                 }
             };
-            let _ = out.join(); // the pipes close when seatbelt and the CLI have both ended
-            let _ = err.join();
+            exited.store(true, Ordering::SeqCst);
+            // the pipes close when seatbelt and the CLI have both ended, unless something
+            // they started holds them: what is left after DRAIN_WAIT is not waited for
+            let until = Instant::now() + DRAIN_WAIT;
+            for _ in 0..2 {
+                let left = until.saturating_duration_since(Instant::now());
+                if done.recv_timeout(left).is_err() {
+                    break;
+                }
+            }
             lock(&open).remove(&id);
             let _ = events.send(ChatEvent::Exit {
                 code,
@@ -226,22 +338,26 @@ impl Chats {
     /// terminal closes; anything left after CLOSE_WAIT is killed. The run is closed and
     /// signed by `seatbelt run` in the first two cases, and by the next one in the last.
     pub fn close(&self, id: u32) -> Result<(), String> {
-        let (session, child) = {
+        let (session, child, exited) = {
             let open = lock(&self.open);
             let chat = open.get(&id).ok_or("that chat has ended")?;
-            (Arc::clone(&chat.session), Arc::clone(&chat.child))
+            (
+                Arc::clone(&chat.session),
+                Arc::clone(&chat.child),
+                Arc::clone(&chat.exited),
+            )
         };
-        lock(&session).stdin = None;
-        let open = Arc::clone(&self.open);
+        lock(&session).input = None; // the writer ends, and with it the CLI's input
         thread::spawn(move || {
+            // once it has exited and been reaped, its pid is no longer its own to signal
             let ended = |until: Instant| {
                 while Instant::now() < until {
-                    if !lock(&open).contains_key(&id) {
+                    if exited.load(Ordering::SeqCst) {
                         return true;
                     }
                     thread::sleep(Duration::from_millis(100));
                 }
-                false
+                exited.load(Ordering::SeqCst)
             };
             if ended(Instant::now() + EOF_WAIT) {
                 return;
@@ -250,7 +366,7 @@ impl Chats {
             if terminate(pid) && ended(Instant::now() + CLOSE_WAIT) {
                 return;
             }
-            let _ = lock(&child).kill();
+            let _ = lock(&child).kill(); // refused for a reaped child: std checks
         });
         Ok(())
     }
@@ -299,16 +415,18 @@ fn read_protocol(stdout: impl Read, session: &Mutex<Session>) {
             Ok(0) | Err(_) => break,
             Ok(_) => {}
         }
-        let mut session = lock(session);
-        if buf.len() > MAX_LINE {
-            // the rest of this line is skipped, so the next read starts on a line of its own
-            let mut rest = Vec::new();
-            let _ = reader.read_until(b'\n', &mut rest);
-            let _ = session.events.send(ChatEvent::Log {
+        if buf.len() > MAX_LINE && buf.last() != Some(&b'\n') {
+            // too long: the rest of it is read and dropped a piece at a time, so the next
+            // read starts on a line of its own and nothing of it is kept
+            if !skip_line(&mut reader) {
+                break;
+            }
+            let _ = lock(session).events.send(ChatEvent::Log {
                 text: "a line over 32 MiB from the CLI was skipped".into(),
             });
             continue;
         }
+        let mut session = lock(session);
         let text = String::from_utf8_lossy(&buf);
         let text = text.trim();
         if text.is_empty() {
@@ -322,6 +440,19 @@ fn read_protocol(stdout: impl Read, session: &Mutex<Session>) {
             _ => {
                 let _ = session.events.send(ChatEvent::Log { text: plain(text) });
             }
+        }
+    }
+}
+
+/// Read and drop the rest of a line; false at the end of the output.
+fn skip_line(reader: &mut impl BufRead) -> bool {
+    let mut piece = Vec::new();
+    loop {
+        piece.clear();
+        match reader.take(64 * 1024).read_until(b'\n', &mut piece) {
+            Ok(0) | Err(_) => return false,
+            Ok(_) if piece.last() == Some(&b'\n') => return true,
+            Ok(_) => {}
         }
     }
 }
@@ -392,6 +523,68 @@ mod tests {
             "link"
         );
         assert_eq!(plain("a\tb\u{7}c\u{0}"), "a bc");
+    }
+
+    /// A session whose events are collected, for feeding `read_protocol` directly.
+    fn collecting() -> (Mutex<Session>, mpsc::Receiver<Value>) {
+        let (tx, rx) = mpsc::channel();
+        let events = Channel::new(move |body| {
+            if let InvokeResponseBody::Json(json) = body {
+                let _ = tx.send(serde_json::from_str(&json).unwrap());
+            }
+            Ok(())
+        });
+        let session = Session {
+            driver: Box::new(claude::Claude::default()),
+            input: None,
+            events,
+        };
+        (Mutex::new(session), rx)
+    }
+
+    #[test]
+    fn trust_is_claude_codes_own_record_for_the_folder_or_one_above_it_in_its_repository() {
+        let dir = scratch("trust");
+        let child = dir.join("repo").join("sub");
+        std::fs::create_dir_all(&child).unwrap();
+        let record = |path: &Path, accepted: bool| serde_json::json!({"projects": {path.to_string_lossy(): {"hasTrustDialogAccepted": accepted}}});
+        assert!(trusted_in(&record(&dir.join("repo"), true), &child));
+        assert!(trusted_in(&record(&child, true), &child));
+        assert!(!trusted_in(&record(&child, false), &child));
+        assert!(!trusted_in(&record(&child.join("deeper"), true), &child));
+        assert!(!trusted_in(&serde_json::json!({}), &child));
+        // a repository cloned into a trusted folder is not trusted with it, as in Claude Code;
+        // a folder inside a trusted repository is
+        std::fs::create_dir(dir.join("repo").join(".git")).unwrap();
+        assert!(!trusted_in(&record(&dir, true), &child));
+        assert!(!trusted_in(&record(&dir, true), &dir.join("repo")));
+        assert!(trusted_in(&record(&dir.join("repo"), true), &child));
+        assert!(!has_project_settings(&child));
+        std::fs::write(child.join(".mcp.json"), "{}").unwrap();
+        assert!(has_project_settings(&child));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_line_over_the_limit_is_skipped_and_one_at_it_is_read_with_the_next() {
+        let end = r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#;
+        // a line at the limit, its newline the byte after: read, and the line after it too
+        let pad = MAX_LINE - r#"{"type":"x","p":""}"#.len();
+        let at = format!("{{\"type\":\"x\",\"p\":\"{}\"}}\n{end}\n", "a".repeat(pad));
+        assert_eq!(at.find('\n'), Some(MAX_LINE));
+        let (session, rx) = collecting();
+        read_protocol(at.as_bytes(), &session);
+        let kinds: Vec<Value> = rx.try_iter().map(|e| e["kind"].clone()).collect();
+        assert_eq!(kinds, ["turn_end"]);
+        // one byte over: skipped, said, and the next line read whole
+        let over = format!("{}\n{end}\n", "b".repeat(MAX_LINE + 1));
+        let (session, rx) = collecting();
+        read_protocol(over.as_bytes(), &session);
+        let events: Vec<Value> = rx.try_iter().collect();
+        assert_eq!(events[0]["kind"], "log");
+        assert!(events[0]["text"].as_str().unwrap().contains("skipped"));
+        assert_eq!(events[1]["kind"], "turn_end");
+        assert_eq!(events.len(), 2);
     }
 
     fn scratch(name: &str) -> PathBuf {

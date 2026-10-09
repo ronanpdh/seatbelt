@@ -67,8 +67,11 @@ pub enum ChatEvent {
         /// The mode the CLI says it is in, as it names it, when it says.
         current: Option<String>,
     },
-    /// A line for the conversation, from the app: the CLI refused a change, say.
-    Notice { text: String },
+    /// A line for the conversation from the app, such as what a chat leaves out.
+    Note { text: String },
+    /// A line for the conversation: the CLI refused a change of `refused`, and why. The
+    /// setting is shown again as it is; the window remembers that, not what was refused.
+    Notice { text: String, refused: Setting },
     /// A line for the session's log, not the conversation.
     Log { text: String },
     /// The session has ended. `report` is what `seatbelt run` recorded.
@@ -85,6 +88,14 @@ pub enum ToolStatus {
     Done,
     Failed,
     Declined,
+}
+
+/// A setting the window can change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Setting {
+    Model,
+    Mode,
 }
 
 /// A model a CLI offers, as its own list gives it.

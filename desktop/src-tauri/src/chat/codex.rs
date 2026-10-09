@@ -25,6 +25,8 @@ pub struct Codex {
     /// A message sent before the thread had started.
     queued: Vec<String>,
     signed_out: bool,
+    /// The thread could not be started: why, said to a message sent after.
+    no_thread: Option<String>,
     /// Approvals waiting, by our id: the server's request id as it sent it.
     waiting: HashMap<String, Value>,
     /// What each file change item will touch, for its approval card.
@@ -214,6 +216,9 @@ impl Codex {
                     step.send(start);
                 }
                 "turn/start" | "thread/start" => {
+                    if method == "thread/start" {
+                        self.no_thread = Some(message.clone());
+                    }
                     if about_sign_in(&message) {
                         step.show(ChatEvent::SignIn {
                             reason: message.clone(),
@@ -580,6 +585,11 @@ impl Driver for Codex {
         if self.signed_out {
             return Err("Codex is not signed in: sign in, then start the chat again".into());
         }
+        if let Some(why) = &self.no_thread {
+            return Err(format!(
+                "Codex could not start a conversation ({why}): start the chat again"
+            ));
+        }
         let mut step = Step::default();
         self.queued.push(text.to_string());
         self.flush(&mut step);
@@ -895,6 +905,25 @@ mod tests {
             step.write,
             vec![json!({"id": 5, "method": "thread/start", "params": {"cwd": "/w"}})]
         );
+    }
+
+    #[test]
+    fn a_thread_that_cannot_start_says_so_to_each_message_after() {
+        let mut c = Codex::default();
+        c.start("/w");
+        c.read(line(r#"{"id":1,"result":{}}"#));
+        c.read(line(
+            r#"{"id":2,"result":{"account":null,"requiresOpenaiAuth":false}}"#,
+        ));
+        let failed = c.read(line(
+            r#"{"id":3,"error":{"code":-32603,"message":"config is broken"}}"#,
+        ));
+        assert!(failed.events.contains(&ChatEvent::TurnEnd {
+            ok: false,
+            error: Some("config is broken".into())
+        }));
+        let refused = c.send("hello").unwrap_err();
+        assert!(refused.contains("config is broken"), "{refused}");
     }
 
     #[test]

@@ -76,15 +76,21 @@ function matches(run: Run, f: Filters, now: number): boolean {
   return true;
 }
 
+/** The view last asked for: one that took longer to load does not replace it. */
+let latest = 0;
+const current = (mine: number): boolean => mine === latest;
+
 export async function showRuns(view: HTMLElement, open: (run: Run) => void): Promise<void> {
+  const mine = ++latest;
   view.replaceChildren(heading("Runs"), el("p", "muted", "Loading…"));
   let listing: Listing;
   try {
     listing = await invoke<Listing>("list_runs");
   } catch (e) {
-    view.replaceChildren(heading("Runs"), el("p", "error", plain(e)));
+    if (current(mine)) view.replaceChildren(heading("Runs"), el("p", "error", plain(e)));
     return;
   }
+  if (!current(mine)) return;
   const refresh = button("↻ Refresh", "ghost", () => void showRuns(view, open), "List the runs again");
   const search = el("input", "search");
   search.type = "search";
@@ -272,11 +278,13 @@ export async function showRun(view: HTMLElement, run: Run, back: () => void): Pr
       }),
     );
   }
+  const mine = ++latest;
   view.replaceChildren(top, heading(run.name), el("p", "muted", "Checking and loading…"));
   const [verified, page] = await Promise.all([
     invoke<Verification>("verify_run", { id: run.id }).catch((e) => plain(e)),
     invoke<Page>("run_detail", { id: run.id }).catch((e) => plain(e)),
   ]);
+  if (!current(mine)) return;
   const again = button("Verify again", "ghost", () => void showRun(view, run, back));
   top.append(again);
   const parts: Node[] = [top];
@@ -369,14 +377,16 @@ export async function showRun(view: HTMLElement, run: Run, back: () => void): Pr
 
 export async function showUsage(view: HTMLElement): Promise<void> {
   const refresh = button("↻ Refresh", "ghost", () => void showUsage(view), "Count again");
+  const mine = ++latest;
   view.replaceChildren(heading("Usage", refresh), el("p", "muted", "Counting…"));
   let fleet: Fleet;
   try {
     fleet = await invoke<Fleet>("usage_report");
   } catch (e) {
-    view.replaceChildren(heading("Usage", refresh), el("p", "error", plain(e)));
+    if (current(mine)) view.replaceChildren(heading("Usage", refresh), el("p", "error", plain(e)));
     return;
   }
+  if (!current(mine)) return;
   const parts: Node[] = [heading("Usage", refresh)];
   parts.push(el("p", "muted", `${count(fleet.runs, "run")} counted on this machine, as seatbelt report counts them.`));
   const models = el("section", "card");
