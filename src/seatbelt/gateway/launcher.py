@@ -17,6 +17,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import tomllib
 import urllib.error
@@ -36,6 +37,8 @@ LEGACY_CONFIG = CONFIG_DIR / "gateway.toml"  # 0.2.0: url and key only
 
 CODEX_KEY_ENV = "SEATBELT_GATEWAY_KEY"  # the env var the codex preset's provider reads
 RUN_KEY_ENV = "SEATBELT_RUN_KEY"  # the local run's key, which Codex sends as a header
+# a file `seatbelt run` writes as it exits, saying what it recorded: for an app hosting the run
+RUN_REPORT_ENV = "SEATBELT_RUN_REPORT"
 PRESETS: dict[str, dict[str, str]] = {  # cli -> env template
     "claude": {
         "ANTHROPIC_BASE_URL": "{url}",
@@ -253,7 +256,29 @@ def own_secrets(cfg: ClientConfig) -> list[str]:
 
 
 def _seatbelts(name: str, drop: Collection[str]) -> bool:
-    return name == _SIGNING_KEY_ENV or name.startswith(_SINK_ENV_PREFIX) or name in drop
+    return (
+        name in (_SIGNING_KEY_ENV, RUN_REPORT_ENV)
+        or name.startswith(_SINK_ENV_PREFIX)
+        or name in drop
+    )
+
+
+def write_run_report(path: Path, report: Mapping[str, Any]) -> None:
+    """Write `report` as JSON to `path`, mode 0600, whole: a temporary file renamed into
+    place, so a reader never sees half of it. A report that cannot be written is a warning;
+    the run has already ended."""
+    try:
+        fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(report, fh, indent=1)
+                fh.write("\n")
+            os.replace(tmp, path)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
+    except OSError as exc:
+        say(f"warning: could not write the run report to {path}: {exc}")
 
 
 def environment(
@@ -612,8 +637,9 @@ def _run(
     gateway = (cfg.gateway, cfg.key) if cfg.gateway and cfg.key else None
     warnings = _gemini_warnings(local=gateway is None) if cli == "gemini" else []
     run = f"{cli}-{secrets.token_hex(4)}"
+    report = Path(os.environ[RUN_REPORT_ENV]) if os.environ.get(RUN_REPORT_ENV) else None
     if gateway is None:
-        return _run_local(cli, args, cfg, exe, run, warnings)
+        return _run_local(cli, args, cfg, exe, run, warnings, report)
     url, key = gateway
     env = environment(cli, url, key, run, os.environ, drop=own_secrets(cfg))
     removed = [n for n in _AROUND_GATEWAY if os.environ.get(n)]
@@ -635,6 +661,20 @@ def _run(
     finally:
         badge.unbuckle()
         status = end(url, key, run)
+    if report is not None:
+        write_run_report(
+            report,
+            {
+                "run": run,
+                "cli": cli,
+                "recorded_by": "gateway",
+                "gateway": url,
+                "recorded": status == 204,
+                "ledgers": [],  # on the gateway
+                "pages": [],
+                "exit": code,
+            },
+        )
     if status == 204:
         say(f"recorded run {run} at {url}")
     elif status == 404:  # no open run by that name
@@ -651,7 +691,13 @@ def _run(
 
 
 def _run_local(
-    cli: str, args: list[str], cfg: ClientConfig, exe: str | None, run: str, warnings: list[str]
+    cli: str,
+    args: list[str],
+    cfg: ClientConfig,
+    exe: str | None,
+    run: str,
+    warnings: list[str],
+    report: Path | None = None,
 ) -> int:
     environment(cli, "", "", run, {}, local=True)  # an unsupported CLI fails before any start
     where = f"no gateway in {cfg.path}" if cfg.path is not None else "no client config"
@@ -684,4 +730,18 @@ def _run_local(
         say(f"recorded run {run}\n  replay it: seatbelt reconstruct {run}\n{paths}{pages}")
     else:
         say(f"nothing recorded ({cli} sent no model requests)")
+    if report is not None:
+        write_run_report(
+            report,
+            {
+                "run": run,
+                "cli": cli,
+                "recorded_by": "local",
+                "gateway": None,
+                "recorded": bool(recorder.written),
+                "ledgers": [str(p) for p in recorder.written],
+                "pages": [str(p) for p in recorder.pages],
+                "exit": code,
+            },
+        )
     return code

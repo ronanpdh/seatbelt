@@ -158,6 +158,20 @@ def test_a_local_run_writes_its_page_beside_the_ledger_and_says_where(
     assert shlex.split(line.removeprefix("page:")) == [str(page)]
 
 
+def test_a_local_run_reports_its_ledger_page_and_exit_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: Provider
+) -> None:
+    monkeypatch.setenv("SEATBELT_HOME", str(tmp_path / "home"))
+    report = tmp_path / "report.json"
+    monkeypatch.setenv("SEATBELT_RUN_REPORT", str(report))
+    run_cli("claude", ["-c", CLAUDE], config=_config(tmp_path, provider), exe=fake_claude(tmp_path))
+    (ledger,) = (tmp_path / "home" / "runs").glob("*.jsonl")
+    data = json.loads(report.read_text())
+    assert (data["recorded_by"], data["recorded"], data["exit"]) == ("local", True, 7)
+    assert data["ledgers"] == [str(ledger)] and data["pages"] == [str(page_path(ledger))]
+    assert data["run"] == next(iter(read_events(ledger))).attrs["run.name"]
+
+
 def test_html_false_in_the_config_writes_no_page(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: Provider
 ) -> None:

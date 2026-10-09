@@ -39,6 +39,8 @@ Claude Code's status line ends with seatbelt's badge and `recording` (`recording
 
 seatbelt passes a SIGTERM or SIGHUP it gets on to the CLI, waits up to 10 seconds for it to exit (then kills it), and closes the run. It exits with the CLI's status, or 128 + N when signal N ended the CLI, as a shell does.
 
+A program that runs `seatbelt run` for you, such as a desktop app, can set `SEATBELT_RUN_REPORT` to a file path. As it exits, `seatbelt run` writes a JSON report there: `run`, `cli`, `recorded_by` (`local` or `gateway`), `gateway`, `recorded`, `ledgers`, `pages` and `exit`. Through a gateway the ledgers stay on the gateway, so both lists are empty. `seatbelt runs --json` lists this machine's runs the same way, with each ledger's and page's path.
+
 seatbelt's own secrets never reach the CLI or the tools it runs: `SEATBELT_SIGNING_KEY`, every `SEATBELT_SINK_*` variable, and the variables a `[sink]` names for its credentials are removed from the CLI's environment. Wherever you keep them (a shell profile, a `.envrc`), an agent running as you may still be able to read them.
 
 | Platform | Data folder |

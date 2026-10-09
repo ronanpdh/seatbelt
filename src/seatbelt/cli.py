@@ -1,10 +1,12 @@
 import contextlib
 import importlib
+import json
 import os
 import shlex
 import sys
+from datetime import datetime
 from pathlib import Path
-from typing import Annotated, cast
+from typing import Annotated, Any, cast
 
 import typer
 from rich.console import Console
@@ -22,6 +24,7 @@ from seatbelt.gateway.launcher import data_dir, load_client_config, run_cli
 from seatbelt.ledger.events import Kind
 from seatbelt.ledger.store import LedgerError, read_events
 from seatbelt.record.recorder import Recorder
+from seatbelt.report import page_path
 from seatbelt.report.fleet import People, Usage
 from seatbelt.report.fleet import fleet as build_fleet
 from seatbelt.report.pack import PackError, PackStatus
@@ -196,9 +199,43 @@ def reconstruct(
     console.print(Text(f"wrote {printable(str(page))}"))
 
 
+def _run_row(path: Path) -> dict[str, Any]:
+    """What `seatbelt runs` says about one ledger. `name` is the run's name, or the ledger's
+    id when it names none; `ok` is the run's outcome, None while open or unreadable."""
+    page = page_path(path)
+    row: dict[str, Any] = {
+        "name": path.stem,
+        "id": path.stem,
+        "started": None,
+        "model_calls": None,
+        "status": "unreadable",
+        "ok": None,
+        "ledger": str(path),
+        "page": str(page) if page.exists() else None,
+    }
+    try:
+        events = list(read_events(path))
+    except (OSError, UnicodeDecodeError, LedgerError):
+        return row
+    first = events[0] if events else None
+    name = first.attrs.get("run.name") if first is not None else None
+    ended = bool(events) and events[-1].kind is Kind.RUN_END
+    row.update(
+        name=name if isinstance(name, str) else path.stem,
+        started=first.ts.isoformat() if first is not None else None,
+        model_calls=sum(e.kind is Kind.MODEL_REQUEST for e in events),
+        status="ended" if ended else "open",
+        ok=events[-1].attrs.get("run.ok") is not False if ended else None,
+    )
+    return row
+
+
 @app.command()
 def runs(
     limit: Annotated[int, typer.Option(help="how many to show, newest first")] = 20,
+    json_out: Annotated[
+        bool, typer.Option("--json", help="print the runs as JSON, with each ledger and page")
+    ] = False,
 ) -> None:
     """List the runs `seatbelt run` recorded on this machine, newest first, by the name
     `seatbelt reconstruct` and `seatbelt verify` take."""
@@ -208,26 +245,25 @@ def runs(
         console.print(f"[red]{escape(str(exc))}[/]")
         raise typer.Exit(code=1) from exc
     ledgers = sorted(folder.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    rows = [_run_row(path) for path in ledgers[:limit]]
+    if json_out:  # ledger text is data: json.dumps escapes it, nothing here is markup
+        print(json.dumps({"folder": str(folder), "total": len(ledgers), "runs": rows}, indent=1))
+        return
     if not ledgers:
         console.print(f"No runs recorded yet in {folder}. Start one with: seatbelt run claude")
         return
     table = Table(Column("run", no_wrap=True), "started", "model calls", "status")
-    for path in ledgers[:limit]:
-        try:
-            events = list(read_events(path))
-        except (OSError, UnicodeDecodeError, LedgerError):
-            table.add_row(Text(printable(path.stem)), "", "", "[red]unreadable[/]")
+    for row in rows:
+        if row["status"] == "unreadable":
+            table.add_row(Text(printable(row["name"])), "", "", "[red]unreadable[/]")
             continue
-        first = events[0] if events else None
-        name = first.attrs.get("run.name") if first is not None else None
-        started = first.ts.astimezone().strftime("%Y-%m-%d %H:%M") if first is not None else ""
-        calls = sum(e.kind is Kind.MODEL_REQUEST for e in events)
-        ended = bool(events) and events[-1].kind is Kind.RUN_END
+        started = row["started"]
+        when = datetime.fromisoformat(started).astimezone().strftime("%Y-%m-%d %H:%M")
         table.add_row(
-            Text(printable(name if isinstance(name, str) else path.stem)),
-            started,
-            str(calls),
-            "ended" if ended else "[yellow]open[/]",
+            Text(printable(row["name"])),
+            when if started else "",
+            str(row["model_calls"]),
+            "ended" if row["status"] == "ended" else "[yellow]open[/]",
         )
     console.print(table)
     console.print(f"{len(ledgers)} runs in {escape(str(folder))}")

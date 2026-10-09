@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -237,6 +238,53 @@ def test_a_local_run_is_found_by_its_name_or_id_and_checked_against_this_machine
     assert r.exit_code == 0 and "attested" in r.output
     r = runner.invoke(app, ["reconstruct", "claude-nope"])
     assert r.exit_code == 1 and "seatbelt runs" in r.output and "Traceback" not in r.output
+
+
+def test_seatbelt_runs_json_gives_each_runs_ledger_page_and_state(home: Path) -> None:
+    """What a desktop app reads: no table, no markup, every path."""
+    import json
+
+    from seatbelt.report import page_path
+    from seatbelt.report.html import write_page
+
+    r = runner.invoke(app, ["runs", "--json"])
+    assert r.exit_code == 0 and json.loads(r.output)["runs"] == []
+    done = _local_run(home, "claude-11111111", 1_000_000)
+    write_page(done)
+    open_ = home / "runs" / "rh-codex-22222222-1a2b3c4d.jsonl"
+    Ledger(open_, "rh-codex-22222222-1a2b3c4d").append(
+        Kind.RUN_START, Actor(type=ActorType.AGENT, id="gw"), {"run.name": "codex-22222222"}
+    )
+    os.utime(open_, (2_000_000, 2_000_000))
+    broken = home / "runs" / "rh-x-1.jsonl"
+    broken.write_text("not json\n")
+    os.utime(broken, (3_000_000, 3_000_000))
+    r = runner.invoke(app, ["runs", "--json"])
+    assert r.exit_code == 0, r.output
+    out = json.loads(r.output)
+    assert out["folder"] == str(home / "runs") and out["total"] == 3
+    unreadable, opened, ended = out["runs"]  # newest first
+    assert unreadable == {
+        "name": "rh-x-1",
+        "id": "rh-x-1",
+        "started": None,
+        "model_calls": None,
+        "status": "unreadable",
+        "ok": None,
+        "ledger": str(broken),
+        "page": None,
+    }
+    assert (opened["name"], opened["status"], opened["ok"], opened["page"]) == (
+        "codex-22222222",
+        "open",
+        None,
+        None,
+    )
+    assert (ended["name"], ended["status"], ended["ok"]) == ("claude-11111111", "ended", True)
+    assert ended["page"] == str(page_path(done)) and ended["ledger"] == str(done)
+    assert ended["started"] is not None and ended["model_calls"] == 0
+    r = runner.invoke(app, ["runs", "--json", "--limit", "1"])
+    assert [x["id"] for x in json.loads(r.output)["runs"]] == ["rh-x-1"]
 
 
 def test_seatbelt_runs_lists_local_runs_by_name_newest_first(home: Path) -> None:

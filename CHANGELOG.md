@@ -5,6 +5,10 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 ## [Unreleased]
 
 ### Added
+- `seatbelt runs --json` prints the runs as JSON: each run's name, id, start, model calls, status (`ended`, `open` or `unreadable`), outcome, and its ledger and page paths. It is what a desktop app hosting `seatbelt run` reads ([design](docs/plans/2026-10-09-desktop-terminal-design.md)).
+- With `SEATBELT_RUN_REPORT=<file>` in its environment, `seatbelt run` writes a JSON report there as it exits: the run's name, the CLI, whether it recorded locally or through a gateway, its ledgers and pages, and the CLI's exit code. Mode 0600, written whole; the variable is not passed on to the CLI.
+
+### Added
 - **An HTML page for each run** ([design](docs/plans/2026-10-09-html-run-report-design.md)). `seatbelt run` writes `<run id>.html` beside each ledger when it closes and signs it, and prints its path. A killed run's ledger gets its page when the next run closes it. Any ledger can be rendered with `seatbelt reconstruct [run] --html`, beside the ledger, or elsewhere with `--out page.html`.
   - **What it shows:** the run's name, who, the client, start, end and outcome; tokens per model, with the prompt cache beside input; tool calls; policy refusals; errors; and every event, each opening to all that was recorded with it. An event over 64 KiB shows its first 8 KiB and its last 56 KiB, where a request's newest turn is; the ledger holds the rest.
   - **A view, not evidence.** It says what was checked when it was made (chain, completeness, signature, final hash, the ledger's SHA-256) and the command that checks the ledger again. A ledger that is broken, forged, or unsigned when a key is given gets no page.
