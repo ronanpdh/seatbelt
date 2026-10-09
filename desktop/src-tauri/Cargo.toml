@@ -1,0 +1,36 @@
+[package]
+name = "seatbelt-desktop"
+version = "0.1.0"
+description = "Run Claude Code, Codex and Gemini CLI in tabs, each recorded by seatbelt"
+license = "Apache-2.0"
+repository = "https://github.com/ronanpdh/seatbelt"
+edition = "2021"
+rust-version = "1.85"
+publish = false
+
+[lib]
+name = "seatbelt_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.7.1", features = [] }
+
+[dependencies]
+tauri = { version = "2.12.1", features = [] }
+tauri-plugin-opener = "2.7.0"
+portable-pty = "0.9.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+which = "8.0"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# the folder picker on Windows and Linux; macOS uses its own `choose folder` instead, as its
+# NSOpenPanel can return nil in the app's process and the binding panics (tauri-apps/tauri#13047)
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+tauri-plugin-dialog = "2.8.1"
+
+[profile.release]
+codegen-units = 1
+lto = true

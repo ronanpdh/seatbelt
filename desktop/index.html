@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Seatbelt</title>
+  </head>
+  <body>
+    <aside id="sidebar">
+      <header class="brand">
+        <span class="badge">seatbelt</span>
+        <span id="mode" class="muted"></span>
+      </header>
+
+      <section id="setup" hidden>
+        <h2>Set up</h2>
+        <p id="setup-text"></p>
+        <pre id="setup-command"></pre>
+        <button id="recheck" type="button">Check again</button>
+      </section>
+
+      <section id="new-tab">
+        <h2>New chat</h2>
+        <div class="folder-field">
+          <label class="muted small" for="folder-input">Folder</label>
+          <div class="folder-row">
+            <input id="folder-input" type="text" spellcheck="false" autocomplete="off"
+                   autocapitalize="off" placeholder="~/code/project" />
+            <button id="browse" type="button" class="ghost" title="Choose a folder">Browse…</button>
+          </div>
+        </div>
+        <p id="folder-error" class="error small" hidden></p>
+        <div id="recent-folders" class="recents" hidden></div>
+        <div id="cli-buttons" class="cli-buttons"></div>
+      </section>
+
+      <section class="grow">
+        <h2>Sessions</h2>
+        <ul id="tabs" class="list"></ul>
+        <p id="no-tabs" class="muted small">None yet. Each session is recorded as a run.</p>
+      </section>
+
+      <nav class="records-nav" aria-label="Records">
+        <h2>Records</h2>
+        <button id="nav-runs" type="button" class="nav">Runs</button>
+        <button id="nav-usage" type="button" class="nav">Usage</button>
+      </nav>
+    </aside>
+
+    <main id="main">
+      <div id="empty" class="empty">
+        <h1>Chat with an agent, recorded.</h1>
+        <p>
+          Start Claude Code, Codex or Gemini CLI on the left. Each chat runs your own copy through
+          <code>seatbelt run</code> and is saved as a signed run. If a CLI needs signing in, it
+          opens in a terminal for its own sign-in, then the chat starts.
+        </p>
+        <p>Runs and Usage show what seatbelt recorded, and whether each run verifies.</p>
+      </div>
+      <div id="sessions-view" hidden></div>
+      <div id="records-view" class="records" hidden></div>
+    </main>
+
+    <div id="quit" class="modal" role="dialog" aria-modal="true" aria-labelledby="quit-title" hidden>
+      <div class="modal-box">
+        <h2 id="quit-title">Quit Seatbelt?</h2>
+        <p id="quit-text"></p>
+        <div class="modal-buttons">
+          <button id="quit-cancel" type="button">Cancel</button>
+          <button id="quit-ok" type="button" class="danger">Quit</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

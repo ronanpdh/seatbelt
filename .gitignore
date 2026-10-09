@@ -21,3 +21,9 @@ CLAUDE.md
 
 # macOS
 .DS_Store
+
+# Desktop app build output
+desktop/node_modules/
+desktop/dist/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/

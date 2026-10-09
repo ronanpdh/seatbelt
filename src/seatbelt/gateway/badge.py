@@ -20,6 +20,9 @@ from typing import TextIO
 BADGE = "\x1b[1;7m seatbelt \x1b[0m"  # bold and reversed, on a terminal
 PLAIN = "[seatbelt]"  # anywhere else: a pipe, a log file, NO_COLOR, a dumb terminal
 NO_ANIMATION_ENV = "SEATBELT_NO_ANIMATION"
+# no belt and no lines that only inform: for a host that shows the run its own way, such as
+# the desktop app. Warnings and errors are still said.
+QUIET_ENV = "SEATBELT_QUIET"
 _DIM, _RESET = "\x1b[2m", "\x1b[0m"
 _CLICK = "CLICK"
 _UNBUCKLE_STEP = 0.06  # seconds a frame, unbuckling: faster than buckling up
@@ -173,10 +176,15 @@ def _size(stream: TextIO, env: Mapping[str, str]) -> tuple[int, int]:
     return columns, lines
 
 
+def quiet(env: Mapping[str, str] = os.environ) -> bool:
+    """`SEATBELT_QUIET` is set: no belt, and no lines that only inform."""
+    return bool(env.get(QUIET_ENV))
+
+
 def animates(stream: TextIO, env: Mapping[str, str] = os.environ) -> bool:
-    """Whether a seatbelt is drawn: on a styled terminal, unless `SEATBELT_NO_ANIMATION` is
-    set. Which one depends on the room (`_drawn_belt`)."""
-    return not env.get(NO_ANIMATION_ENV) and styled(stream, env)
+    """Whether a seatbelt is drawn: on a styled terminal, unless `SEATBELT_NO_ANIMATION` or
+    `SEATBELT_QUIET` is set. Which one depends on the room (`_drawn_belt`)."""
+    return not env.get(NO_ANIMATION_ENV) and not quiet(env) and styled(stream, env)
 
 
 def _drawn_belt(stream: TextIO, env: Mapping[str, str]) -> str | None:

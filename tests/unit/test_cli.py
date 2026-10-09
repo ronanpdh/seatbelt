@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -48,6 +49,57 @@ def test_verify_flags_truncated_ledger(tmp_path: Path) -> None:
     result = runner.invoke(app, ["verify", str(ledger)])
     assert result.exit_code == 1
     assert "INCOMPLETE" in result.output
+
+
+def test_verify_json_says_what_the_exit_code_means_and_why(tmp_path: Path) -> None:
+    """What a desktop app reads: the same checks as `verify`, as data."""
+    import json
+
+    runner.invoke(app, ["demo", "--out", str(tmp_path)])
+    ledger = next(tmp_path.glob("*.jsonl"))
+    text = ledger.read_text()
+    r = runner.invoke(app, ["verify", str(ledger), "--json"])
+    good = json.loads(r.output)
+    assert r.exit_code == 0 and good["ok"] and good["chain"] == "intact" and good["complete"]
+    assert good["ledger"] == str(ledger) and good["events"] > 0
+    assert good["signature"] in ("attested", "unchecked", "unattested")
+    lines = text.splitlines()
+    ledger.write_text("\n".join(lines[:-2]) + "\n")
+    r = runner.invoke(app, ["verify", str(ledger), "--json"])
+    cut = json.loads(r.output)
+    assert r.exit_code == 1 and not cut["ok"] and cut["chain"] == "intact"
+    assert not cut["complete"] and "run.end" in cut["reason"]
+    ledger.write_text(text.replace("refund issued", "refund denied"))
+    r = runner.invoke(app, ["verify", str(ledger), "--json"])
+    broken = json.loads(r.output)
+    assert r.exit_code == 1 and broken["chain"] == "broken" and broken["signature"] is None
+    assert broken["first_bad_seq"] is not None and broken["reason"]
+    r = runner.invoke(app, ["verify", str(tmp_path / "nope.jsonl"), "--json"])
+    assert r.exit_code == 1 and json.loads(r.output)["chain"] == "broken"
+
+
+def test_reconstruct_json_gives_what_the_page_shows_and_refuses_what_it_refuses(
+    tmp_path: Path,
+) -> None:
+    import json
+
+    with Recorder.start(tmp_path, agent_id="bot", run_id="r") as rec:
+        rec.user_message("u", "<b>hi</b>\u202e")
+    ledger = tmp_path / "r.jsonl"
+    r = runner.invoke(app, ["reconstruct", str(ledger), "--json"])
+    assert r.exit_code == 0, r.output
+    page = json.loads(r.output)
+    assert page["run_id"] == "r" and page["outcome"] == "ok" and page["complete"]
+    assert page["total"]["calls"] == 0 and page["models"] == {} and page["tools"] == {}
+    assert [row["kind"] for row in page["rows"]] == ["run.start", "user.message", "run.end"]
+    shown = page["rows"][1]
+    assert "<b>hi</b>" in shown["detail"] and "\u202e" not in shown["detail"]  # printable
+    assert not (tmp_path / "r.html").exists()  # prints; writes nothing
+    ledger.write_text(ledger.read_text().replace("hi", "ho"))
+    r = runner.invoke(app, ["reconstruct", str(ledger), "--json"])
+    assert r.exit_code == 1 and "chain broken" in json.loads(r.output)["error"]
+    r = runner.invoke(app, ["reconstruct", str(ledger), "--json", "--html"])
+    assert r.exit_code == 1 and "--html" in json.loads(r.output)["error"]
 
 
 def test_reconstruct_shows_ledger_text_literally(tmp_path: Path) -> None:
@@ -237,6 +289,72 @@ def test_a_local_run_is_found_by_its_name_or_id_and_checked_against_this_machine
     assert r.exit_code == 0 and "attested" in r.output
     r = runner.invoke(app, ["reconstruct", "claude-nope"])
     assert r.exit_code == 1 and "seatbelt runs" in r.output and "Traceback" not in r.output
+
+
+def test_seatbelt_runs_json_gives_each_runs_ledger_page_and_state(home: Path) -> None:
+    """What a desktop app reads: no table, no markup, every path."""
+    import json
+
+    from seatbelt.report import page_path
+    from seatbelt.report.html import write_page
+
+    r = runner.invoke(app, ["runs", "--json"])
+    assert r.exit_code == 0 and json.loads(r.output)["runs"] == []
+    done = _local_run(home, "claude-11111111", 1_000_000)
+    write_page(done)
+    open_ = home / "runs" / "rh-codex-22222222-1a2b3c4d.jsonl"
+    Ledger(open_, "rh-codex-22222222-1a2b3c4d").append(
+        Kind.RUN_START, Actor(type=ActorType.AGENT, id="gw"), {"run.name": "codex-22222222"}
+    )
+    os.utime(open_, (2_000_000, 2_000_000))
+    broken = home / "runs" / "rh-x-1.jsonl"
+    broken.write_text("not json\n")
+    os.utime(broken, (3_000_000, 3_000_000))
+    r = runner.invoke(app, ["runs", "--json"])
+    assert r.exit_code == 0, r.output
+    out = json.loads(r.output)
+    assert out["folder"] == str(home / "runs") and out["total"] == 3
+    unreadable, opened, ended = out["runs"]  # newest first
+    assert unreadable == {
+        "name": "rh-x-1",
+        "id": "rh-x-1",
+        "started": None,
+        "model_calls": None,
+        "status": "unreadable",
+        "ok": None,
+        "client": None,
+        "chain": None,
+        "signature": None,
+        "ledger": str(broken),
+        "page": None,
+    }
+    assert (opened["name"], opened["status"], opened["ok"], opened["page"]) == (
+        "codex-22222222",
+        "open",
+        None,
+        None,
+    )
+    assert (ended["name"], ended["status"], ended["ok"]) == ("claude-11111111", "ended", True)
+    assert ended["page"] == str(page_path(done)) and ended["ledger"] == str(done)
+    assert ended["started"] is not None and ended["model_calls"] == 0
+    assert (ended["chain"], ended["signature"]) == ("intact", "attested")  # this machine's key
+    assert (opened["chain"], opened["signature"]) == ("intact", "unattested")
+    done.write_text(done.read_text().replace('"hi"', '"ho"'))
+    os.utime(done, (1_000_000, 1_000_000))
+    altered = json.loads(runner.invoke(app, ["runs", "--json"]).output)["runs"][-1]
+    assert (altered["id"], altered["chain"], altered["signature"]) == (done.stem, "broken", None)
+    r = runner.invoke(app, ["runs", "--json", "--limit", "1"])
+    assert [x["id"] for x in json.loads(r.output)["runs"]] == ["rh-x-1"]
+
+
+def test_seatbelt_runs_lists_a_ledger_with_no_events_yet(home: Path) -> None:
+    """A run killed as its ledger was made leaves it empty: listed as open, not a crash."""
+    _local_run(home, "claude-11111111", 1_000_000)
+    (home / "runs" / "rh-empty.jsonl").write_text("")
+    r = runner.invoke(app, ["runs"])
+    assert r.exit_code == 0, r.output
+    assert "rh-empty" in r.output and "claude-11111111" in r.output
+    assert "2 runs in" in r.output
 
 
 def test_seatbelt_runs_lists_local_runs_by_name_newest_first(home: Path) -> None:

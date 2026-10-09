@@ -1,6 +1,7 @@
 import ast
 import json
 import re
+import stat
 import sys
 import tomllib
 from pathlib import Path
@@ -234,6 +235,49 @@ def test_run_cli_spawns_with_the_preset_then_ends_the_run(
     ((url, key, run),) = ended
     assert (url, key) == ("https://gw.corp", "sbk_abc") and run == out[2]
     assert run.startswith("claude-")
+
+
+REPORT_PROBE = "import os; print(os.environ.get('SEATBELT_RUN_REPORT')); raise SystemExit(3)"
+
+
+def test_run_cli_writes_a_run_report_through_a_gateway(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    report = tmp_path / "report.json"
+    monkeypatch.setenv("SEATBELT_RUN_REPORT", str(report))
+    code = run_cli(
+        "claude",
+        ["-c", REPORT_PROBE],
+        config=_config(tmp_path),
+        exe=fake_claude(tmp_path),
+        end=lambda url, key, run: 204,
+        preflight=no_gateway_policy,
+    )
+    assert code == 3 and capfd.readouterr().out.strip() == "None"  # not the CLI's to see
+    data = json.loads(report.read_text())
+    assert data["run"].startswith("claude-") and data["exit"] == 3
+    assert (data["recorded_by"], data["gateway"], data["recorded"]) == (
+        "gateway",
+        "https://gw.corp",
+        True,
+    )
+    assert data["ledgers"] == [] and data["pages"] == []
+    assert stat.S_IMODE(report.stat().st_mode) == 0o600
+
+
+def test_a_run_report_that_cannot_be_written_is_a_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("SEATBELT_RUN_REPORT", str(tmp_path / "missing" / "report.json"))
+    code = run_cli(
+        "claude",
+        ["-c", REPORT_PROBE],
+        config=_config(tmp_path),
+        exe=fake_claude(tmp_path),
+        end=lambda url, key, run: 204,
+        preflight=no_gateway_policy,
+    )
+    assert code == 3 and "could not write the run report" in capfd.readouterr().err
 
 
 def test_run_cli_warns_about_a_readable_key_file(
