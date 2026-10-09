@@ -482,6 +482,16 @@ def denied_tools(answer: dict[str, Any] | None) -> list[str]:
     return _names(cast(dict[str, Any], (answer or {}).get("policy") or {}).get("tools_denied"))
 
 
+def under_policy(answer: dict[str, Any] | None) -> bool:
+    """Whether a `GET /seatbelt/policy` answer sets any rule."""
+    policy = cast(dict[str, Any], (answer or {}).get("policy") or {})
+    return (
+        isinstance(policy.get("models"), list)
+        or bool(_names(policy.get("tools_denied")))
+        or isinstance(policy.get("max_output_tokens"), int)
+    )
+
+
 def policy_lines(answer: dict[str, Any]) -> list[str]:
     """The org's policy, as a run says it before the CLI starts."""
     policy = cast(dict[str, Any], answer.get("policy") or {})
@@ -497,34 +507,41 @@ def policy_lines(answer: dict[str, Any]) -> list[str]:
     return [printable(line) for line in lines] or ["the org's policy sets no limits"]
 
 
-def _gemini_warnings(local: bool) -> None:
+def _gemini_warnings(local: bool) -> list[str]:
     home = Path(os.environ.get("GEMINI_CLI_HOME") or Path.home())
     system = gemini_system_settings(os.environ)
     defaults = Path(
         os.environ.get("GEMINI_CLI_SYSTEM_DEFAULTS_PATH") or system.parent / "system-defaults.json"
     )
-    for warning in gemini_warnings(home, Path.cwd(), system, defaults, local):
-        say(f"warning: {warning}")
+    return [f"warning: {w}" for w in gemini_warnings(home, Path.cwd(), system, defaults, local)]
 
 
 def _claude_config_dir() -> Path:
     return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
 
 
-def _claude_warnings() -> None:
-    for warning in claude_warnings(_claude_config_dir(), Path.cwd()):
-        say(f"warning: {warning}")
+def _claude_warnings() -> list[str]:
+    return [f"warning: {w}" for w in claude_warnings(_claude_config_dir(), Path.cwd())]
 
 
-def cli_arguments(cli: str, args: list[str], denied: Collection[str] = ()) -> list[str]:
-    """The user's arguments for `cli`, with what seatbelt gives it: for Claude Code, a
-    `--settings` with seatbelt's status line and a hook that stops the `denied` tools."""
+def cli_arguments(
+    cli: str, args: list[str], denied: Collection[str] = (), note: str = claude_code.RECORDING
+) -> tuple[list[str], list[str]]:
+    """(The user's arguments for `cli` with what seatbelt gives it, warnings to show). For
+    Claude Code: a `--settings` with seatbelt's status line, which says `note` after the
+    badge, and a hook that stops the `denied` tools."""
     if cli != "claude":
-        return args
-    out, warnings = claude_code.launch_arguments(args, denied, _claude_config_dir(), Path.cwd())
-    for warning in warnings:
-        say(f"warning: {warning}")
-    return out
+        return args, []
+    cwd = Path.cwd()
+    out, warnings = claude_code.launch_arguments(args, denied, _claude_config_dir(), cwd, note)
+    return out, [f"warning: {w}" for w in warnings]
+
+
+def _buckle_up(lines: list[str]) -> None:
+    """Buckle the seatbelt, then say `lines` below it, as issue #46 drew it."""
+    badge.buckle()
+    for line in lines:
+        say(line)
 
 
 GRACE = 10.0  # seconds the CLI has to exit after seatbelt passes it SIGTERM or SIGHUP
@@ -587,31 +604,26 @@ def _run(
     if cfg.path is not None and cfg.key and readable_by_others(cfg.path):
         say(f"warning: {cfg.path} holds your gateway key; chmod 600 it")
     gateway = (cfg.gateway, cfg.key) if cfg.gateway and cfg.key else None
-    if cli == "gemini":
-        _gemini_warnings(local=gateway is None)
+    warnings = _gemini_warnings(local=gateway is None) if cli == "gemini" else []
     run = f"{cli}-{secrets.token_hex(4)}"
     if gateway is None:
-        return _run_local(cli, args, cfg, exe, run)
+        return _run_local(cli, args, cfg, exe, run, warnings)
     url, key = gateway
     env = environment(cli, url, key, run, os.environ, drop=own_secrets(cfg))
     removed = [n for n in _AROUND_GATEWAY if os.environ.get(n)]
     if removed:
-        say(
+        warnings.append(
             f"warning: {', '.join(removed)} removed from {cli}'s environment: they would take "
             "it around the gateway, or give it a login of its own"
         )
     if cli == "claude":
-        _claude_warnings()
-    say(f"recording {cli} through the gateway at {url}")
+        warnings += _claude_warnings()
     answer = preflight(url, key)  # before anything starts: a refused key stops here
-    for line in policy_lines(answer) if answer is not None else []:
-        say(line)
-    command = [
-        exe or cli,
-        *arguments(cli, url, run),
-        *cli_arguments(cli, args, denied_tools(answer)),
-    ]
-    badge.buckle()
+    note = claude_code.UNDER_POLICY if under_policy(answer) else claude_code.RECORDING
+    own, more = cli_arguments(cli, args, denied_tools(answer), note)
+    command = [exe or cli, *arguments(cli, url, run), *own]
+    policy = policy_lines(answer) if answer is not None else []
+    _buckle_up([f"recording {cli} through the gateway at {url}", *policy, *warnings, *more])
     try:
         code = _spawn(command, env)
     finally:
@@ -632,10 +644,11 @@ def _run(
     return code
 
 
-def _run_local(cli: str, args: list[str], cfg: ClientConfig, exe: str | None, run: str) -> int:
+def _run_local(
+    cli: str, args: list[str], cfg: ClientConfig, exe: str | None, run: str, warnings: list[str]
+) -> int:
     environment(cli, "", "", run, {}, local=True)  # an unsupported CLI fails before any start
     where = f"no gateway in {cfg.path}" if cfg.path is not None else "no client config"
-    say(f"recording {cli} on this machine ({where})")
     try:
         from seatbelt.gateway.local import UPSTREAMS, local_recorder
     except ImportError as exc:  # a broken install: the server packages are dependencies
@@ -648,8 +661,9 @@ def _run_local(cli: str, args: list[str], cfg: ClientConfig, exe: str | None, ru
         env = environment(cli, url, recorder.key, run, os.environ, True, own_secrets(cfg))
         env.update(local_defaults(cli, upstreams, UPSTREAMS["anthropic"], os.environ))
         extra = arguments(cli, recorder.url, run, local=True)
-        command = [exe or cli, *extra, *cli_arguments(cli, args)]
-        badge.buckle()
+        own, more = cli_arguments(cli, args)
+        command = [exe or cli, *extra, *own]
+        _buckle_up([f"recording {cli} on this machine ({where})", *warnings, *more])
         try:
             code = _spawn(command, env)
         finally:

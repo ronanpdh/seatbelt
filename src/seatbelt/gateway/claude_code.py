@@ -32,6 +32,9 @@ _PLAIN_NAME = re.compile(r"[A-Za-z0-9_-]+")
 _REGEX_SPECIAL = re.compile(r"[\\^$.*+?()\[\]{}|/]")
 # the statusLine keys that change how Claude Code shows it, kept from the user's
 _STATUS_KEYS = ("padding", "refreshInterval", "hideVimModeIndicator")
+# what the status line says after the badge, as issue #46 drew it
+RECORDING = "recording"
+UNDER_POLICY = "recording · org policy"
 
 
 def is_claude_code(user_agent: str | None) -> bool:
@@ -85,9 +88,12 @@ def _command(*args: str) -> str:
     return shlex.join([sys.executable, "-m", __name__, *args])
 
 
-def settings(denied: Collection[str], status_line: Mapping[str, Any] | None) -> dict[str, Any]:
+def settings(
+    denied: Collection[str], status_line: Mapping[str, Any] | None, note: str = RECORDING
+) -> dict[str, Any]:
     """What seatbelt adds to Claude Code's settings: the hook for the `denied` tools, if any,
-    and a status line that runs `status_line`, the user's own if any, before the badge."""
+    and a status line that runs `status_line`, the user's own if any, before the badge and
+    `note`."""
     out: dict[str, Any] = {}
     if denied:
         hook = {"type": "command", "command": _command("hook", *sorted(set(denied)))}
@@ -97,7 +103,9 @@ def settings(denied: Collection[str], status_line: Mapping[str, Any] | None) -> 
     out["statusLine"] = {
         **{k: line[k] for k in _STATUS_KEYS if k in line},
         "type": "command",
-        "command": _command("statusline", *([own] if isinstance(own, str) and own else [])),
+        "command": _command(
+            "statusline", "--note", note, *([own] if isinstance(own, str) and own else [])
+        ),
     }
     return out
 
@@ -180,11 +188,15 @@ def effective(layers: Sequence[tuple[str, Mapping[str, Any]]], key: str) -> tupl
 
 
 def launch_arguments(
-    args: Sequence[str], denied: Collection[str], config_dir: Path, cwd: Path
+    args: Sequence[str],
+    denied: Collection[str],
+    config_dir: Path,
+    cwd: Path,
+    note: str = RECORDING,
 ) -> tuple[list[str], list[str]]:
-    """(Claude Code's arguments with seatbelt's `--settings` first, warnings to show). A
-    `--settings` of the user's own is merged into seatbelt's, or left as it is, with a
-    warning, when it cannot be read."""
+    """(Claude Code's arguments with seatbelt's `--settings` first, warnings to show). `note`
+    is what the status line says after the badge. A `--settings` of the user's own is merged
+    into seatbelt's, or left as it is, with a warning, when it cannot be read."""
     rest, value = _flag_value(args)
     layers: list[tuple[str, Mapping[str, Any]]] = [
         (str(p), s) for p in settings_files(config_dir, cwd) if (s := _read_json(p)) is not None
@@ -208,9 +220,8 @@ def launch_arguments(
             + (f"{stops}the conversation" if denied else "")
         )
     _, status_line = effective(layers, "statusLine")
-    ours = settings(
-        denied, cast(dict[str, Any], status_line) if isinstance(status_line, dict) else None
-    )
+    own = cast(dict[str, Any], status_line) if isinstance(status_line, dict) else None
+    ours = settings(denied, own, note)
     combined = merged(theirs, ours) if value is not None else ours
     return [SETTINGS_FLAG, json.dumps(combined, separators=(",", ":")), *rest], warnings
 
@@ -233,9 +244,9 @@ def _hook(denied: Collection[str]) -> int:
     return 0
 
 
-def status_line(own: str | None, data: bytes, badge: str) -> str:
+def status_line(own: str | None, data: bytes, badge: str, note: str = "") -> str:
     """The status line: the user's own (`own`, a shell command given Claude Code's JSON on
-    stdin, as Claude Code runs it), then ` | ` and seatbelt's badge on its last line."""
+    stdin, as Claude Code runs it), then ` | `, seatbelt's badge and `note` on its last line."""
     lines: list[str] = []
     if own:
         try:
@@ -246,10 +257,11 @@ def status_line(own: str | None, data: bytes, badge: str) -> str:
             done = None
         if done is not None and done.returncode == 0:  # Claude Code shows nothing otherwise
             lines = done.stdout.decode(errors="replace").rstrip("\n").split("\n")
+    ours = f"{badge} {note}" if note else badge
     if lines and lines[-1].strip():
-        lines[-1] += f" | {badge}"
+        lines[-1] += f" | {ours}"
     else:
-        lines = [*lines[:-1], badge]
+        lines = [*lines[:-1], ours]
     return "\n".join(lines)
 
 
@@ -259,10 +271,15 @@ def main(argv: Sequence[str]) -> int:
     if argv[:1] == ["statusline"]:
         from seatbelt.gateway.badge import BADGE
 
-        own = argv[1] if len(argv) > 1 else None
-        print(status_line(own, sys.stdin.buffer.read(), BADGE))
+        rest = list(argv[1:])
+        note = ""
+        if rest[:1] == ["--note"] and len(rest) > 1:
+            note, rest = rest[1], rest[2:]
+        own = rest[0] if rest else None
+        print(status_line(own, sys.stdin.buffer.read(), BADGE, note))
         return 0
-    print(f"usage: python -m {__name__} hook TOOL... | statusline [COMMAND]", file=sys.stderr)
+    usage = f"usage: python -m {__name__} hook TOOL... | statusline [--note TEXT] [COMMAND]"
+    print(usage, file=sys.stderr)
     return 2
 
 

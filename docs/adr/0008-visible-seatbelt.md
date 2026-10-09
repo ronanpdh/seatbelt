@@ -15,14 +15,14 @@ Once Claude Code takes the screen, nothing says the session is recorded or under
 
 ## Decision
 
-- **Every line `seatbelt run` prints starts with its badge**: `[seatbelt]`, or on a terminal a reversed `seatbelt`. This covers its log warnings too.
-- **A seatbelt buckles** as the CLI starts and unbuckles when it exits. It is drawn only on a styled terminal with room for it, and `SEATBELT_NO_ANIMATION` turns it off.
+- **Every line `seatbelt run` prints starts with its badge**: `[seatbelt]`, or on a terminal a bold, reversed `seatbelt`. This covers its log warnings too.
+- **A seatbelt buckles** as the CLI starts and unbuckles when it exits, drawn as issue #46 drew it, with seatbelt's lines below it. It is drawn only on a styled terminal: in full on one with room for it, as a line on a smaller one. `SEATBELT_NO_ANIMATION` turns it off.
 - **`GET /seatbelt/policy`** returns the policy, the caller's principal id and the gateway version to an authenticated caller. Nothing is recorded. Before it starts the CLI, `seatbelt run` calls it through a gateway:
   - a 401 or 403, a gateway it cannot reach, or any other failure stops the run;
   - a 404, from a gateway older than this change, lets the run go on as before;
   - otherwise it prints the policy.
 - **Claude Code gets `--settings`** from `seatbelt run claude`. Seatbelt's settings are merged into a `--settings` of the user's own, since Claude Code reads only the last one. They hold:
-  - a status line: the user's own status line, then ` | ` and the badge;
+  - a status line: the user's own status line, then ` | `, the badge, and `recording`, or `recording · org policy` under a gateway's policy;
   - through a gateway whose policy denies tools, a PreToolUse hook that denies exactly those tools.
 - **The gateway accepts the hook's refusal in the history.** A tool result for a denied call passes, and is recorded as an allowed `policy.check`, only when all of these hold:
   - it is an error;
