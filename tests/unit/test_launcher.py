@@ -432,7 +432,7 @@ def test_a_gateway_run_says_the_policy_and_stops_denied_tools_in_claude_code(
     assert code == 0
     given = json.loads(out)
     assert given["hooks"]["PreToolUse"][0]["matcher"] == "Bash"
-    assert "claude_code statusline" in given["statusLine"]["command"]
+    assert given["statusLine"]["command"].endswith("statusline --note 'recording · org policy'")
     lines = err.splitlines()
     assert all(line.startswith("[seatbelt] ") for line in lines)  # every line, badged
     assert "[seatbelt] the org's policy denies Bash" in lines
@@ -466,3 +466,28 @@ def test_a_refused_key_stops_the_run_before_the_cli_starts(
     )
     assert r.exit_code == 1 and not started.exists()
     assert "[seatbelt] error: the gateway at https://gw.corp refused your key (401)" in r.output
+
+
+def test_the_status_line_says_org_policy_only_under_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    from seatbelt.gateway.launcher import under_policy
+
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    monkeypatch.chdir(tmp_path)
+    none: dict[str, Any] = {
+        "policy": {"models": None, "tools_denied": [], "max_output_tokens": None}
+    }
+    assert under_policy(ANSWER) and not under_policy(none) and not under_policy(None)
+    answers: list[dict[str, Any] | None] = [none, None]  # no rules, or a gateway too old to say
+    for answer in answers:
+        run_cli(
+            "claude",
+            ["-c", SETTINGS_PROBE],
+            config=_config(tmp_path),
+            exe=fake_claude(tmp_path),
+            end=lambda url, key, run: 204,
+            preflight=lambda url, key, given=answer: given,
+        )
+        given = json.loads(capfd.readouterr().out)
+        assert given["statusLine"]["command"].endswith("statusline --note recording")

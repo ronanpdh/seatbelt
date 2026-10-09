@@ -11,6 +11,8 @@ from typing import Any
 import pytest
 
 from seatbelt.gateway.claude_code import (
+    RECORDING,
+    UNDER_POLICY,
     denial,
     launch_arguments,
     matcher,
@@ -80,9 +82,11 @@ def test_settings_stop_the_denied_tools_and_wrap_the_users_status_line() -> None
     assert hook["command"].endswith("-m seatbelt.gateway.claude_code hook Bash Write")
     line = out["statusLine"]
     assert line["padding"] == 1 and line["type"] == "command"
-    assert line["command"].endswith("seatbelt.gateway.claude_code statusline '~/line.sh'")
+    assert line["command"].endswith("claude_code statusline --note recording '~/line.sh'")
     assert "hooks" not in settings([], None)  # no policy: a status line only
-    assert settings([], None)["statusLine"]["command"].endswith("claude_code statusline")
+    assert settings([], None)["statusLine"]["command"].endswith("statusline --note recording")
+    policed = settings([], None, UNDER_POLICY)["statusLine"]["command"]
+    assert policed.endswith("statusline --note 'recording · org policy'")
 
 
 def test_the_users_own_settings_keep_their_hooks_beside_seatbelts() -> None:
@@ -114,7 +118,7 @@ def test_the_users_own_settings_flag_is_merged_in(tmp_path: Path) -> None:
     )
     given = _settings_arg(args)
     assert args[2:] == ["-p", "hi"] and given["model"] == "m"
-    assert given["statusLine"]["command"].endswith("statusline mine")
+    assert given["statusLine"]["command"].endswith("--note recording mine")
     (tmp_path / "s.json").write_text(json.dumps({"env": {"A": "1"}}))
     args, _ = launch_arguments(["--settings=s.json"], [], tmp_path, tmp_path)
     assert _settings_arg(args)["env"] == {"A": "1"} and len(args) == 2
@@ -140,12 +144,12 @@ def test_the_status_line_in_effect_is_the_one_wrapped(tmp_path: Path) -> None:
         json.dumps({"statusLine": {"type": "command", "command": "user-line"}})
     )
     args, _ = launch_arguments([], [], user, project.parent)
-    assert _settings_arg(args)["statusLine"]["command"].endswith("statusline user-line")
+    assert _settings_arg(args)["statusLine"]["command"].endswith("recording user-line")
     (project / "settings.local.json").write_text(
         json.dumps({"statusLine": {"type": "command", "command": "local-line"}})
     )
     args, _ = launch_arguments([], [], user, project.parent)
-    assert _settings_arg(args)["statusLine"]["command"].endswith("statusline local-line")
+    assert _settings_arg(args)["statusLine"]["command"].endswith("recording local-line")
 
 
 def test_disable_all_hooks_is_warned_about(tmp_path: Path) -> None:
@@ -185,6 +189,8 @@ def test_the_hook_denies_a_denied_tool_and_nothing_else() -> None:
 def test_the_status_line_ends_with_the_badge() -> None:
     data = json.dumps({"model": {"display_name": "Sonnet"}}).encode()
     assert status_line(None, data, BADGE) == BADGE
+    assert status_line(None, data, BADGE, RECORDING) == f"{BADGE} recording"
+    assert status_line("echo mine", data, BADGE, RECORDING) == f"mine | {BADGE} recording"
     assert status_line("echo mine", data, BADGE) == f"mine | {BADGE}"
     name = 'import json, sys; print(json.load(sys.stdin)["model"]["display_name"])'
     reads_stdin = shlex.join([sys.executable, "-c", name])
@@ -195,6 +201,10 @@ def test_the_status_line_ends_with_the_badge() -> None:
 
 
 def test_the_status_line_command_prints_the_badge() -> None:
-    done = _run("statusline", "echo mine", stdin="{}")
-    assert done.returncode == 0 and done.stdout == "mine | \x1b[7m seatbelt \x1b[0m\n"
+    done = _run("statusline", "--note", UNDER_POLICY, "echo mine", stdin="{}")
+    # as issue #46 drew it: the user's line, then the badge and what seatbelt is doing
+    badge = "\x1b[1;7m seatbelt \x1b[0m"
+    assert done.returncode == 0 and done.stdout == f"mine | {badge} recording · org policy\n"
+    alone = _run("statusline", stdin="{}")
+    assert alone.returncode == 0 and alone.stdout == f"{badge}\n"
     assert _run("nonsense").returncode == 2

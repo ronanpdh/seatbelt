@@ -22,14 +22,18 @@
 
 ## Design (ours)
 
-1. **Badge.** `seatbelt.gateway.badge.say` prints every line with `[seatbelt]` in front. On a TTY it is a reversed ` seatbelt `, except under `NO_COLOR` or `TERM=dumb`. While a run is on, seatbelt's and uvicorn's log warnings go through it too. The local recorder's uvicorn gets `log_config=None`: with its own logging config it would replace seatbelt's handler, and its warnings would print without the badge.
-2. **Buckle.** A tongue slides into a buckle, about 1.4 seconds as the CLI starts, then about 0.8 seconds to unbuckle after it exits. It is drawn only on a styled terminal at least as wide as the drawing, that can encode its characters. `SEATBELT_NO_ANIMATION` turns it off. Ctrl-C while it draws gives the cursor back.
+1. **Badge.** `seatbelt.gateway.badge.say` prints every line with `[seatbelt]` in front. On a TTY it is a bold, reversed ` seatbelt `, except under `NO_COLOR` or `TERM=dumb` [G1]. While a run is on, seatbelt's and uvicorn's log warnings go through it too. The local recorder's uvicorn gets `log_config=None`: with its own logging config it would replace seatbelt's handler, and its warnings would print without the badge.
+2. **Buckle.** The belt is the issue's own drawing, read cell by cell from its recording [G1, C8] into `seatbelt/gateway/buckle.txt`: 34 rows by 121 columns, the buckled belt and 11 frames, each with the time the recording shows it.
+   - Buckling plays them in place, 2.11 seconds: the tongue slides into the buckle, then CLICK (dim) and a jolt. The belt stays on the screen, and seatbelt's lines follow below it, as in the recording.
+   - Unbuckling, when the CLI exits, plays the sliding frames backwards, 0.78 seconds.
+   - It is drawn on a styled terminal wider than 121 columns and taller than 34 rows. A smaller one that can show `━▶▐█▌` gets a line of belt, about 1.4 seconds buckling and 0.8 unbuckling. `SEATBELT_NO_ANIMATION` turns both off. Ctrl-C while it draws gives the cursor back.
+   - Rows end `\r\n`, so a terminal that does not turn `\n` into `\r\n` still starts the next row in its first column.
 3. **Preflight.** `GET /seatbelt/policy` (authenticated, not recorded) answers `{"principal", "version", "policy": {"models", "tools_denied", "max_output_tokens"}}`.
    - Through a gateway, `seatbelt run` calls it before the CLI starts and prints the policy, a line per rule.
    - A 404 is an older gateway, and the run goes on.
    - A 401 or 403, any other status, an answer that is not the policy, or a gateway it cannot reach stops the run with exit 1.
 4. **`--settings` for Claude Code**, built by `seatbelt.gateway.claude_code.launch_arguments`:
-   - a `statusLine` that runs `python -m seatbelt.gateway.claude_code statusline [<the user's command>]`, keeping the user's `padding`, `refreshInterval` and `hideVimModeIndicator`. The user's command is the statusLine in effect across `~/.claude/settings.json`, `.claude/settings.json`, `.claude/settings.local.json` and their own `--settings` (a managed statusLine overrides seatbelt's anyway);
+   - a `statusLine` that runs `python -m seatbelt.gateway.claude_code statusline --note <note> [<the user's command>]`. It prints the user's line, ` | `, the badge and the note: `recording · org policy` when the gateway's policy sets a rule [G2], `recording` otherwise (ours). It keeps the user's `padding`, `refreshInterval` and `hideVimModeIndicator`. The user's command is the statusLine in effect across `~/.claude/settings.json`, `.claude/settings.json`, `.claude/settings.local.json` and their own `--settings` (a managed statusLine overrides seatbelt's anyway);
    - through a gateway whose policy denies tools, a PreToolUse hook with a matcher for exactly those tools. It runs `python -m seatbelt.gateway.claude_code hook <tools>`, which denies only a listed tool and gives no decision for anything else, or for input it cannot read;
    - a `--settings` of the user's own, before any `--`, is merged in: their keys and hooks stay, and seatbelt's hook is added beside theirs. If it cannot be read, it is left as given, with a warning;
    - when `disableAllHooks` is in effect, `seatbelt run` warns.
@@ -47,6 +51,8 @@
 | C5 | `claude --settings '{…}' mcp list`, `claude --settings=s.json --version` | both accepted |
 | C6 | `seatbelt gateway serve` with `tools_denied: [Bash]` and `models`, `seatbelt run claude -- -p …` in a clean environment | policy printed before the CLI started; `Bash` did not run; the hook's report reached the upstream; the ledger has `policy.check denylist True "… (Bash): stopped before it ran"` and verifies. A disallowed model: "API Error: 422 model … is not allowed. The org's policy allows …; pick one with /model". With `disableAllHooks` set: the warning, `Bash` ran, then "API Error: 422 tool result for denied call … run /clear …". `curl` with `X-Seatbelt-Run: triage-42`: `x-seatbelt-run-id: alice_corp-triage-42-<hex>` |
 | C7 | `seatbelt run claude` in a pseudo-terminal, with `statusLine` `echo my-own-line` in `~/.claude/settings.json` | Claude Code's status line: `my-own-line \| ` and the reversed badge; the belt drawn before Claude Code and after it exited |
+| C8 | `buckle()` written to a 130×40 screen of the `pyte` terminal emulator, from the built wheel, each frame compared with the issue's recording [G1] | all 11 frames the same, cell for cell, shown for the same milliseconds |
+| C9 | C7 again on 2026-10-09 (Claude Code 2.1.295), a 140×45 pseudo-terminal, through a gateway that denies `Bash`, rendered with `pyte` | the belt and CLICK, then seatbelt's three lines below it; Claude Code's status line `my-own-line \|  seatbelt  recording · org policy`, the badge bold and reversed; the belt unbuckled after `/exit` |
 
 ## Docs
 
@@ -59,6 +65,13 @@
 | D5 | https://code.claude.com/docs/en/env-vars | `CLAUDE_CODE_MAX_OUTPUT_TOKENS` |
 | D6 | https://code.claude.com/docs/en/commands | `/model`, `/clear` |
 | D7 | https://code.claude.com/docs/en/checkpointing | `/rewind` |
+
+## Issue #46's drawings
+
+| Ref | Attachment | Used for |
+|---|---|---|
+| G1 | the recording `seatbelt-buckle.gif` (1653×1242, 32 frames): a terminal with 13×31-pixel cells, read by the shape of each cell's ink | the belt's rows and frames, their milliseconds, CLICK's place and dimmer grey, the badge (the terminal's colours swapped, bold) and the lines below the belt |
+| G2 | the screenshot `statusline.png` (1884×68) | the status line: the user's line, ` \| `, the badge, `recording · org policy` |
 
 ## Not done
 
