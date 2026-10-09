@@ -165,6 +165,35 @@ def test_a_large_event_shows_its_start_and_end_and_says_what_is_left_out(
     assert all(r.cut == 0 and r.detail_end == "" for r in small.rows)
 
 
+def test_an_event_whose_compact_json_fits_is_shown_whole(tmp_path: Path) -> None:
+    """Indented, 8,000 short strings are over the limit; compact, they are well under it."""
+    with Recorder.start(tmp_path, "agent", run_id="lists") as rec:
+        rec.user_message("u", ["ab"] * 8000)
+    ledger = tmp_path / "lists.jsonl"
+    (user,) = [r for r in build(ledger).rows if r.kind == "user.message"]
+    assert (user.cut, user.detail_end) == (0, "")
+    assert json.loads(user.detail) == user_attrs(ledger)  # all of it, once
+
+
+def test_a_ledger_that_changes_while_its_page_is_made_gets_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Read open, then closed and signed before the signature check reads it: the page would
+    show the open run beside a signature for the closed one."""
+    ledger = _run(tmp_path)
+    signed = ledger.read_bytes()
+    ledger.write_bytes(signed[: signed.rstrip(b"\n").rindex(b"\n") + 1])  # without run.end
+    real = html.verify_attestation
+
+    def closed_meanwhile(path: Path, pubkey: Path | None) -> object:
+        path.write_bytes(signed)
+        return real(path, pubkey)
+
+    monkeypatch.setattr(html, "verify_attestation", closed_meanwhile)
+    with pytest.raises(PageError, match="changed while its page was being made"):
+        build(ledger)
+
+
 def user_attrs(ledger: Path) -> object:
     (line,) = [x for x in ledger.read_text().splitlines() if '"user.message"' in x]
     return json.loads(line)["attrs"]
@@ -251,7 +280,8 @@ def test_reconstruct_html_writes_a_page_and_refuses_a_tampered_ledger(
     runner = CliRunner()
     out = runner.invoke(app, ["reconstruct", str(ledger), "--html"])
     assert out.exit_code == 0, out.output
-    assert (tmp_path / "alice-claude-1a2b-0001.html").exists()
+    assert page_path(ledger).exists()  # beside the ledger, where erase finds it
+    assert not list(tmp_path.glob("*.html"))
     out = runner.invoke(app, ["reconstruct", str(ledger), "--html", "--out", "r.html"])
     assert out.exit_code == 0 and (tmp_path / "r.html").exists()
     out = runner.invoke(app, ["reconstruct", str(ledger), "--html", "--out", "r.jsonl"])

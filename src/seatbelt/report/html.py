@@ -13,6 +13,7 @@ value that ever escaped the template. Design: docs/plans/2026-10-09-html-run-rep
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
@@ -27,8 +28,9 @@ from pathlib import Path
 import jinja2
 
 from seatbelt import __version__
+from seatbelt.attest.manifest import Manifest, sidecar
 from seatbelt.ledger.events import Event, Kind
-from seatbelt.ledger.store import LedgerError, read_events
+from seatbelt.ledger.store import LedgerError, parse_events
 from seatbelt.report import page_path
 from seatbelt.report.fleet import Usage, count_response, counted, response_model
 from seatbelt.report.timeline import summary
@@ -134,17 +136,17 @@ def _duration(start: datetime, end: datetime) -> str:
 
 
 def _detail(event: Event) -> tuple[str, int, str]:
-    """The event's attributes as JSON: whole and indented up to DETAIL_LIMIT bytes, else, as
-    compact JSON, its first DETAIL_HEAD bytes, how many bytes from the middle are left out, and
-    the rest of the limit from its end. (Indenting makes `json` use its pure-Python encoder,
-    seconds on a long session's requests, which are cut anyway.) Cut before `printable`, which
-    then makes C1 controls and bidirectional overrides visible; JSON escapes C0 controls."""
+    """The event's attributes as JSON: whole up to DETAIL_LIMIT bytes (indented when that fits
+    too), else, as compact JSON, its first DETAIL_HEAD bytes, how many bytes from the middle
+    are left out, and the rest of the limit from its end. (Indenting makes `json` use its
+    pure-Python encoder, seconds on a long session's requests, which are cut anyway.) Cut
+    before `printable`, which then makes C1 controls and bidirectional overrides visible;
+    JSON escapes C0 controls."""
     raw = json.dumps(event.attrs, ensure_ascii=False, default=str)
     data = raw.encode()
-    if len(data) <= DETAIL_LIMIT:
+    if len(data) <= DETAIL_LIMIT:  # whole: indented if that fits too, else compact
         pretty = json.dumps(event.attrs, indent=2, ensure_ascii=False, default=str)
-        if len(pretty.encode()) <= DETAIL_LIMIT:
-            return printable(pretty), 0, ""
+        return printable(pretty if len(pretty.encode()) <= DETAIL_LIMIT else raw), 0, ""
     head = data[:DETAIL_HEAD].decode(errors="ignore")
     end = data[len(data) - (DETAIL_LIMIT - DETAIL_HEAD) :].decode(errors="ignore")
     left = len(data) - len(head.encode()) - len(end.encode())
@@ -191,15 +193,25 @@ _SIGNATURE_NOTES = {
 }
 
 
+def _signed_sha256(ledger: Path) -> str | None:
+    """The ledger SHA-256 its signature pins, which the attestation check compared with the
+    file as it read it."""
+    try:
+        return Manifest.model_validate_json(sidecar(ledger).read_bytes()).ledger_sha256
+    except (OSError, ValueError):
+        return None
+
+
 def build(ledger: Path, pubkey: Path | None = None, now: datetime | None = None) -> Page:
     """What the page for `ledger` shows, after the checks `seatbelt reconstruct` makes. Raises
     PageError for a ledger that cannot be read, a broken chain, a forged signature, or, with
     `pubkey`, no signature. AttestError for a key file that cannot be read."""
-    try:
+    try:  # one read: the page shows, hashes and checks the same bytes
         raw = ledger.read_bytes()
-        events = list(read_events(ledger))
+        events = list(parse_events(raw, ledger))
     except (OSError, UnicodeDecodeError, LedgerError) as exc:
         raise PageError(f"{ledger}: {exc}") from exc
+    sha256 = hashlib.sha256(raw).hexdigest()
     if not events:
         raise PageError(f"{ledger}: no events")
     verdict = verify_events(events)
@@ -211,6 +223,9 @@ def build(ledger: Path, pubkey: Path | None = None, now: datetime | None = None)
         raise PageError(f"{ledger}: forged: {att.reason}")
     if att.status is Attestation.UNATTESTED and pubkey is not None:
         raise PageError(f"{ledger}: no signature to check against the key")
+    if att.status is not Attestation.UNATTESTED and _signed_sha256(ledger) != sha256:
+        # the check above read the file again: it was written to in between
+        raise PageError(f"{ledger}: changed while its page was being made; try again")
     first, last = events[0], events[-1]
     meta = first.attrs
     ended = last.kind is Kind.RUN_END
@@ -238,7 +253,7 @@ def build(ledger: Path, pubkey: Path | None = None, now: datetime | None = None)
         signature=att.status.value,
         signature_note=_SIGNATURE_NOTES.get(att.status, ""),
         final_hash=last.hash,
-        ledger_sha256=hashlib.sha256(raw).hexdigest(),
+        ledger_sha256=sha256,
         ledger_file=printable(ledger.name),
         verify_command=_verify_command(ledger, pubkey),
         rendered=_when(now or datetime.now().astimezone()),
@@ -263,23 +278,23 @@ def build(ledger: Path, pubkey: Path | None = None, now: datetime | None = None)
     return page
 
 
-def _environment() -> jinja2.Environment:
+@functools.cache
+def _template() -> jinja2.Template:
     # autoescape=True for every template: off is Jinja2's default, and select_autoescape goes by
     # a file's extension. StrictUndefined: a misspelt name fails a test instead of printing ""
-    return jinja2.Environment(
+    env = jinja2.Environment(
         autoescape=True,
         undefined=jinja2.StrictUndefined,
         trim_blocks=True,
         lstrip_blocks=True,
     )
+    source = resources.files(__package__).joinpath("templates", TEMPLATE).read_text("utf-8")
+    return env.from_string(source)
 
 
 def render(ledger: Path, pubkey: Path | None = None, now: datetime | None = None) -> str:
     """The page for `ledger` as HTML. Raises as `build` does."""
-    page = build(ledger, pubkey, now)
-    source = resources.files(__package__).joinpath("templates", TEMPLATE).read_text("utf-8")
-    template = _environment().from_string(source)
-    return template.render(page=page, detail_limit=DETAIL_LIMIT)
+    return _template().render(page=build(ledger, pubkey, now), detail_limit=DETAIL_LIMIT)
 
 
 def write_page(

@@ -18,7 +18,7 @@ When a run's ledger is closed and signed, seatbelt writes `<run id>.html` beside
 - **It is a view, not evidence.** It says what was checked when it was made: the hash chain, whether the run is complete, the signature, the final hash and the ledger's SHA-256. It also gives the command that checks the ledger again. Like any file it can be edited; the ledger and its signature are what prove anything. A broken or forged ledger gets no page.
 - **It is safe to open.** Everything from the ledger is escaped, and control characters and bidirectional overrides are shown rather than obeyed. The page has no script, loads nothing, and carries a Content-Security-Policy that forbids both.
 - **It holds what the ledger holds**, already redacted, so it is written mode 0600. `seatbelt erase` removes it with the ledger. `seatbelt pack` and a `[sink]` leave it out: it can be made again from the ledger.
-- **Any ledger, any time:** `seatbelt reconstruct <run> --html` writes `<run id>.html` in the current folder, or where `--out` says. A killed run's ledger gets its page when the next run closes it.
+- **Any ledger, any time:** `seatbelt reconstruct <run> --html` writes `<run id>.html` beside the ledger, making a run's page again, or where `--out` says. A page written elsewhere is your own copy: `seatbelt erase` does not know about it. A killed run's ledger gets its page when the next run closes it.
 - `html = false` in the settings turns pages off. A page that cannot be written is a warning; the run still ends signed.
 
 To record through your organisation's gateway instead, see [Through a gateway](#through-a-gateway).

@@ -27,7 +27,7 @@
    - `html = false` in `~/.config/seatbelt/config.toml` turns it off.
    - The org gateway does not write pages in this version.
 2. **On demand.** `seatbelt reconstruct [run] --html [--out path]` writes the page for any ledger and prints where.
-   - The default path is `<run id>.html` in the current folder.
+   - The default path is `<run id>.html` in the current folder. (As built: beside the ledger; see below.)
    - `--out` must end in `.html` (or `.htm`), so a slip cannot write a page over a ledger.
    - It makes the same checks as `reconstruct`: a broken or forged ledger gets no page, and the command exits 1.
 3. **A view, not evidence.**
@@ -90,6 +90,12 @@
 - **The erasure record counts pages** (`erasure.pages`), and `erase` removes a page before its ledger, so an interrupted erase finds it again by the ledger.
 - **A long event keeps its start and its end.** The design cut at 64 KiB from the start. A model request's messages run oldest first, so in a long session that showed only the opening of the conversation, never the turn the request was for. An event over 64 KiB now shows its first 8 KiB, how many bytes from the middle are left out, and its last 56 KiB.
 - **A long event is shown as compact JSON.** Indented JSON makes Python's `json` use its pure-Python encoder; events that fit in 64 KiB are still indented.
+- **After a code review of this change:**
+  - `reconstruct --html` writes beside the ledger by default, not in the current folder: that is where `erase` looks, and it makes a run's page again as the run-end warning says.
+  - The ledger is read once: the page's events, chain and SHA-256 come from the same bytes (`ledger.store.parse_events`), and a signature that pins other bytes (the file changed while the page was being made) gets no page.
+  - An event whose compact JSON fits in 64 KiB is shown whole; before, one that fitted only compactly was cut, with a negative count of bytes left out.
+  - The template is compiled once per process.
+  - Re-checking a ledger just signed at close is kept: it is what makes "no page for a ledger that fails" hold everywhere.
 - **Jinja2's floor is 3.1.6.** `pip-audit` 2.10.1 on 2026-10-09 reported advisories against 3.1.4 and 3.1.5, all fixed by 3.1.6, and none against 3.1.6 (C2).
 
 ## Checks
@@ -101,7 +107,7 @@
 | C3 | A signed ledger whose prompt and tool result hold `<script>`, `<img src=x onerror=…>` and `</details>`, and whose prompt holds a right-to-left override and an ESC sequence, rendered and opened from `file://` in Chromium 141 (light and dark) | no request; title unchanged; the payloads shown as text, the override and ESC as `\u202e` and `\u001b`. `</pre>`, `javascript:` links and `<style>` are covered by the unit tests only |
 | C4 | `uv run pytest -m "not integration"` as root | 747 passed; 7 failed, the same 7 that fail as root before this change (the sandbox refuses root; root ignores `chmod 500`) |
 | C5 | The same as an unprivileged user, with the container's root-only CA bundle variables unset | 754 passed |
-| C7 | Synthetic signed sessions in which each request carries the whole history so far (about 1.8 KB more per turn), a tool call per turn; `write_page` timed on this container | 150 turns: a 21.8 MB ledger, 0.6 s, a 10.2 MB page. 400 turns: 150 MB, 4.1 s, 29.1 MB. At 400 turns: reading the ledger 0.42 s, the chain 0.54 s, the signature 1.14 s, the rows 0.85 s, the template 0.1 s |
+| C7 | Synthetic signed sessions in which each request carries the whole history so far (about 1.8 KB more per turn), a tool call per turn; `write_page` timed on this container | 150 turns: a 21.8 MB ledger, 0.6 s, a 10.2 MB page. 400 turns: 150 MB, 4.1 s (3.6 s after the review's single read), 29.1 MB. At 400 turns: reading the ledger 0.42 s, the chain 0.54 s, the signature 1.14 s, the rows 0.85 s, the template 0.1 s |
 | C6 | `uv build --wheel` (uv 0.12.20) | the wheel holds `seatbelt/report/templates/run.html` and `Requires-Dist: jinja2>=3.1.6` |
 
 ## Rejected (ours)

@@ -170,7 +170,7 @@ def reconstruct(
     ] = False,
     out: Annotated[
         Path | None,
-        typer.Option(help="where --html writes the page; default: <run id>.html in this folder"),
+        typer.Option(help="where --html writes the page; default: beside the ledger"),
     ] = None,
 ) -> None:
     """Print the run as a timeline a reviewer can read, or with --html write it as a page to
@@ -189,7 +189,7 @@ def reconstruct(
     from seatbelt.report.html import PageError, write_page
 
     try:
-        page = write_page(path, pubkey, out or Path(f"{path.stem}.html"))
+        page = write_page(path, pubkey, out)  # by default beside the ledger, where erase looks
     except (PageError, AttestError, OSError) as exc:
         console.print(f"[red]{_shown(str(exc))}[/]")
         raise typer.Exit(code=1) from exc

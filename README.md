@@ -99,7 +99,7 @@ uv run seatbelt scenarios scenarios/ --target examples.scenario_target:target   
 | `seatbelt report [runs...] [--pubkey] [--people] [--json]` | usage by person, model and tool; refused, failed, open and unsigned runs. Takes several folders; `--people` joins one person's ids ([guide](https://github.com/ronanpdh/seatbelt/blob/main/docs/deploy/gateway.md#one-row-per-person)). With no `runs`, this machine's runs | a ledger is broken or forged, a signature's ledger is missing, or with a key given (with no `runs`, this machine's key) one ended unsigned; a bad people file |
 | `seatbelt runs [--limit]` | lists this machine's runs by name, newest first | |
 | `seatbelt verify [run or ledger] [--pubkey]` | checks the hash chain and attestation; a local run against this machine's key. With no argument, the latest run | broken, forged (a signature that does not match the ledger counts, key or not), incomplete, or unattested with a key given |
-| `seatbelt reconstruct [run or ledger] [--pubkey] [--html] [--out]` | prints the run as a timeline, or with `--html` writes it as a page (`<run id>.html` here, or `--out`); with no argument, the latest run | same as verify; an `--out` not ending in `.html` |
+| `seatbelt reconstruct [run or ledger] [--pubkey] [--html] [--out]` | prints the run as a timeline, or with `--html` writes it as a page (`<run id>.html` beside the ledger, or `--out`); with no argument, the latest run | same as verify; an `--out` not ending in `.html` |
 | `seatbelt demo [--out runs]` | records a scripted example run | |
 | `seatbelt keygen [dir]` | writes an Ed25519 key pair | a key file exists |
 | `seatbelt attest <ledger> --key` | signs a finished ledger into `<id>.attest.json` | broken or incomplete chain, sidecar exists |
