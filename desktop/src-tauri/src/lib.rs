@@ -2,22 +2,25 @@
 //! `seatbelt run`, so each is recorded and keeps its own sign-in.
 //!
 //! The web view can do only what these commands allow: open a tab for one of the three CLIs
-//! in a folder; write to, resize or close a tab; list runs; open a run's page by its id; pick
-//! a folder. It never names a program to run or a file to open.
+//! in a folder; write to, resize or close a tab; list runs; open a run's page by its id; check
+//! a folder; quit. It never names a program to run or a file to open.
+//!
+//! No native dialogs: macOS's `+[NSOpenPanel openPanel]` can return nil (a code-signature
+//! mismatch after an in-place update is one reported cause), and the binding the dialog plugin
+//! uses panics on the main thread when it does (tauri-apps/tauri#13047). A folder is typed or dropped instead, and the quit question is
+//! asked in the window.
 //! Design: docs/plans/2026-10-09-desktop-terminal-design.md.
 
 mod pty;
 mod runs;
 mod tools;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::ipc::Channel;
-use tauri::{Manager, State, WindowEvent};
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+use tauri::{Emitter, Manager, RunEvent, State, WindowEvent};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::pty::{Launch, TabEvent, Tabs, CLOSE_WAIT};
@@ -50,13 +53,30 @@ async fn status(state: State<'_, AppState>) -> Result<Tools, String> {
     Ok(found)
 }
 
+/// The folder a session would start in, as typed or dropped: `~` is the home folder, and the
+/// answer is the folder's full path, or why it cannot be used.
 #[tauri::command]
-async fn pick_folder(app: tauri::AppHandle) -> Option<String> {
-    let picked = app.dialog().file().blocking_pick_folder()?;
-    picked
-        .into_path()
-        .ok()
-        .map(|p| p.to_string_lossy().into_owned())
+fn check_folder(path: String) -> Result<String, String> {
+    folder(&path, tools::home_dir().as_deref())
+}
+
+fn folder(typed: &str, home: Option<&Path>) -> Result<String, String> {
+    let typed = typed.trim();
+    let path = match (typed.strip_prefix('~'), home) {
+        (Some(""), Some(home)) => home.to_path_buf(),
+        (Some(rest), Some(home)) if rest.starts_with(['/', '\\']) => home.join(&rest[1..]),
+        _ => PathBuf::from(typed),
+    };
+    if typed.is_empty() || !path.is_absolute() {
+        return Err("type a full path, such as ~/code/project, or drop a folder here".into());
+    }
+    let full = path
+        .canonicalize()
+        .map_err(|_| format!("{typed} does not exist"))?;
+    if !full.is_dir() {
+        return Err(format!("{typed} is a file, not a folder"));
+    }
+    Ok(full.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
@@ -155,62 +175,102 @@ async fn open_page(
         .map_err(|e| e.to_string())
 }
 
-/// Quitting while tabs run asks first, then ends each tab as closing it would.
-fn confirm_quit(window: &tauri::Window) {
-    let app = window.app_handle().clone();
-    thread::spawn(move || {
-        let state = app.state::<AppState>();
-        let n = state.tabs.running();
-        let quit = app
-            .dialog()
-            .message(format!(
-                "{n} session{} still running. Quitting ends {} and closes {} run{}.",
-                if n == 1 { " is" } else { "s are" },
-                if n == 1 { "it" } else { "them" },
-                if n == 1 { "its" } else { "their" },
-                if n == 1 { "" } else { "s" },
-            ))
-            .title("Quit Seatbelt?")
-            .kind(MessageDialogKind::Warning)
-            .buttons(MessageDialogButtons::OkCancelCustom(
-                "Quit".into(),
-                "Cancel".into(),
-            ))
-            .blocking_show();
-        if quit {
-            state.tabs.close_all(CLOSE_WAIT);
-            app.exit(0);
-        }
-    });
+/// End every session as closing its tab would, then quit: the answer to "quit-requested".
+#[tauri::command]
+async fn quit(app: tauri::AppHandle) -> Result<(), String> {
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        handle.state::<AppState>().tabs.close_all(CLOSE_WAIT);
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    app.exit(0);
+    Ok(())
+}
+
+/// Quitting while sessions run (closing the window, or ⌘Q) is held, and the window asks.
+fn hold_quit(app: &tauri::AppHandle) -> bool {
+    let running = app.state::<AppState>().tabs.running();
+    if running > 0 {
+        let _ = app.emit("quit-requested", running);
+    }
+    running > 0
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             tabs: Tabs::default(),
             tools: Mutex::new(tools::discover()),
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                if window.state::<AppState>().tabs.running() > 0 {
+                if hold_quit(window.app_handle()) {
                     api.prevent_close();
-                    confirm_quit(window);
                 }
             }
         })
         .invoke_handler(tauri::generate_handler![
             status,
-            pick_folder,
+            check_folder,
             open_tab,
             write_tab,
             resize_tab,
             close_tab,
             list_runs,
             open_page,
+            quit,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running the Seatbelt app");
+        .build(tauri::generate_context!())
+        .expect("error while building the Seatbelt app")
+        .run(|app, event| {
+            // ⌘Q and the app menu's Quit ask too; `quit` itself exits with a code, and passes
+            if let RunEvent::ExitRequested {
+                code: None, api, ..
+            } = event
+            {
+                if hold_quit(app) {
+                    api.prevent_exit();
+                }
+            }
+        });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::folder;
+
+    #[test]
+    fn a_folder_is_a_full_path_to_a_directory_with_tilde_for_home() {
+        let dir = std::env::temp_dir().join(format!("seatbelt-folder-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("project")).unwrap();
+        std::fs::write(dir.join("notes.txt"), "x").unwrap();
+        let full = dir.join("project").canonicalize().unwrap();
+        let typed = dir.join("project");
+        assert_eq!(
+            folder(typed.to_str().unwrap(), None).unwrap(),
+            full.to_string_lossy()
+        );
+        assert_eq!(
+            folder("~/project", Some(&dir)).unwrap(),
+            full.to_string_lossy()
+        );
+        assert_eq!(
+            folder("~", Some(&dir)).unwrap(),
+            dir.canonicalize().unwrap().to_string_lossy()
+        );
+        assert!(folder("relative/path", Some(&dir))
+            .unwrap_err()
+            .contains("full path"));
+        assert!(folder("  ", Some(&dir)).unwrap_err().contains("full path"));
+        assert!(folder("~/nope", Some(&dir))
+            .unwrap_err()
+            .contains("does not exist"));
+        assert!(folder("~/notes.txt", Some(&dir))
+            .unwrap_err()
+            .contains("not a folder"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -3,6 +3,8 @@
 // set as textContent, never as HTML.
 
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
@@ -96,9 +98,8 @@ async function check(): Promise<void> {
   } else {
     byId("setup").hidden = true;
   }
-  if (folder === null) folder = tools.home;
-  renderFolder();
   renderCliButtons();
+  if (folder === null) await setFolder(remembered() ?? tools.home ?? "", false);
   await refreshRuns();
 }
 
@@ -114,27 +115,76 @@ function ready(): boolean {
   return Boolean(tools?.seatbelt?.supported) && folder !== null;
 }
 
-function renderFolder(): void {
-  byId("folder-name").textContent = folder ? basename(folder) : "choose a folder";
-  byId("folder").title = folder ?? "";
+// -- the folder a session starts in: typed or dropped, checked by the app, remembered --------
+
+const FOLDER_KEY = "seatbelt.folder";
+
+function remembered(): string | null {
+  try {
+    return localStorage.getItem(FOLDER_KEY);
+  } catch {
+    return null; // storage can be unavailable; the home folder is the default then
+  }
 }
+
+/** Check `path` and make it the folder; false, with the reason shown, if it cannot be. */
+async function setFolder(path: string, say = true): Promise<boolean> {
+  const error = byId("folder-error");
+  const input = byId<HTMLInputElement>("folder-input");
+  try {
+    folder = await invoke<string>("check_folder", { path });
+    input.value = folder;
+    input.title = folder;
+    error.hidden = true;
+    try {
+      localStorage.setItem(FOLDER_KEY, folder);
+    } catch {
+      // not remembered this time; nothing else depends on it
+    }
+    updateCliButtons();
+    return true;
+  } catch (e) {
+    if (say) {
+      error.textContent = plain(e);
+      error.hidden = false;
+    }
+    input.value = folder ?? "";
+    updateCliButtons();
+    return false;
+  }
+}
+
+// The buttons are made once per check and only enabled or disabled after: one replaced while
+// it is being clicked (when the folder field loses focus to it) would lose that click.
+const cliButtons = new Map<string, { cli: Cli; button: HTMLButtonElement }>();
 
 function renderCliButtons(): void {
   const box = byId("cli-buttons");
   box.replaceChildren();
+  cliButtons.clear();
   for (const cli of tools?.clis ?? []) {
     const button = el("button", "cli", cli.label);
     button.type = "button";
-    button.disabled = !ready() || cli.path === null;
     button.title = cli.path ?? `${cli.name} was not found on your PATH`;
     button.addEventListener("click", () => void openTab(cli));
+    cliButtons.set(cli.name, { cli, button });
     box.append(button);
+  }
+  updateCliButtons();
+}
+
+function updateCliButtons(): void {
+  for (const { cli, button } of cliButtons.values()) {
+    button.disabled = !ready() || cli.path === null;
   }
 }
 
 // -- sessions ----------------------------------------------------------------------------
 
 async function openTab(cli: Cli): Promise<void> {
+  // a path typed but not yet applied (the click came first) is what the user means
+  const typed = byId<HTMLInputElement>("folder-input").value;
+  if (typed !== folder && !(await setFolder(typed))) return;
   if (!ready() || folder === null) return;
   const box = el("div", "term");
   byId("terminals").append(box);
@@ -312,13 +362,47 @@ function runItem(run: Run): HTMLLIElement {
 
 byId("recheck").addEventListener("click", () => void check());
 byId("refresh").addEventListener("click", () => void refreshRuns());
-byId("folder").addEventListener("click", async () => {
-  const picked = await invoke<string | null>("pick_folder").catch(() => null);
-  if (picked) {
-    folder = picked;
-    renderFolder();
-    renderCliButtons();
+const folderInput = byId<HTMLInputElement>("folder-input");
+folderInput.addEventListener("change", () => {
+  if (folderInput.value !== folder) void setFolder(folderInput.value);
+});
+folderInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    void setFolder(folderInput.value);
   }
+});
+void getCurrentWebview().onDragDropEvent((event) => {
+  const kind = event.payload.type;
+  document.body.classList.toggle("dropping", kind === "enter" || kind === "over");
+  if (kind === "drop" && event.payload.paths.length > 0) {
+    void setFolder(event.payload.paths[0]);
+  }
+});
+
+// -- quitting while sessions run ----------------------------------------------------------
+
+void listen<number>("quit-requested", (event) => {
+  const n = event.payload;
+  byId("quit-text").textContent =
+    n === 1
+      ? "1 session is still running. Quitting ends it and closes its run."
+      : `${n} sessions are still running. Quitting ends them and closes their runs.`;
+  for (const id of ["quit-ok", "quit-cancel"]) byId<HTMLButtonElement>(id).disabled = false;
+  byId("quit").hidden = false;
+  byId("quit-cancel").focus();
+});
+byId("quit-cancel").addEventListener("click", () => {
+  byId("quit").hidden = true;
+  active?.term.focus();
+});
+byId("quit-ok").addEventListener("click", () => {
+  for (const id of ["quit-ok", "quit-cancel"]) byId<HTMLButtonElement>(id).disabled = true;
+  byId("quit-text").textContent = "Ending sessions and closing their runs…";
+  void invoke("quit");
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !byId("quit").hidden) byId("quit-cancel").click();
 });
 window.addEventListener("focus", () => void refreshRuns());
 

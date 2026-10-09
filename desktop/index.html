@@ -22,9 +22,13 @@
 
       <section id="new-tab">
         <h2>New session</h2>
-        <button id="folder" type="button" class="folder" title="The folder the CLI starts in">
-          <span class="muted">in</span> <span id="folder-name"></span>
-        </button>
+        <label class="folder-field">
+          <span class="muted small">Folder</span>
+          <input id="folder-input" type="text" spellcheck="false" autocomplete="off"
+                 autocapitalize="off" placeholder="~/code/project" />
+        </label>
+        <p id="folder-error" class="error small" hidden></p>
+        <p class="muted small hint">Type a path, or drop a folder on the window.</p>
         <div id="cli-buttons" class="cli-buttons"></div>
       </section>
 
@@ -55,6 +59,17 @@
       </div>
       <div id="terminals"></div>
     </main>
+
+    <div id="quit" class="modal" role="dialog" aria-modal="true" aria-labelledby="quit-title" hidden>
+      <div class="modal-box">
+        <h2 id="quit-title">Quit Seatbelt?</h2>
+        <p id="quit-text"></p>
+        <div class="modal-buttons">
+          <button id="quit-cancel" type="button">Cancel</button>
+          <button id="quit-ok" type="button" class="danger">Quit</button>
+        </div>
+      </div>
+    </div>
 
     <script type="module" src="/src/main.ts"></script>
   </body>

@@ -19,6 +19,7 @@ The app looks for these on its own `PATH`, then on the `PATH` your login shell p
 - When the run ends, `seatbelt run` writes a report to a file the app names (`SEATBELT_RUN_REPORT`), and the tab shows the run it recorded.
 - Closing a tab sends `seatbelt run` SIGTERM. It passes that on to the CLI, then closes and signs the run. A tab still running 20 seconds later is killed, and its ledger is closed by the next `seatbelt run`, as a killed run's is.
 - The runs list is `seatbelt runs --json`. A run's page is opened by its id: the web view never names a file or a program.
+- The folder a session starts in is typed (`~` works) or dropped on the window, and remembered. There are no native dialogs: macOS's folder picker can crash Tauri apps (tauri-apps/tauri#13047), so quitting with sessions running is asked in the window too.
 
 ## Develop
 

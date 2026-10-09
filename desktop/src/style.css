@@ -91,23 +91,54 @@ code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberat
   user-select: all;
 }
 
-.folder, .cli, .link, .tab-title, .tab-close, .run-button, #recheck {
+.cli, .link, .tab-title, .tab-close, .run-button, #recheck {
   border: 0;
   background: none;
   cursor: pointer;
 }
-.folder {
+.folder-field { display: grid; gap: 4px; margin-bottom: 4px; }
+.folder-field input {
   width: 100%;
-  text-align: left;
   padding: 6px 8px;
   border: 1px solid var(--line);
   border-radius: 6px;
-  margin-bottom: 8px;
-  overflow: hidden;
+  background: var(--panel);
+  color: var(--ink);
+  font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
-.folder:hover { background: var(--hover); }
+.folder-field input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.hint { margin: 0 0 8px; }
+.error { color: var(--bad); margin: 0 0 4px; overflow-wrap: anywhere; }
+body.dropping #sidebar .folder-field input { outline: 2px dashed var(--accent); }
+
+.modal {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.35);
+}
+.modal-box {
+  width: min(420px, calc(100vw - 32px));
+  padding: 18px 20px;
+  border-radius: 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+}
+.modal-box h2 { margin: 0 0 8px; font-size: 15px; }
+.modal-box p { margin: 0 0 16px; color: var(--muted); }
+.modal-buttons { display: flex; justify-content: flex-end; gap: 8px; }
+.modal-buttons button {
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  cursor: pointer;
+}
+.modal-buttons button.danger { background: var(--bad); border-color: var(--bad); color: #ffffff; font-weight: 600; }
+.modal-buttons button:disabled { opacity: 0.6; cursor: default; }
 .cli-buttons { display: grid; gap: 6px; }
 .cli, #recheck {
   padding: 7px 10px;
