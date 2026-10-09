@@ -1,0 +1,448 @@
+//! The Agent Client Protocol, as Gemini CLI speaks it (`gemini --acp`): JSON-RPC 2.0 over
+//! stdio. The app is the client: it starts a session, sends prompts, and answers the agent's
+//! permission requests. It offers no file system or terminal of its own, so the agent uses
+//! its own tools. Check P5 in the design ran this against Gemini CLI 0.63.0.
+
+use std::collections::HashMap;
+
+use serde_json::{json, Value};
+
+use super::protocol::{about_sign_in, cut, str_of, ChatEvent, Driver, Step, ToolStatus};
+
+#[derive(Default)]
+pub struct Acp {
+    next_id: u64,
+    pending: HashMap<u64, &'static str>,
+    cwd: String,
+    session: Option<String>,
+    queued: Vec<String>,
+    /// The assistant message being streamed: a new one after each tool call.
+    message: Option<String>,
+    messages: u32,
+    /// Permission requests waiting, by our id: the agent's request id and its options.
+    waiting: HashMap<String, (Value, Vec<Value>)>,
+    failed: bool,
+}
+
+fn status(s: &str) -> ToolStatus {
+    match s {
+        "completed" => ToolStatus::Done,
+        "failed" => ToolStatus::Failed,
+        _ => ToolStatus::Running,
+    }
+}
+
+/// The text in a tool call's content: ACP content blocks of type text.
+fn content_text(content: Option<&Value>) -> String {
+    let parts: Vec<&str> = content
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c.pointer("/content/text").and_then(Value::as_str))
+        .collect();
+    cut(&parts.join("\n"), 2000)
+}
+
+impl Acp {
+    fn request(&mut self, method: &'static str, params: Value) -> Value {
+        self.next_id += 1;
+        self.pending.insert(self.next_id, method);
+        json!({"jsonrpc": "2.0", "id": self.next_id, "method": method, "params": params})
+    }
+
+    fn prompt(&mut self, session: &str, text: &str) -> Value {
+        self.request(
+            "session/prompt",
+            json!({"sessionId": session, "prompt": [{"type": "text", "text": text}]}),
+        )
+    }
+
+    fn response(&mut self, line: &Value, step: &mut Step) {
+        let Some(method) = line
+            .get("id")
+            .and_then(Value::as_u64)
+            .and_then(|id| self.pending.remove(&id))
+        else {
+            return;
+        };
+        if let Some(error) = line.get("error") {
+            let mut message = str_of(error, "message").to_string();
+            if let Some(data) = error.get("data").filter(|d| !d.is_null()) {
+                message = format!(
+                    "{message}: {}",
+                    data.as_str()
+                        .map_or_else(|| data.to_string(), str::to_string)
+                );
+            }
+            let message = cut(&message, 2000);
+            if method == "session/new" {
+                self.failed = true;
+            }
+            if method == "session/new" || about_sign_in(&message) {
+                step.show(ChatEvent::SignIn {
+                    reason: format!("Gemini CLI could not start a session: {message}"),
+                });
+            }
+            if method == "session/prompt" || method == "session/new" {
+                self.message = None;
+                step.show(ChatEvent::TurnEnd {
+                    ok: false,
+                    error: Some(message),
+                });
+            }
+            return;
+        }
+        let result = line.get("result").cloned().unwrap_or_default();
+        match method {
+            "initialize" => {
+                let cwd = self.cwd.clone();
+                let new = self.request("session/new", json!({"cwd": cwd, "mcpServers": []}));
+                step.send(new);
+            }
+            "session/new" => {
+                if let Some(session) = result.get("sessionId").and_then(Value::as_str) {
+                    let session = session.to_string();
+                    for text in std::mem::take(&mut self.queued) {
+                        let line = self.prompt(&session, &text);
+                        step.send(line);
+                    }
+                    self.session = Some(session);
+                }
+            }
+            "session/prompt" => {
+                self.message = None;
+                for (id, _) in self.waiting.drain() {
+                    step.show(ChatEvent::Resolved { id });
+                }
+                let stop = str_of(&result, "stopReason");
+                let ok = matches!(stop, "end_turn" | "max_tokens" | "max_turn_requests");
+                let error = (!ok).then(|| {
+                    if stop == "cancelled" {
+                        "interrupted".to_string()
+                    } else {
+                        stop.to_string()
+                    }
+                });
+                step.show(ChatEvent::TurnEnd { ok, error });
+            }
+            _ => {}
+        }
+    }
+
+    fn update(&mut self, params: &Value, step: &mut Step) {
+        let update = params.get("update").cloned().unwrap_or_default();
+        match str_of(&update, "sessionUpdate") {
+            "agent_message_chunk" => {
+                let text = update.pointer("/content/text").and_then(Value::as_str);
+                if let Some(text) = text {
+                    let id = match &self.message {
+                        Some(id) => id.clone(),
+                        None => {
+                            self.messages += 1;
+                            let id = format!("gemini-{}", self.messages);
+                            self.message = Some(id.clone());
+                            id
+                        }
+                    };
+                    step.show(ChatEvent::Text {
+                        id,
+                        delta: text.to_string(),
+                    });
+                }
+            }
+            kind @ ("tool_call" | "tool_call_update") => {
+                self.message = None;
+                let name = if kind == "tool_call" {
+                    match str_of(&update, "kind") {
+                        "" | "other" => "Tool".to_string(),
+                        k => {
+                            let mut chars = k.chars();
+                            chars
+                                .next()
+                                .map(char::to_uppercase)
+                                .into_iter()
+                                .flatten()
+                                .chain(chars)
+                                .collect()
+                        }
+                    }
+                } else {
+                    String::new()
+                };
+                step.show(ChatEvent::Tool {
+                    id: str_of(&update, "toolCallId").to_string(),
+                    name,
+                    detail: cut(str_of(&update, "title"), 2000),
+                    status: status(str_of(&update, "status")),
+                });
+            }
+            _ => {} // thoughts, plans, commands and modes: not shown
+        }
+    }
+
+    fn server_request(&mut self, line: &Value, step: &mut Step) {
+        let rpc_id = line.get("id").cloned().unwrap_or_default();
+        if str_of(line, "method") != "session/request_permission" {
+            // fs/* and terminal/*: the client said it has neither
+            step.send(
+                json!({"jsonrpc": "2.0", "id": rpc_id, "error": {"code": -32601,
+                "message": "Seatbelt does not handle this request"}}),
+            );
+            return;
+        }
+        let params = line.get("params").cloned().unwrap_or_default();
+        let call = params.get("toolCall").cloned().unwrap_or_default();
+        let options = params
+            .get("options")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let id = format!("gemini-{}", rpc_id.to_string().trim_matches('"'));
+        self.waiting.insert(id.clone(), (rpc_id, options));
+        let title = str_of(&call, "title");
+        let text = content_text(call.get("content"));
+        step.show(ChatEvent::Approval {
+            id,
+            tool: if title.is_empty() {
+                "Tool".into()
+            } else {
+                cut(title, 200)
+            },
+            detail: text,
+        });
+    }
+
+    fn outcome(options: &[Value], allow: bool) -> Value {
+        let kinds: &[&str] = if allow {
+            &["allow_once"]
+        } else {
+            &["reject_once", "reject_always"]
+        };
+        let chosen = kinds.iter().find_map(|kind| {
+            options
+                .iter()
+                .find(|o| str_of(o, "kind") == *kind)
+                .map(|o| str_of(o, "optionId").to_string())
+        });
+        match chosen {
+            Some(option) => json!({"outcome": "selected", "optionId": option}),
+            None => json!({"outcome": "cancelled"}),
+        }
+    }
+}
+
+impl Driver for Acp {
+    fn args(&self) -> Vec<String> {
+        vec!["--acp".into()]
+    }
+
+    fn start(&mut self, cwd: &str) -> Step {
+        self.cwd = cwd.to_string();
+        let mut step = Step::default();
+        let init = self.request(
+            "initialize",
+            json!({"protocolVersion": 1, "clientCapabilities": {
+                "fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false}}),
+        );
+        step.send(init);
+        step
+    }
+
+    fn read(&mut self, line: Value) -> Step {
+        let mut step = Step::default();
+        let has_id = line.get("id").is_some();
+        match line.get("method").and_then(Value::as_str) {
+            None if has_id => self.response(&line, &mut step),
+            Some(_) if has_id => self.server_request(&line, &mut step),
+            Some("session/update") => {
+                let params = line.get("params").cloned().unwrap_or_default();
+                self.update(&params, &mut step);
+            }
+            _ => {}
+        }
+        step
+    }
+
+    fn send(&mut self, text: &str) -> Result<Step, String> {
+        if self.failed {
+            return Err("Gemini CLI has no session: sign in, then start the chat again".into());
+        }
+        let mut step = Step::default();
+        match self.session.clone() {
+            Some(session) => {
+                let line = self.prompt(&session, text);
+                step.send(line);
+            }
+            None => self.queued.push(text.to_string()),
+        }
+        Ok(step)
+    }
+
+    fn answer(&mut self, id: &str, allow: bool) -> Result<Step, String> {
+        let (rpc_id, options) = self
+            .waiting
+            .remove(id)
+            .ok_or("that request is no longer waiting")?;
+        let mut step = Step::default();
+        step.send(json!({"jsonrpc": "2.0", "id": rpc_id,
+            "result": {"outcome": Self::outcome(&options, allow)}}));
+        step.show(ChatEvent::Resolved { id: id.to_string() });
+        Ok(step)
+    }
+
+    fn interrupt(&mut self) -> Step {
+        let mut step = Step::default();
+        // the protocol has a waiting permission request answered as cancelled
+        let waiting: Vec<(String, (Value, Vec<Value>))> = self.waiting.drain().collect();
+        for (id, (rpc_id, _)) in waiting {
+            step.send(json!({"jsonrpc": "2.0", "id": rpc_id, "result": {"outcome": {"outcome": "cancelled"}}}));
+            step.show(ChatEvent::Resolved { id });
+        }
+        if let Some(session) = &self.session {
+            step.send(json!({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": session}}));
+        }
+        step
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line(s: &str) -> Value {
+        serde_json::from_str(s).unwrap()
+    }
+
+    fn started() -> (Acp, Step) {
+        let mut a = Acp::default();
+        let mut all = a.start("/work");
+        for l in [
+            r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"authMethods":[{"id":"oauth-personal","name":"Log in with Google"}]}}"#,
+            r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s-1","modes":{"currentModeId":"default"}}}"#,
+        ] {
+            let step = a.read(line(l));
+            all.events.extend(step.events);
+            all.write.extend(step.write);
+        }
+        (a, all)
+    }
+
+    #[test]
+    fn a_session_starts_with_no_file_system_or_terminal_offered() {
+        let (a, step) = started();
+        assert_eq!(
+            step.write,
+            vec![
+                json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": 1,
+                    "clientCapabilities": {"fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false}}}),
+                json!({"jsonrpc": "2.0", "id": 2, "method": "session/new", "params": {"cwd": "/work", "mcpServers": []}}),
+            ]
+        );
+        assert_eq!(a.session.as_deref(), Some("s-1"));
+    }
+
+    #[test]
+    fn a_prompt_with_a_permission_request_runs_as_p5_did() {
+        let (mut a, _) = started();
+        let sent = a.send("please run it").unwrap();
+        assert_eq!(
+            sent.write,
+            vec![
+                json!({"jsonrpc": "2.0", "id": 3, "method": "session/prompt",
+            "params": {"sessionId": "s-1", "prompt": [{"type": "text", "text": "please run it"}]}})
+            ]
+        );
+        let ask = [
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"tool_call","toolCallId":"run_1","status":"pending","title":"echo hi > out.txt","content":[{"type":"content","content":{"type":"text","text":"[cwd /work]"}}],"kind":"execute"}}}"#,
+            r#"{"jsonrpc":"2.0","id":0,"method":"session/request_permission","params":{"sessionId":"s-1","options":[{"optionId":"proceed_always","name":"Allow for this session","kind":"allow_always"},{"optionId":"proceed_once","name":"Allow","kind":"allow_once"},{"optionId":"cancel","name":"Reject","kind":"reject_once"}],"toolCall":{"toolCallId":"run_1","status":"pending","title":"echo hi > out.txt","content":[{"type":"content","content":{"type":"text","text":"[cwd /work]"}}]}}}"#,
+        ];
+        let mut events = vec![];
+        for l in ask {
+            events.extend(a.read(line(l)).events);
+        }
+        assert_eq!(
+            events,
+            vec![
+                ChatEvent::Tool {
+                    id: "run_1".into(),
+                    name: "Execute".into(),
+                    detail: "echo hi > out.txt".into(),
+                    status: ToolStatus::Running
+                },
+                ChatEvent::Approval {
+                    id: "gemini-0".into(),
+                    tool: "echo hi > out.txt".into(),
+                    detail: "[cwd /work]".into()
+                },
+            ]
+        );
+        assert_eq!(
+            a.answer("gemini-0", true).unwrap().write,
+            vec![
+                json!({"jsonrpc": "2.0", "id": 0, "result": {"outcome": {"outcome": "selected", "optionId": "proceed_once"}}})
+            ]
+        );
+        let rest = [
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"tool_call_update","toolCallId":"run_1","status":"completed","title":"echo hi > out.txt","kind":"execute"}}}"#,
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"All done."}}}}"#,
+            r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#,
+        ];
+        let mut events = vec![];
+        for l in rest {
+            events.extend(a.read(line(l)).events);
+        }
+        assert_eq!(
+            events,
+            vec![
+                ChatEvent::Tool {
+                    id: "run_1".into(),
+                    name: String::new(),
+                    detail: "echo hi > out.txt".into(),
+                    status: ToolStatus::Done
+                },
+                ChatEvent::Text {
+                    id: "gemini-1".into(),
+                    delta: "All done.".into()
+                },
+                ChatEvent::TurnEnd {
+                    ok: true,
+                    error: None
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn rejecting_cancelling_and_requests_the_client_does_not_offer() {
+        let (mut a, _) = started();
+        a.read(line(r#"{"jsonrpc":"2.0","id":"p","method":"session/request_permission","params":{"options":[{"optionId":"no","kind":"reject_once"}],"toolCall":{"title":"rm"}}}"#));
+        assert_eq!(
+            a.answer("gemini-p", false).unwrap().write[0]["result"]["outcome"],
+            json!({"outcome": "selected", "optionId": "no"})
+        );
+        a.read(line(r#"{"jsonrpc":"2.0","id":5,"method":"session/request_permission","params":{"options":[],"toolCall":{"title":"x"}}}"#));
+        let stop = a.interrupt();
+        assert_eq!(
+            stop.write,
+            vec![
+                json!({"jsonrpc": "2.0", "id": 5, "result": {"outcome": {"outcome": "cancelled"}}}),
+                json!({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": "s-1"}}),
+            ]
+        );
+        let fs = a.read(line(r#"{"jsonrpc":"2.0","id":6,"method":"fs/read_text_file","params":{"path":"/etc/passwd"}}"#));
+        assert_eq!(fs.write[0]["error"]["code"], -32601);
+        assert!(fs.events.is_empty());
+    }
+
+    #[test]
+    fn no_session_asks_for_sign_in() {
+        let mut a = Acp::default();
+        a.start("/w");
+        a.read(line(
+            r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#,
+        ));
+        let step = a.read(line(r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"Authentication required"}}"#));
+        assert!(matches!(step.events[0], ChatEvent::SignIn { .. }));
+        assert!(a.send("hi").is_err());
+    }
+}

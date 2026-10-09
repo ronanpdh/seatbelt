@@ -1,10 +1,11 @@
 //! Seatbelt desktop: Claude Code, Codex and Gemini CLI in tabs, each run through
 //! `seatbelt run`, so each is recorded and keeps its own sign-in.
 //!
-//! The web view can do only what these commands allow: open a tab for one of the three CLIs
-//! in a folder; write to, resize or close a tab; list runs; show, verify or open the page of a
-//! run by its id; report usage; check a folder; quit. It never names a program to run or a
-//! file to open.
+//! The web view can do only what these commands allow: open a chat or a terminal tab for one
+//! of the three CLIs in a folder; send a chat message, answer its approvals, interrupt or end
+//! it; write to, resize or close a tab; list runs; show, verify or open the page of a run by
+//! its id; report usage; check a folder; quit. It never names a program to run or a file to
+//! open, and never writes to a CLI's protocol itself.
 //!
 //! No native dialogs: macOS's `+[NSOpenPanel openPanel]` can return nil (a code-signature
 //! mismatch after an in-place update is one reported cause), and the binding the dialog plugin
@@ -12,6 +13,7 @@
 //! asked in the window.
 //! Design: docs/plans/2026-10-09-desktop-terminal-design.md.
 
+mod chat;
 mod pty;
 mod runs;
 mod tools;
@@ -24,12 +26,73 @@ use tauri::ipc::Channel;
 use tauri::{Emitter, Manager, RunEvent, State, WindowEvent};
 use tauri_plugin_opener::OpenerExt;
 
+use crate::chat::protocol::ChatEvent;
+use crate::chat::Chats;
 use crate::pty::{Launch, TabEvent, Tabs, CLOSE_WAIT};
 use crate::tools::Tools;
 
 struct AppState {
     tabs: Tabs,
+    chats: Chats,
     tools: Mutex<Tools>,
+}
+
+/// What a session needs to start: seatbelt, the CLI's path, the folder, the search path, and
+/// a fresh file for its run report. Everything is checked here; the web view names only a
+/// CLI from the fixed list and a folder.
+struct Start {
+    seatbelt: PathBuf,
+    exe: PathBuf,
+    cwd: PathBuf,
+    search_path: std::ffi::OsString,
+    report: PathBuf,
+}
+
+fn prepare(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    cli: &str,
+    cwd: String,
+) -> Result<Start, String> {
+    if !tools::known_clis().contains_key(cli) {
+        return Err(format!("{cli} is not one of the CLIs seatbelt records"));
+    }
+    let found = state.tools();
+    let seatbelt = found
+        .seatbelt
+        .as_ref()
+        .ok_or("seatbelt is not installed: uv tool install seatbelt-ai")?;
+    if !seatbelt.supported {
+        return Err(format!(
+            "seatbelt {} is too old for this app: uv tool upgrade seatbelt-ai",
+            seatbelt.version
+        ));
+    }
+    let exe = found
+        .cli(cli)
+        .and_then(|c| c.path.clone())
+        .ok_or_else(|| format!("{cli} is not installed, or not on your PATH"))?;
+    let cwd = PathBuf::from(cwd);
+    if !cwd.is_absolute() || !cwd.is_dir() {
+        return Err(format!("{} is not a folder", cwd.display()));
+    }
+    let reports = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| e.to_string())?
+        .join("reports");
+    std::fs::create_dir_all(&reports).map_err(|e| e.to_string())?;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    Ok(Start {
+        seatbelt: seatbelt.path.clone(),
+        exe,
+        cwd,
+        search_path: found.search_path.clone(),
+        report: reports.join(format!("{}-{stamp}.json", std::process::id())),
+    })
 }
 
 impl AppState {
@@ -90,49 +153,64 @@ fn open_tab(
     rows: u16,
     events: Channel<TabEvent>,
 ) -> Result<u32, String> {
-    if !tools::known_clis().contains_key(cli.as_str()) {
-        return Err(format!("{cli} is not one of the CLIs seatbelt records"));
-    }
-    let found = state.tools();
-    let seatbelt = found
-        .seatbelt
-        .as_ref()
-        .ok_or("seatbelt is not installed: uv tool install seatbelt-ai")?;
-    if !seatbelt.supported {
-        return Err(format!(
-            "seatbelt {} is too old for this app: uv tool upgrade seatbelt-ai",
-            seatbelt.version
-        ));
-    }
-    let exe = found
-        .cli(&cli)
-        .and_then(|c| c.path.clone())
-        .ok_or_else(|| format!("{cli} is not installed, or not on your PATH"))?;
-    let cwd = PathBuf::from(cwd);
-    if !cwd.is_absolute() || !cwd.is_dir() {
-        return Err(format!("{} is not a folder", cwd.display()));
-    }
-    let reports = app
-        .path()
-        .app_cache_dir()
-        .map_err(|e| e.to_string())?
-        .join("reports");
-    std::fs::create_dir_all(&reports).map_err(|e| e.to_string())?;
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or_default();
+    let start = prepare(&app, &state, &cli, cwd)?;
     let launch = Launch {
-        seatbelt: &seatbelt.path,
+        seatbelt: &start.seatbelt,
         cli: &cli,
-        exe: &exe,
-        cwd: &cwd,
-        search_path: &found.search_path,
-        report: reports.join(format!("{}-{stamp}.json", std::process::id())),
+        exe: &start.exe,
+        cwd: &start.cwd,
+        search_path: &start.search_path,
+        report: start.report,
         cols,
         rows,
     };
     state.tabs.open(launch, events)
+}
+
+/// Start a chat: the CLI's headless session, through `seatbelt run`.
+#[tauri::command]
+fn open_chat(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    cli: String,
+    cwd: String,
+    events: Channel<ChatEvent>,
+) -> Result<u32, String> {
+    let start = prepare(&app, &state, &cli, cwd)?;
+    let launch = chat::Launch {
+        seatbelt: &start.seatbelt,
+        cli: &cli,
+        exe: &start.exe,
+        cwd: &start.cwd,
+        search_path: &start.search_path,
+        report: start.report,
+    };
+    state.chats.open(launch, events)
+}
+
+#[tauri::command]
+fn chat_send(state: State<'_, AppState>, id: u32, text: String) -> Result<(), String> {
+    state.chats.send(id, &text)
+}
+
+#[tauri::command]
+fn chat_answer(
+    state: State<'_, AppState>,
+    id: u32,
+    request: String,
+    allow: bool,
+) -> Result<(), String> {
+    state.chats.answer(id, &request, allow)
+}
+
+#[tauri::command]
+fn chat_interrupt(state: State<'_, AppState>, id: u32) -> Result<(), String> {
+    state.chats.interrupt(id)
+}
+
+#[tauri::command]
+fn close_chat(state: State<'_, AppState>, id: u32) -> Result<(), String> {
+    state.chats.close(id)
 }
 
 #[tauri::command]
@@ -203,12 +281,16 @@ async fn open_page(
         .map_err(|e| e.to_string())
 }
 
-/// End every session as closing its tab would, then quit: the answer to "quit-requested".
+/// End every chat and tab as closing it would, then quit: the answer to "quit-requested".
 #[tauri::command]
 async fn quit(app: tauri::AppHandle) -> Result<(), String> {
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        handle.state::<AppState>().tabs.close_all(CLOSE_WAIT);
+        let state = handle.state::<AppState>();
+        std::thread::scope(|scope| {
+            scope.spawn(|| state.chats.close_all(CLOSE_WAIT));
+            state.tabs.close_all(CLOSE_WAIT);
+        });
     })
     .await
     .map_err(|e| e.to_string())?;
@@ -218,7 +300,8 @@ async fn quit(app: tauri::AppHandle) -> Result<(), String> {
 
 /// Quitting while sessions run (closing the window, or ⌘Q) is held, and the window asks.
 fn hold_quit(app: &tauri::AppHandle) -> bool {
-    let running = app.state::<AppState>().tabs.running();
+    let state = app.state::<AppState>();
+    let running = state.tabs.running() + state.chats.running();
     if running > 0 {
         let _ = app.emit("quit-requested", running);
     }
@@ -231,6 +314,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(AppState {
             tabs: Tabs::default(),
+            chats: Chats::default(),
             tools: Mutex::new(tools::discover()),
         })
         .on_window_event(|window, event| {
@@ -247,6 +331,11 @@ pub fn run() {
             write_tab,
             resize_tab,
             close_tab,
+            open_chat,
+            chat_send,
+            chat_answer,
+            chat_interrupt,
+            close_chat,
             list_runs,
             run_detail,
             verify_run,

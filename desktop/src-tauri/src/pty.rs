@@ -227,7 +227,7 @@ fn pump(mut reader: Box<dyn Read + Send>, events: &Channel<TabEvent>) {
 }
 
 /// The run's report, which `seatbelt run` wrote as it exited, read once and removed.
-fn take_report(path: &Path) -> Option<serde_json::Value> {
+pub(crate) fn take_report(path: &Path) -> Option<serde_json::Value> {
     let data = std::fs::read(path).ok();
     let _ = std::fs::remove_file(path);
     serde_json::from_slice(&data?).ok()
