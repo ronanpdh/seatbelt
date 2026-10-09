@@ -1,83 +1,45 @@
-// The Seatbelt window: sessions on the left, each a terminal running `seatbelt run <cli>`.
-// Everything that comes from a ledger (run names, above all) is untrusted: it is only ever
-// set as textContent, never as HTML.
+// The Seatbelt window. A session is a chat with one of the CLIs, run through `seatbelt run`
+// so it is recorded; the CLI's own terminal interface is opened only to sign in, or when
+// asked for. Runs, a run and usage are views of what seatbelt reports.
+// Everything that comes from a ledger, a model or a tool is untrusted: it is only ever set as
+// textContent, never as HTML.
 
-import { Channel, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { FitAddon } from "@xterm/addon-fit";
-import { Terminal } from "@xterm/xterm";
-import "@xterm/xterm/css/xterm.css";
+import { ChatPane } from "./chat";
+import { basename, button, byId, el, plain } from "./dom";
+import { showRun, showRuns, showUsage } from "./records";
+import { TermPane } from "./terminal";
+import type { Cli, Run, Tools } from "./types";
 import "./style.css";
 
-type Cli = { name: string; label: string; path: string | null };
-type Seatbelt = { path: string; version: string; supported: boolean };
-type Tools = { seatbelt: Seatbelt | null; clis: Cli[]; home: string | null };
-type Report = {
-  run: string;
-  cli: string;
-  recorded_by: "local" | "gateway";
-  gateway: string | null;
-  recorded: boolean;
-  ledgers: string[];
-  pages: string[];
-  exit: number;
-};
-type TabEvent =
-  | { kind: "output"; data: string }
-  | { kind: "exit"; code: number | null; report: Report | null };
-type Run = {
-  name: string;
-  id: string;
-  started: string | null;
-  model_calls: number | null;
-  status: "ended" | "open" | "unreadable";
-  ok: boolean | null;
-  ledger: string;
-  page: string | null;
-};
-type Listing = { folder: string; total: number; runs: Run[] };
-
-type Tab = {
-  id: number | null;
+type State = "starting" | "running" | "ended";
+type Session = {
   cli: Cli;
   folder: string;
-  term: Terminal;
-  fit: FitAddon;
-  box: HTMLDivElement;
   item: HTMLLIElement;
-  state: "starting" | "running" | "ended";
+  pane: HTMLDivElement;
+  head: HTMLDivElement;
+  body: HTMLDivElement;
+  chat: ChatPane | null;
+  term: TermPane | null;
+  state: State;
   note: string;
+  /** Ended by the user: nothing starts again. */
+  closing: boolean;
 };
+type View =
+  | { kind: "session"; session: Session }
+  | { kind: "runs" }
+  | { kind: "run"; run: Run }
+  | { kind: "usage" }
+  | { kind: "empty" };
 
-const byId = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
-const tabs: Tab[] = [];
+const sessions: Session[] = [];
 let tools: Tools | null = null;
 let folder: string | null = null;
-let active: Tab | null = null;
-
-function el<K extends keyof HTMLElementTagNameMap>(
-  tag: K,
-  className?: string,
-  text?: string,
-): HTMLElementTagNameMap[K] {
-  const node = document.createElement(tag);
-  if (className) node.className = className;
-  if (text !== undefined) node.textContent = text;
-  return node;
-}
-
-// errors are ours, but may quote a path: no control characters into the terminal
-const plain = (text: unknown): string => String(text).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
-const basename = (path: string): string => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
-
-const dark = window.matchMedia("(prefers-color-scheme: dark)");
-const themes = {
-  light: { background: "#ffffff", foreground: "#1b1f24", cursor: "#1b1f24", selectionBackground: "#c8d9f5" },
-  dark: { background: "#0d1117", foreground: "#e6edf3", cursor: "#e6edf3", selectionBackground: "#264f78" },
-};
-const termTheme = () => (dark.matches ? themes.dark : themes.light);
-dark.addEventListener("change", () => tabs.forEach((t) => (t.term.options.theme = termTheme())));
+let view: View = { kind: "empty" };
 
 // -- tools and set-up --------------------------------------------------------------------
 
@@ -100,7 +62,6 @@ async function check(): Promise<void> {
   }
   renderCliButtons();
   if (folder === null) await setFolder(remembered() ?? tools.home ?? "", false);
-  await refreshRuns();
 }
 
 function showSetup(text: string, command: string): void {
@@ -163,205 +124,204 @@ function renderCliButtons(): void {
   box.replaceChildren();
   cliButtons.clear();
   for (const cli of tools?.clis ?? []) {
-    const button = el("button", "cli", cli.label);
-    button.type = "button";
-    button.title = cli.path ?? `${cli.name} was not found on your PATH`;
-    button.addEventListener("click", () => void openTab(cli));
-    cliButtons.set(cli.name, { cli, button });
-    box.append(button);
+    const b = button(cli.label, "cli", () => void newSession(cli), cli.path ?? `${cli.name} was not found on your PATH`);
+    cliButtons.set(cli.name, { cli, button: b });
+    box.append(b);
   }
   updateCliButtons();
 }
 
 function updateCliButtons(): void {
-  for (const { cli, button } of cliButtons.values()) {
-    button.disabled = !ready() || cli.path === null;
-  }
+  for (const { cli, button: b } of cliButtons.values()) b.disabled = !ready() || cli.path === null;
 }
 
-// -- sessions ----------------------------------------------------------------------------
+// -- sessions: a chat, or the CLI's own interface in a terminal ------------------------------
 
-async function openTab(cli: Cli): Promise<void> {
+async function newSession(cli: Cli): Promise<void> {
   // a path typed but not yet applied (the click came first) is what the user means
   const typed = byId<HTMLInputElement>("folder-input").value;
   if (typed !== folder && !(await setFolder(typed))) return;
   if (!ready() || folder === null) return;
-  const box = el("div", "term");
-  byId("terminals").append(box);
-  const term = new Terminal({
-    cursorBlink: true,
-    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
-    fontSize: 13,
-    scrollback: 10000,
-    theme: termTheme(),
-  });
-  const fit = new FitAddon();
-  term.loadAddon(fit); // no clipboard or links addon: output cannot write the clipboard or open links
-  term.open(box);
-  const tab: Tab = {
-    id: null,
+  const pane = el("div", "session");
+  const head = el("div", "session-head");
+  const body = el("div", "session-body");
+  pane.append(head, body);
+  byId("sessions-view").append(pane);
+  const s: Session = {
     cli,
     folder,
-    term,
-    fit,
-    box,
     item: el("li"),
+    pane,
+    head,
+    body,
+    chat: null,
+    term: null,
     state: "starting",
     note: "starting",
+    closing: false,
   };
-  tabs.push(tab);
-  renderTabItem(tab);
-  byId("tabs").append(tab.item);
+  sessions.push(s);
+  byId("tabs").append(s.item);
   byId("no-tabs").hidden = true;
-  activate(tab);
-
-  const events = new Channel<TabEvent>();
-  events.onmessage = (event) => {
-    if (event.kind === "output") term.write(event.data);
-    else ended(tab, event.code, event.report);
-  };
-  term.onData((data) => {
-    if (tab.id !== null && tab.state === "running") {
-      invoke("write_tab", { id: tab.id, data }).catch(() => undefined);
-    }
-  });
-  term.onResize(({ cols, rows }) => {
-    if (tab.id !== null && tab.state === "running") {
-      invoke("resize_tab", { id: tab.id, cols, rows }).catch(() => undefined);
-    }
-  });
-  try {
-    tab.id = await invoke<number>("open_tab", {
-      cli: cli.name,
-      cwd: tab.folder,
-      cols: term.cols,
-      rows: term.rows,
-      events,
-    });
-    if (tab.state === "starting") {
-      tab.state = "running";
-      tab.note = "recording";
-    }
-  } catch (e) {
-    term.write(`\r\n${plain(e)}\r\n`);
-    tab.state = "ended";
-    tab.note = "could not start";
-  }
-  renderTabItem(tab);
+  show({ kind: "session", session: s });
+  await startChat(s);
 }
 
-function ended(tab: Tab, code: number | null, report: Report | null): void {
-  tab.state = "ended";
-  if (report?.recorded) {
-    tab.note = `recorded ${report.run}`;
-  } else if (report) {
-    tab.note = "nothing recorded";
-  } else {
-    tab.note = code === null ? "ended" : `ended (${code})`;
-  }
-  tab.term.write(`\r\n\x1b[2m[session ended: ${plain(tab.note)}]\x1b[0m\r\n`);
-  renderTabItem(tab);
-  void refreshRuns();
+function setState(s: Session, state: State, note: string): void {
+  s.state = state;
+  s.note = note;
+  renderItem(s);
+  renderHead(s);
 }
 
-function renderTabItem(tab: Tab): void {
-  const item = tab.item;
-  item.className = `tab ${tab.state}${tab === active ? " active" : ""}`;
+async function startChat(s: Session): Promise<void> {
+  s.closing = false;
+  s.term?.dispose();
+  s.term = null;
+  s.chat?.dispose();
+  const box = el("div", "chat-box");
+  s.body.replaceChildren(box);
+  const chat = new ChatPane(box, s.cli, {
+    signIn: () => void openTerminal(s, true),
+    changed: (state, note) => {
+      if (s.chat === chat) setState(s, state, note);
+    },
+    ended: () => refreshRecords(),
+  });
+  s.chat = chat;
+  await chat.start(s.folder);
+  if (isShown(s)) chat.focus();
+}
+
+/** The CLI's own interface, through `seatbelt run` in a terminal: to sign in, or because it
+ * was asked for. The chat ends first, and starts again (a new run) when the terminal ends. */
+async function openTerminal(s: Session, signIn: boolean): Promise<void> {
+  const chat = s.chat;
+  s.chat = null;
+  if (chat?.running) await chat.close();
+  chat?.dispose();
+  const banner = el("div", "banner");
+  banner.append(
+    el(
+      "span",
+      undefined,
+      signIn
+        ? `Sign in with ${s.cli.label}'s own sign-in here. Then leave it (for example /exit); the chat starts again.`
+        : `${s.cli.label} in its own interface. Leave it to go back to the chat.`,
+    ),
+  );
+  const box = el("div", "term");
+  s.body.replaceChildren(banner, box);
+  const term = new TermPane(box, s.cli, s.folder, (_code, report) => {
+    if (s.term !== term) return;
+    refreshRecords();
+    if (s.closing) {
+      setState(s, "ended", report?.recorded ? `recorded ${report.run}` : "ended");
+    } else {
+      void startChat(s);
+    }
+  });
+  banner.append(button("Back to chat", "ghost", () => void term.close(), "End the terminal session; the chat starts again"));
+  s.term = term;
+  setState(s, "running", signIn ? "signing in" : "terminal");
+  await term.start();
+  if (isShown(s)) term.focus();
+}
+
+function renderItem(s: Session): void {
+  const item = s.item;
+  item.className = `tab ${s.state}${isShown(s) ? " active" : ""}`;
   const title = el("button", "tab-title");
   title.type = "button";
-  title.append(el("span", "dot"), el("span", "tab-name", tab.cli.label));
-  title.append(el("span", "tab-note", `${basename(tab.folder)} · ${tab.note}`));
-  title.addEventListener("click", () => activate(tab));
-  const close = el("button", "tab-close", "×");
-  close.type = "button";
-  close.title = tab.state === "ended" ? "Remove" : "End this session (its run is closed and signed)";
-  close.addEventListener("click", () => void closeTab(tab));
+  title.append(el("span", "dot"), el("span", "tab-name", s.cli.label));
+  title.append(el("span", "tab-note", `${basename(s.folder)} · ${s.note}`));
+  title.addEventListener("click", () => show({ kind: "session", session: s }));
+  const close = button(
+    "×",
+    "tab-close",
+    () => void endSession(s),
+    s.state === "ended" ? "Remove" : "End this session (its run is closed and signed)",
+  );
   item.replaceChildren(title, close);
 }
 
-function activate(tab: Tab): void {
-  active = tab;
-  byId("empty").hidden = true;
-  for (const t of tabs) {
-    t.box.hidden = t !== tab;
-    renderTabItem(t);
+function renderHead(s: Session): void {
+  const label = el("div", "session-title");
+  label.append(el("strong", undefined, s.cli.label), el("span", "muted", ` · ${s.folder} · ${s.note}`));
+  const actions = el("div", "session-actions");
+  if (s.chat && s.state !== "ended") {
+    actions.append(
+      button("Open in terminal", "ghost", () => void openTerminal(s, false), `${s.cli.label}'s own interface: to sign in, for example`),
+    );
   }
-  requestAnimationFrame(() => {
-    tab.fit.fit();
-    tab.term.focus();
-  });
+  if (s.state === "ended") {
+    actions.append(button("New chat", "ghost", () => void startChat(s), "Start again in this folder, as a new run"));
+  } else {
+    actions.append(button("End", "ghost danger", () => void endSession(s), "End the session; its run is closed and signed"));
+  }
+  s.head.replaceChildren(label, actions);
 }
 
-async function closeTab(tab: Tab): Promise<void> {
-  if (tab.state !== "ended" && tab.id !== null) {
-    tab.note = "ending";
-    renderTabItem(tab);
-    await invoke("close_tab", { id: tab.id }).catch(() => undefined);
-    return; // removed from the list once it has ended, by the next click
-  }
-  tab.term.dispose();
-  tab.box.remove();
-  tab.item.remove();
-  tabs.splice(tabs.indexOf(tab), 1);
-  if (active === tab) {
-    active = null;
-    const next = tabs[tabs.length - 1];
-    if (next) activate(next);
-    else byId("empty").hidden = false;
-  }
-  byId("no-tabs").hidden = tabs.length > 0;
-}
-
-new ResizeObserver(() => active?.fit.fit()).observe(byId("terminals"));
-
-// -- runs --------------------------------------------------------------------------------
-
-async function refreshRuns(): Promise<void> {
-  const list = byId("runs");
-  const note = byId("runs-note");
-  if (!tools?.seatbelt?.supported) {
-    list.replaceChildren();
-    note.textContent = "";
+async function endSession(s: Session): Promise<void> {
+  if (s.state !== "ended") {
+    s.closing = true;
+    setState(s, s.state, "ending");
+    await (s.term ?? s.chat)?.close();
     return;
   }
-  let listing: Listing;
-  try {
-    listing = await invoke<Listing>("list_runs");
-  } catch (e) {
-    note.textContent = plain(e);
-    return;
+  s.chat?.dispose();
+  s.term?.dispose();
+  s.pane.remove();
+  s.item.remove();
+  sessions.splice(sessions.indexOf(s), 1);
+  byId("no-tabs").hidden = sessions.length > 0;
+  if (view.kind === "session" && view.session === s) {
+    const next = sessions[sessions.length - 1];
+    show(next ? { kind: "session", session: next } : { kind: "empty" });
   }
-  list.replaceChildren(...listing.runs.map(runItem));
-  note.textContent =
-    listing.total === 0
-      ? "No runs yet."
-      : `${listing.total} run${listing.total === 1 ? "" : "s"} in ${listing.folder}`;
 }
 
-function runItem(run: Run): HTMLLIElement {
-  const item = el("li", `run ${run.status}${run.ok === false ? " failed" : ""}`);
-  const button = el("button", "run-button");
-  button.type = "button";
-  button.disabled = run.page === null;
-  button.title = run.page ? "Open this run's page in your browser" : "This run has no page yet";
-  button.append(el("span", "run-name", run.name));
-  const when = run.started ? new Date(run.started).toLocaleString() : "";
-  const state = run.status === "ended" ? (run.ok === false ? "failed" : "") : run.status;
-  const calls = run.model_calls === null ? "" : `${run.model_calls} model call${run.model_calls === 1 ? "" : "s"}`;
-  button.append(el("span", "run-meta", [when, calls, state].filter(Boolean).join(" · ")));
-  button.addEventListener("click", () => {
-    invoke("open_page", { id: run.id }).catch((e) => {
-      byId("runs-note").textContent = plain(e);
-    });
-  });
-  item.append(button);
-  return item;
+// -- views ---------------------------------------------------------------------------------
+
+function isShown(s: Session): boolean {
+  return view.kind === "session" && view.session === s;
+}
+
+function show(next: View): void {
+  view = next;
+  byId("empty").hidden = next.kind !== "empty";
+  byId("sessions-view").hidden = next.kind !== "session";
+  const records = byId("records-view");
+  records.hidden = !(next.kind === "runs" || next.kind === "run" || next.kind === "usage");
+  for (const s of sessions) {
+    s.pane.hidden = !isShown(s);
+    renderItem(s);
+    renderHead(s);
+  }
+  byId("nav-runs").classList.toggle("active", next.kind === "runs" || next.kind === "run");
+  byId("nav-usage").classList.toggle("active", next.kind === "usage");
+  if (next.kind === "session") {
+    next.session.term?.focus();
+    next.session.chat?.focus();
+  } else if (next.kind === "runs") {
+    void showRuns(records, (run) => show({ kind: "run", run }));
+  } else if (next.kind === "run") {
+    void showRun(records, next.run, () => show({ kind: "runs" }));
+  } else if (next.kind === "usage") {
+    void showUsage(records);
+  }
+}
+
+/** A run has ended: the runs or usage view on screen counts it. */
+function refreshRecords(): void {
+  if (view.kind === "runs" || view.kind === "usage") show(view);
 }
 
 // -- wiring ------------------------------------------------------------------------------
 
 byId("recheck").addEventListener("click", () => void check());
-byId("refresh").addEventListener("click", () => void refreshRuns());
+byId("nav-runs").addEventListener("click", () => show({ kind: "runs" }));
+byId("nav-usage").addEventListener("click", () => show({ kind: "usage" }));
 const folderInput = byId<HTMLInputElement>("folder-input");
 folderInput.addEventListener("change", () => {
   if (folderInput.value !== folder) void setFolder(folderInput.value);
@@ -375,9 +335,7 @@ folderInput.addEventListener("keydown", (e) => {
 void getCurrentWebview().onDragDropEvent((event) => {
   const kind = event.payload.type;
   document.body.classList.toggle("dropping", kind === "enter" || kind === "over");
-  if (kind === "drop" && event.payload.paths.length > 0) {
-    void setFolder(event.payload.paths[0]);
-  }
+  if (kind === "drop" && event.payload.paths.length > 0) void setFolder(event.payload.paths[0]);
 });
 
 // -- quitting while sessions run ----------------------------------------------------------
@@ -394,7 +352,6 @@ void listen<number>("quit-requested", (event) => {
 });
 byId("quit-cancel").addEventListener("click", () => {
   byId("quit").hidden = true;
-  active?.term.focus();
 });
 byId("quit-ok").addEventListener("click", () => {
   for (const id of ["quit-ok", "quit-cancel"]) byId<HTMLButtonElement>(id).disabled = true;
@@ -404,6 +361,5 @@ byId("quit-ok").addEventListener("click", () => {
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !byId("quit").hidden) byId("quit-cancel").click();
 });
-window.addEventListener("focus", () => void refreshRuns());
 
 void check();

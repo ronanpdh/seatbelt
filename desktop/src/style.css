@@ -42,7 +42,6 @@ code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberat
 [hidden] { display: none !important; }
 .muted { color: var(--muted); }
 .small { font-size: 12px; }
-#runs-note { overflow-wrap: anywhere; }
 
 #sidebar {
   width: 280px;
@@ -91,7 +90,7 @@ code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberat
   user-select: all;
 }
 
-.cli, .link, .tab-title, .tab-close, .run-button, #recheck {
+.cli, .link, .tab-title, .tab-close, #recheck {
   border: 0;
   background: none;
   cursor: pointer;
@@ -180,31 +179,134 @@ body.dropping #sidebar .folder-field input { outline: 2px dashed var(--accent); 
 .tab-close { color: var(--muted); padding: 0 8px; font-size: 16px; }
 .tab-close:hover { color: var(--bad); }
 
-.runs { display: grid; gap: 2px; }
-.run-button {
-  width: 100%;
-  display: grid;
-  text-align: left;
-  padding: 6px 8px;
-  border-radius: 6px;
-}
-.run-button:hover:not(:disabled) { background: var(--hover); }
-.run-button:disabled { cursor: default; opacity: 0.6; }
-.run-name {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
-  font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.run-meta { color: var(--muted); font-size: 11px; }
-.run.failed .run-meta, .run.unreadable .run-meta { color: var(--bad); }
-.run.open .run-meta { color: var(--warn); }
-
-#main { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--term); }
-#terminals { flex: 1; min-height: 0; position: relative; }
-.term { position: absolute; inset: 0; padding: 8px 0 0 10px; }
-.empty { margin: auto; max-width: 460px; padding: 24px; text-align: center; color: var(--muted); }
+#main { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); }
+.empty { margin: auto; max-width: 480px; padding: 24px; text-align: center; color: var(--muted); }
 .empty h1 { color: var(--ink); font-size: 20px; margin: 0 0 8px; }
 .empty code { background: var(--hover); padding: 1px 5px; border-radius: 4px; }
-#terminals:empty { display: none; }
+#sessions-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+/* -- a session: its head, then a chat or a terminal ------------------------------------- */
+.session { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.session-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 8px 14px; background: var(--panel); border-bottom: 1px solid var(--line);
+}
+.session-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-actions { display: flex; gap: 6px; flex: none; }
+.session-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 8px 14px; background: var(--hover); border-bottom: 1px solid var(--line);
+}
+.term { flex: 1; min-height: 0; padding: 8px 0 0 10px; background: var(--term); }
+
+button.ghost, button.primary, .approval-buttons button, .send {
+  padding: 5px 12px; border-radius: 6px; border: 1px solid var(--line);
+  background: var(--panel); cursor: pointer;
+}
+button.ghost:hover { background: var(--hover); }
+button.ghost.danger { color: var(--bad); }
+button.primary, .approval-buttons .allow, .send { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.approval-buttons .deny { color: var(--bad); }
+.send.stop { background: var(--bad); border-color: var(--bad); }
+button:disabled { opacity: 0.55; cursor: default; }
+
+/* -- the chat ------------------------------------------------------------------------- */
+.chat-box { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.feed { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; }
+.feed-note { text-align: center; font-size: 12px; margin: 0 0 6px; }
+.msg { max-width: min(760px, 92%); padding: 9px 12px; border-radius: 10px; overflow-wrap: anywhere; }
+.msg.user { align-self: flex-end; background: var(--accent); color: #fff; white-space: pre-wrap; }
+.msg.assistant { align-self: flex-start; background: var(--panel); border: 1px solid var(--line); }
+.prose { white-space: pre-wrap; }
+.prose + .code, .code + .prose { margin-top: 8px; }
+pre.code { margin: 0; padding: 8px 10px; background: var(--hover); border-radius: 6px; overflow-x: auto; white-space: pre; }
+.tool {
+  align-self: flex-start; display: grid; grid-template-columns: 10px auto 1fr auto; gap: 8px; align-items: center;
+  max-width: min(760px, 92%); padding: 4px 10px; border-left: 3px solid var(--line); color: var(--muted); font-size: 12px;
+}
+.tool-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); }
+.tool[data-status="done"] .tool-dot { background: var(--good); }
+.tool[data-status="failed"] .tool-dot, .tool[data-status="declined"] .tool-dot { background: var(--bad); }
+.tool-name { font-weight: 600; color: var(--ink); }
+.tool-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.approval, .signin {
+  align-self: stretch; max-width: 760px; padding: 10px 12px; border-radius: 8px;
+  border: 1px solid var(--warn); background: var(--panel);
+}
+.approval.answered { border-color: var(--line); }
+.approval.denied { border-color: var(--bad); }
+.approval-title { font-weight: 600; margin-bottom: 6px; }
+.approval-detail { margin: 0 0 8px; padding: 6px 8px; background: var(--hover); border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow-y: auto; }
+.approval-buttons { display: flex; gap: 8px; align-items: center; }
+.signin p { margin: 0 0 8px; }
+.line { font-size: 12px; }
+.line.error { color: var(--bad); white-space: pre-wrap; }
+.line.note { color: var(--muted); text-align: center; }
+.log { border-top: 1px solid var(--line); background: var(--panel); padding: 4px 14px; font-size: 12px; }
+.log summary { cursor: pointer; color: var(--muted); }
+.log pre { max-height: 160px; overflow: auto; margin: 4px 0; white-space: pre-wrap; }
+.composer { display: flex; gap: 8px; padding: 10px 14px; background: var(--panel); border-top: 1px solid var(--line); }
+.composer textarea {
+  flex: 1; resize: vertical; min-height: 44px; max-height: 40vh; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--bg); color: var(--ink); font: inherit;
+}
+.composer textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.send { align-self: flex-end; min-width: 72px; }
+
+/* -- records: runs, a run, usage --------------------------------------------------------- */
+.records-nav { display: grid; gap: 2px; }
+.nav { border: 0; background: none; cursor: pointer; text-align: left; padding: 6px 8px; border-radius: 6px; font-weight: 600; }
+.nav:hover { background: var(--hover); }
+.nav.active { background: var(--hover); color: var(--accent); }
+.records { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 22px 40px; }
+.view-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.view-head h1 { font-size: 18px; margin: 0; overflow-wrap: anywhere; }
+.view-actions { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+.filters { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+.filters input, .filters select {
+  padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); font: inherit;
+}
+.filters .search { flex: 1; min-width: 200px; }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; border: 1px solid currentColor; }
+.pill.good, .good { color: var(--good); }
+.pill.warn, .warn { color: var(--warn); }
+.pill.bad, .bad { color: var(--bad); }
+table.grid { width: 100%; border-collapse: collapse; margin: 6px 0; }
+table.grid th, table.grid td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; }
+table.grid th { color: var(--muted); font-weight: 600; font-size: 12px; }
+table.num td:not(:first-child), table.num th:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
+.link-button { border: 0; background: none; padding: 0; color: var(--accent); cursor: pointer; font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-align: left; }
+.link-button:hover { text-decoration: underline; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin: 12px 0 0; min-width: 0; }
+.cards .card { margin: 0; }
+.card h2 { font-size: 13px; margin: 0 0 8px; }
+.card h3 { font-size: 12px; margin: 12px 0 4px; }
+.card.good { border-color: var(--good); }
+.card.warn { border-color: var(--warn); }
+.card.bad, .card.bad-edge { border-color: var(--bad); }
+.verdict { font-size: 16px; font-weight: 700; margin: 0 0 6px; }
+.card.good .verdict { color: var(--good); }
+.card.warn .verdict { color: var(--warn); }
+.card.bad .verdict { color: var(--bad); }
+.facts { display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; margin: 0; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 12px; }
+ul.ids { margin: 0; padding-left: 18px; }
+.events { display: grid; gap: 2px; }
+.event summary {
+  display: grid; grid-template-columns: 44px 92px 150px 1fr; gap: 8px; padding: 4px 6px; cursor: pointer;
+  border-radius: 6px; list-style: none;
+}
+.event summary::-webkit-details-marker { display: none; }
+.event summary:hover { background: var(--hover); }
+.event[open] summary { background: var(--hover); }
+.event .seq, .event .time { color: var(--muted); font-variant-numeric: tabular-nums; }
+.event .kind { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.event .what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.event.denied .what, .event.failed .what { color: var(--bad); }
+.event .facts { margin: 6px 6px 0; }
+pre.detail { margin: 6px; padding: 8px 10px; background: var(--hover); border-radius: 6px; max-height: 420px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+pre.detail .cut { color: var(--warn); }
