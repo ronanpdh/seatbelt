@@ -122,6 +122,30 @@ The design keeps every condition it can:
 3. **Phase 2:** the Windows app (ConPTY), Windows CI for `seatbelt run`, and signed installers for both.
 4. **Later:** Conductor-style workspaces, a tab started in its own git worktree with a diff view; and seatbelt bundled as a sidecar.
 
+## As built (phase 1, first build)
+
+- **`desktop/`:** a Tauri 2 app (`tauri` 2.12.1, pinned in `Cargo.lock`), with a web view in TypeScript and Vite (`@xterm/xterm` 6.0.0 with only its fit addon), and npm versions pinned exactly. The app's own version is 0.1.0.
+- **Rust side (`desktop/src-tauri/src/`):**
+  - `pty.rs`: a tab is a `portable-pty` terminal running `seatbelt run --exe <the CLI's path> <cli>` in the chosen folder, with `TERM=xterm-256color`, the search path below as `PATH`, and `SEATBELT_RUN_REPORT` set to a file in the app's cache folder. Output goes to the web view over a Tauri channel, decoded as UTF-8 across reads; when the process exits, the report is read once, removed, and sent with the exit code. Closing a tab sends SIGTERM to `seatbelt run` (on Unix) and kills it if it is still running 20 seconds later; on Windows it is killed at once, until check K4 says how to ask a ConPTY child to end.
+  - `tools.rs` (check K5, as built): the search path is the app's own `PATH`, then what the user's login shell (`$SHELL -l -i -c`) prints within 5 seconds, then `~/.local/bin`, `~/.claude/local`, and on macOS `/opt/homebrew/bin` and `/usr/local/bin`. `seatbelt` counts as supported when `seatbelt runs --json` works.
+  - `runs.rs`: the list is `seatbelt runs --json --limit 200`. A page is opened by run id, from the Rust side, and only if it is an `.html` file directly in the runs folder seatbelt names.
+  - `lib.rs`: eight commands (`status`, `pick_folder`, `open_tab`, `write_tab`, `resize_tab`, `close_tab`, `list_runs`, `open_page`). The window's capability grants `core:default` only: pages open and folders are picked from the Rust side, so the web view has no opener, dialog or shell permission. Quitting with tabs running asks first, then closes each tab as above.
+- **Web view:** sessions and runs in a sidebar, one xterm.js terminal per session. Run names and other ledger text are set as `textContent` only. No xterm.js clipboard or links addon is loaded (check K8 still applies to xterm.js itself).
+- **CI:** `.github/workflows/desktop.yml` builds and type-checks the web view, runs `npm audit`, and runs `cargo clippy -D warnings` and `cargo test`, on Ubuntu and macOS. Dependabot covers the app's npm and Cargo dependencies.
+
+### Checks run on Linux (2026-10-09)
+
+The app was run on Ubuntu 24.04 (WebKitGTK 2.52.6), on a virtual display (Xvfb, with openbox for the close request), with this branch's `seatbelt run`, a stand-in `claude` (a Python script that asks for a prompt, sends it to its base URL, prints the reply and waits for Enter) and a stand-in Anthropic API on localhost. These are Linux results; macOS, the first target, has not been run, and no real CLI was used.
+
+| Ref | Check | Result |
+|---|---|---|
+| L1 | Start a Claude Code session; type a prompt; press Enter to end it | seatbelt's badge and the one-line belt drew in the tab; the prompt reached the CLI and its request was recorded; the run ended attested (`seatbelt verify`: "ok 4 events, chain intact, attested") with its page written; the tab named the run from the run report; the runs list refreshed |
+| L2 | Close a session while the CLI is waiting for input | `seatbelt run` got SIGTERM, ended the CLI, and the run was closed attested, with its page |
+| L3 | Kill the app with SIGTERM mid-session (check K6, Linux only) | the terminal closed and `seatbelt run` closed the run attested, with its page; no `seatbelt` process was left |
+| L4 | Ask the window to close (`wmctrl -c`) with a session running; choose Quit | the confirmation said "1 session is still running…" (after a wording fix); Quit ended the session, the run was attested with its page, and the app exited |
+| L5 | `cargo test`: 9 tests, two of them through a real pseudo-terminal with a stand-in `seatbelt` | the command line (`run --exe <path> claude`), a terminal on both ends, `TERM=xterm-256color`, keystrokes in, resize, SIGTERM on close, and the run report read once and removed |
+| L6 | Opening a run's page | not checked: the container has no browser or `xdg-open` |
+
 ## Before building
 
 | Id | Check | If it fails |

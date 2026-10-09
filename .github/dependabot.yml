@@ -29,3 +29,17 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+  - package-ecosystem: npm  # the desktop app's web view
+    directory: /desktop
+    schedule:
+      interval: weekly
+    groups:
+      desktop-npm:
+        patterns: ["*"]
+  - package-ecosystem: cargo  # the desktop app's Rust side
+    directory: /desktop/src-tauri
+    schedule:
+      interval: weekly
+    groups:
+      desktop-cargo:
+        patterns: ["*"]

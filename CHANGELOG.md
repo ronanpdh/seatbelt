@@ -6,6 +6,7 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 
 ### Added
 - `seatbelt runs --json` prints the runs as JSON: each run's name, id, start, model calls, status (`ended`, `open` or `unreadable`), outcome, and its ledger and page paths. It is what a desktop app hosting `seatbelt run` reads ([design](docs/plans/2026-10-09-desktop-terminal-design.md)).
+- A desktop app in `desktop/`, unreleased (its own version, 0.1.0): Claude Code, Codex and Gemini CLI in tabs of one window, each run through `seatbelt run` in a built-in terminal, so it is recorded and keeps its own sign-in; a runs list opens each run's page. A Tauri app, first for macOS; built and run on Linux so far ([design](docs/plans/2026-10-09-desktop-terminal-design.md), [README](desktop/README.md)).
 - With `SEATBELT_RUN_REPORT=<file>` in its environment, `seatbelt run` writes a JSON report there as it exits: the run's name, the CLI, whether it recorded locally or through a gateway, its ledgers and pages, and the CLI's exit code. Mode 0600, written whole; the variable is not passed on to the CLI.
 
 ### Added

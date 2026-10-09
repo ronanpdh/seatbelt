@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Seatbelt</title>
+  </head>
+  <body>
+    <aside id="sidebar">
+      <header class="brand">
+        <span class="badge">seatbelt</span>
+        <span id="mode" class="muted"></span>
+      </header>
+
+      <section id="setup" hidden>
+        <h2>Set up</h2>
+        <p id="setup-text"></p>
+        <pre id="setup-command"></pre>
+        <button id="recheck" type="button">Check again</button>
+      </section>
+
+      <section id="new-tab">
+        <h2>New session</h2>
+        <button id="folder" type="button" class="folder" title="The folder the CLI starts in">
+          <span class="muted">in</span> <span id="folder-name"></span>
+        </button>
+        <div id="cli-buttons" class="cli-buttons"></div>
+      </section>
+
+      <section>
+        <h2>Sessions</h2>
+        <ul id="tabs" class="list"></ul>
+        <p id="no-tabs" class="muted small">None yet. Each session is recorded as a run.</p>
+      </section>
+
+      <section class="grow">
+        <h2>
+          Runs
+          <button id="refresh" type="button" class="link" title="Refresh">↻</button>
+        </h2>
+        <ul id="runs" class="list runs"></ul>
+        <p id="runs-note" class="muted small"></p>
+      </section>
+    </aside>
+
+    <main id="main">
+      <div id="empty" class="empty">
+        <h1>Run an agent, recorded.</h1>
+        <p>
+          Start Claude Code, Codex or Gemini CLI on the left. Each runs through
+          <code>seatbelt run</code>, keeps its own sign-in, and is saved as a signed run with
+          a page you can open from Runs.
+        </p>
+      </div>
+      <div id="terminals"></div>
+    </main>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
