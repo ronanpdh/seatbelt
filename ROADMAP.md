@@ -69,3 +69,7 @@ Signed Ed25519 attestation of each run (`seatbelt.attest`, `keygen`, `attest`, `
 ## 0.5.3 (released)
 
 - Done: `seatbelt run claude` keeps Claude Code's MCP tool search on when it records locally, prints the ledger's path ready to paste into a shell, and `seatbelt report` shows Anthropic's prompt-cache tokens; the pyjwt floor is 2.15.0
+
+## 0.6.0 (released)
+
+- Done: `seatbelt run` shows that it is recording: its badge on every line it prints, a seatbelt that buckles as the CLI starts, and Claude Code's status line; through a gateway it checks the gateway and the key first (`GET /seatbelt/policy`) and says the policy; Claude Code stops a tool the policy denies before it runs; refusals say what to do, as 422 to Claude Code; the gateway returns the run id in `X-Seatbelt-Run-Id`

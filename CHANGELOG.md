@@ -4,6 +4,8 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-09
+
 ### Added
 - **`seatbelt run` shows that it is recording** ([#46](https://github.com/ronanpdh/seatbelt/issues/46), [ADR 0008](docs/adr/0008-visible-seatbelt.md)):
   - Every line it prints starts with `[seatbelt]`, shown as a bold, reversed `seatbelt` badge on a terminal, its log warnings and errors included.
@@ -261,7 +263,8 @@ A review of the whole project, with every finding checked by a second reader. Up
 - Tests: hash determinism, chain link and resume, property test that any edit breaks the chain, deletion detection, redaction, recorder lineage and failure path, CLI round trip and tamper detection.
 - Project scaffolding: uv, ruff, pyright strict, pytest, Hypothesis, pre-commit, CI, Dependabot, Scorecard, SECURITY.md, CONTRIBUTING.md, STANDARDS.md, ROADMAP.md.
 
-[Unreleased]: https://github.com/ronanpdh/seatbelt/compare/v0.5.3...HEAD
+[Unreleased]: https://github.com/ronanpdh/seatbelt/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.6.0
 [0.5.3]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.5.3
 [0.5.2]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.5.2
 [0.5.1]: https://github.com/ronanpdh/seatbelt/releases/tag/v0.5.1
