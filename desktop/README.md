@@ -22,7 +22,8 @@ The app looks for these on its own `PATH`, then on the `PATH` your login shell p
   - Codex: `app-server`;
   - Gemini CLI: `--acp`.
 
-  The Rust side speaks each protocol and gives the window a few events: text, tools, approvals, end of turn, sign-in needed. The window can only send a message, answer an approval, interrupt, or end the chat.
+  The Rust side speaks each protocol and gives the window a few events: text, reasoning, tools with their input and output, approvals, end of turn, sign-in needed. The window can only send a message, answer an approval, interrupt, or end the chat.
+- **A reply** is shown under the agent's name, in the order things happened: its reasoning (folded), its words as Markdown, its tool steps (each opens to what it was given and what came back), and any approval it asks for. A "Working" line shows while it runs. Markdown is built as elements, never parsed as HTML; a link opens in your browser, and only `http` and `https` links do.
 - **Approvals** follow the CLI's own rules: the app sets no permission mode, approval policy or sandbox. Each request is a card with Allow and Deny.
 - **Signing in:** when a CLI reports it is not signed in, the chat offers its own sign-in in a terminal (a pseudo-terminal running `seatbelt run <cli>`, shown with xterm.js). When that ends, the chat starts again. "Open in terminal" does the same at any time.
 - **Ending a chat** closes its input, which ends the CLI's session; `seatbelt run` then closes and signs the run. One still running 3 seconds later gets SIGTERM (on Unix), and is killed after 20 more.

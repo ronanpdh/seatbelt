@@ -21,6 +21,9 @@ export type ChatEvent =
   | { kind: "text"; id: string; delta: string }
   | { kind: "message"; id: string; text: string }
   | { kind: "tool"; id: string; name: string; detail: string; status: ToolStatus }
+  | { kind: "tool_input"; id: string; input: string }
+  | { kind: "tool_output"; id: string; output: string }
+  | { kind: "thinking"; id: string; delta: string }
   | { kind: "approval"; id: string; tool: string; detail: string }
   | { kind: "resolved"; id: string }
   | { kind: "turn_end"; ok: boolean; error: string | null }

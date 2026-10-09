@@ -7,7 +7,10 @@ use std::collections::HashMap;
 
 use serde_json::{json, Value};
 
-use super::protocol::{about_sign_in, cut, str_of, ChatEvent, Driver, Step, ToolStatus};
+use super::protocol::{
+    about_sign_in, content_text, cut, shown, str_of, ChatEvent, Driver, Step, ToolStatus,
+    MAX_TOOL_TEXT,
+};
 
 const APP: &str = "seatbelt-desktop";
 
@@ -26,6 +29,8 @@ pub struct Codex {
     waiting: HashMap<String, Value>,
     /// What each file change item will touch, for its approval card.
     changes: HashMap<String, String>,
+    /// Reasoning items whose summary has streamed: their whole text is not sent again.
+    reasoned: std::collections::HashSet<String>,
 }
 
 impl Codex {
@@ -131,7 +136,53 @@ impl Codex {
                 id: id.clone(),
                 text: str_of(&item, "text").to_string(),
             }),
-            "commandExecution" => step.show(tool("Shell", cut(str_of(&item, "command"), 2000))),
+            "reasoning" if done && !self.reasoned.remove(&id) => {
+                let parts = |key: &str| -> Vec<String> {
+                    item.get(key)
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|p| p.as_str().map(str::to_string))
+                        .collect()
+                };
+                let mut text = parts("summary");
+                if text.is_empty() {
+                    text = parts("content");
+                }
+                if !text.is_empty() {
+                    step.show(ChatEvent::Thinking {
+                        id: id.clone(),
+                        delta: text.join("\n\n"),
+                    });
+                }
+            }
+            "commandExecution" => {
+                let command = str_of(&item, "command");
+                step.show(tool("Shell", cut(command, 2000)));
+                if done {
+                    let mut output = str_of(&item, "aggregatedOutput").to_string();
+                    if let Some(code) = item.get("exitCode").and_then(Value::as_i64) {
+                        if code != 0 {
+                            output.push_str(&format!("\n[exit code {code}]"));
+                        }
+                    }
+                    step.show(ChatEvent::ToolOutput {
+                        id: id.clone(),
+                        output: cut(output.trim_start_matches('\n'), MAX_TOOL_TEXT),
+                    });
+                } else {
+                    let cwd = str_of(&item, "cwd");
+                    let input = if cwd.is_empty() {
+                        command.to_string()
+                    } else {
+                        format!("{command}\n\nin {cwd}")
+                    };
+                    step.show(ChatEvent::ToolInput {
+                        id: id.clone(),
+                        input: cut(&input, MAX_TOOL_TEXT),
+                    });
+                }
+            }
             "fileChange" => {
                 let paths: Vec<&str> = item
                     .get("changes")
@@ -143,14 +194,48 @@ impl Codex {
                 let detail = cut(&paths.join("\n"), 2000);
                 self.changes.insert(id.clone(), detail.clone());
                 step.show(tool("Edit", detail));
+                let diffs: Vec<String> = item
+                    .get("changes")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .map(|c| {
+                        format!(
+                            "{} ({})\n{}",
+                            str_of(c, "path"),
+                            str_of(c, "kind"),
+                            str_of(c, "diff")
+                        )
+                    })
+                    .collect();
+                if !done {
+                    // what an edit is given is its diff
+                    step.show(ChatEvent::ToolInput {
+                        id: id.clone(),
+                        input: cut(&diffs.join("\n\n"), MAX_TOOL_TEXT),
+                    });
+                }
             }
             "mcpToolCall" => {
                 let name = format!("{}.{}", str_of(&item, "server"), str_of(&item, "tool"));
-                let args = item
-                    .get("arguments")
-                    .map(Value::to_string)
-                    .unwrap_or_default();
-                step.show(tool(&name, cut(&args, 2000)));
+                let args = item.get("arguments").cloned().unwrap_or_default();
+                step.show(tool(&name, cut(&args.to_string(), 2000)));
+                if done {
+                    let output = match (item.get("error"), item.pointer("/result/content")) {
+                        (Some(e), _) if !e.is_null() => str_of(e, "message").to_string(),
+                        (_, Some(content)) => content_text(content),
+                        _ => String::new(),
+                    };
+                    step.show(ChatEvent::ToolOutput {
+                        id: id.clone(),
+                        output,
+                    });
+                } else {
+                    step.show(ChatEvent::ToolInput {
+                        id: id.clone(),
+                        input: shown(&args),
+                    });
+                }
             }
             "webSearch" => step.show(tool("Web search", cut(str_of(&item, "query"), 2000))),
             _ => {}
@@ -236,6 +321,14 @@ impl Driver for Codex {
                 id: str_of(&params, "itemId").to_string(),
                 delta: str_of(&params, "delta").to_string(),
             }),
+            "item/reasoning/summaryTextDelta" => {
+                let id = str_of(&params, "itemId").to_string();
+                self.reasoned.insert(id.clone());
+                step.show(ChatEvent::Thinking {
+                    id,
+                    delta: str_of(&params, "delta").to_string(),
+                });
+            }
             "item/started" => self.item(&params, false, &mut step),
             "item/completed" => self.item(&params, true, &mut step),
             "turn/started" => {
@@ -430,6 +523,10 @@ mod tests {
                     detail: "/bin/bash -lc 'echo hi > out.txt'".into(),
                     status: ToolStatus::Running
                 },
+                ChatEvent::ToolInput {
+                    id: "call_1".into(),
+                    input: "/bin/bash -lc 'echo hi > out.txt'\n\nin /work".into(),
+                },
                 ChatEvent::Approval {
                     id: "codex-0".into(),
                     tool: "Shell".into(),
@@ -444,7 +541,10 @@ mod tests {
         );
         let rest = [
             r#"{"method":"serverRequest/resolved","params":{"threadId":"th-1","requestId":0}}"#,
-            r#"{"method":"item/completed","params":{"item":{"type":"commandExecution","id":"call_1","command":"x","status":"completed"}}}"#,
+            r#"{"method":"item/completed","params":{"item":{"type":"commandExecution","id":"call_1","command":"x","status":"completed","aggregatedOutput":"wrote it\n","exitCode":0}}}"#,
+            r#"{"method":"item/reasoning/summaryTextDelta","params":{"itemId":"r1","delta":"**Checking** the file"}}"#,
+            r#"{"method":"item/completed","params":{"item":{"type":"reasoning","id":"r1","summary":["**Checking** the file"],"content":[]}}}"#,
+            r#"{"method":"item/completed","params":{"item":{"type":"reasoning","id":"r2","summary":["Whole"],"content":[]}}}"#,
             r#"{"method":"item/agentMessage/delta","params":{"itemId":"m1","delta":"All "}}"#,
             r#"{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"m1","text":"All done."}}}"#,
             r#"{"method":"turn/completed","params":{"threadId":"th-1","turn":{"id":"tu-1","status":"completed","error":null}}}"#,
@@ -461,6 +561,18 @@ mod tests {
                     name: "Shell".into(),
                     detail: "x".into(),
                     status: ToolStatus::Done
+                },
+                ChatEvent::ToolOutput {
+                    id: "call_1".into(),
+                    output: "wrote it\n".into(),
+                },
+                ChatEvent::Thinking {
+                    id: "r1".into(),
+                    delta: "**Checking** the file".into(),
+                },
+                ChatEvent::Thinking {
+                    id: "r2".into(),
+                    delta: "Whole".into(),
                 },
                 ChatEvent::Text {
                     id: "m1".into(),

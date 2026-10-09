@@ -6,7 +6,9 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::{json, Value};
 
-use super::protocol::{cut, str_of, summary, ChatEvent, Driver, Step, ToolStatus};
+use super::protocol::{
+    content_text, cut, shown, str_of, summary, ChatEvent, Driver, Step, ToolStatus,
+};
 
 /// The message a denied tool use gets, which Claude reads.
 const DENIED: &str = "The user denied this in Seatbelt.";
@@ -17,6 +19,10 @@ pub struct Claude {
     message: Option<String>,
     streamed: bool,
     messages: u32,
+    /// The reasoning being streamed in this message, by our own id.
+    thinking: Option<String>,
+    thinking_streamed: bool,
+    thoughts: u32,
     /// Approvals waiting: request id, then the tool's input and its tool use id.
     waiting: HashMap<String, (Value, String)>,
     declined: HashSet<String>,
@@ -33,6 +39,13 @@ impl Claude {
         self.streamed = false;
         let id = format!("claude-{}", self.messages);
         self.message = Some(id.clone());
+        id
+    }
+
+    fn next_thought(&mut self) -> String {
+        self.thoughts += 1;
+        let id = format!("claude-thinking-{}", self.thoughts);
+        self.thinking = Some(id.clone());
         id
     }
 
@@ -117,16 +130,37 @@ impl Driver for Claude {
 
     fn read(&mut self, line: Value) -> Step {
         let mut step = Step::default();
+        // a subagent's own messages: its tools show, its words stay inside it
+        let subagent = line.get("parent_tool_use_id").is_some_and(|p| !p.is_null());
         match str_of(&line, "type") {
+            "stream_event" if subagent => {}
             "stream_event" => {
                 let event = line.get("event").cloned().unwrap_or_default();
                 match str_of(&event, "type") {
                     "message_start" => {
                         self.next_message();
+                        self.thinking = None;
+                        self.thinking_streamed = false;
+                    }
+                    "content_block_start"
+                        if event.pointer("/content_block/type").and_then(Value::as_str)
+                            == Some("thinking") =>
+                    {
+                        self.next_thought();
                     }
                     "content_block_delta" => {
                         let delta = event.get("delta").cloned().unwrap_or_default();
-                        if str_of(&delta, "type") == "text_delta" {
+                        if str_of(&delta, "type") == "thinking_delta" {
+                            let id = match &self.thinking {
+                                Some(id) => id.clone(),
+                                None => self.next_thought(),
+                            };
+                            self.thinking_streamed = true;
+                            step.show(ChatEvent::Thinking {
+                                id,
+                                delta: str_of(&delta, "thinking").to_string(),
+                            });
+                        } else if str_of(&delta, "type") == "text_delta" {
                             let id = match &self.message {
                                 Some(id) => id.clone(),
                                 None => self.next_message(),
@@ -150,19 +184,34 @@ impl Driver for Claude {
                     .flatten()
                 {
                     match str_of(block, "type") {
-                        "text" if !self.streamed => {
+                        "thinking" if !self.thinking_streamed && !subagent => {
+                            let id = self.next_thought();
+                            step.show(ChatEvent::Thinking {
+                                id,
+                                delta: str_of(block, "thinking").to_string(),
+                            });
+                        }
+                        "text" if !self.streamed && !subagent => {
                             let id = self.next_message();
                             step.show(ChatEvent::Message {
                                 id,
                                 text: str_of(block, "text").to_string(),
                             });
                         }
-                        "tool_use" => step.show(ChatEvent::Tool {
-                            id: str_of(block, "id").to_string(),
-                            name: str_of(block, "name").to_string(),
-                            detail: summary(block.get("input").unwrap_or(&Value::Null)),
-                            status: ToolStatus::Running,
-                        }),
+                        "tool_use" => {
+                            let id = str_of(block, "id").to_string();
+                            let input = block.get("input").unwrap_or(&Value::Null);
+                            step.show(ChatEvent::Tool {
+                                id: id.clone(),
+                                name: str_of(block, "name").to_string(),
+                                detail: summary(input),
+                                status: ToolStatus::Running,
+                            });
+                            step.show(ChatEvent::ToolInput {
+                                id,
+                                input: shown(input),
+                            });
+                        }
                         _ => {}
                     }
                 }
@@ -179,6 +228,10 @@ impl Driver for Claude {
                         continue;
                     }
                     let id = str_of(block, "tool_use_id").to_string();
+                    step.show(ChatEvent::ToolOutput {
+                        id: id.clone(),
+                        output: content_text(block.get("content").unwrap_or(&Value::Null)),
+                    });
                     let status = if self.declined.remove(&id) {
                         ToolStatus::Declined
                     } else if block.get("is_error").and_then(Value::as_bool) == Some(true) {
@@ -194,8 +247,10 @@ impl Driver for Claude {
                     });
                 }
                 // what follows a tool's result is a new message
-                self.message = None;
-                self.streamed = false;
+                if !subagent {
+                    self.message = None;
+                    self.streamed = false;
+                }
             }
             "control_request" => self.control(&line, &mut step),
             "system" => {
@@ -339,6 +394,11 @@ mod tests {
                     detail: "echo hi > out.txt".into(),
                     status: ToolStatus::Running,
                 },
+                ChatEvent::ToolInput {
+                    id: "toolu_01".into(),
+                    input: "{\n  \"command\": \"echo hi > out.txt\",\n  \"description\": \"Write a file\"\n}"
+                        .into(),
+                },
                 ChatEvent::Approval {
                     id: "req-1".into(),
                     tool: "Bash".into(),
@@ -384,6 +444,10 @@ mod tests {
         assert_eq!(
             after.events,
             vec![
+                ChatEvent::ToolOutput {
+                    id: "toolu_01".into(),
+                    output: "(Bash completed with no output)".into(),
+                },
                 ChatEvent::Tool {
                     id: "toolu_01".into(),
                     name: String::new(),
@@ -414,11 +478,79 @@ mod tests {
         let after = c.read(line(r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_01","type":"tool_result","content":"The user denied this in Seatbelt.","is_error":true}]}}"#));
         assert_eq!(
             after.events,
-            vec![ChatEvent::Tool {
-                id: "toolu_01".into(),
-                name: String::new(),
-                detail: String::new(),
-                status: ToolStatus::Declined
+            vec![
+                ChatEvent::ToolOutput {
+                    id: "toolu_01".into(),
+                    output: DENIED.into(),
+                },
+                ChatEvent::Tool {
+                    id: "toolu_01".into(),
+                    name: String::new(),
+                    detail: String::new(),
+                    status: ToolStatus::Declined
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn thinking_streams_or_comes_whole_and_a_subagents_words_stay_inside_it() {
+        let mut c = Claude::default();
+        let step = feed(
+            &mut c,
+            vec![
+                line(
+                    r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"m"}}}"#,
+                ),
+                line(
+                    r#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}}"#,
+                ),
+                line(
+                    r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Look at "}}}"#,
+                ),
+                line(
+                    r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"the test."}}}"#,
+                ),
+                line(
+                    r#"{"type":"assistant","message":{"id":"m","content":[{"type":"thinking","thinking":"Look at the test.","signature":"s"}]}}"#,
+                ),
+                line(
+                    r#"{"type":"assistant","parent_tool_use_id":"task_1","message":{"id":"sub","content":[{"type":"text","text":"subagent chatter"}]}}"#,
+                ),
+                line(
+                    r#"{"type":"assistant","message":{"id":"n","content":[{"type":"thinking","thinking":"Whole."}]}}"#,
+                ),
+            ],
+        );
+        assert_eq!(
+            step.events,
+            vec![
+                ChatEvent::Thinking {
+                    id: "claude-thinking-1".into(),
+                    delta: "Look at ".into()
+                },
+                ChatEvent::Thinking {
+                    id: "claude-thinking-1".into(),
+                    delta: "the test.".into()
+                },
+            ]
+        );
+        let whole = feed(
+            &mut c,
+            vec![
+                line(
+                    r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"n"}}}"#,
+                ),
+                line(
+                    r#"{"type":"assistant","message":{"id":"n","content":[{"type":"thinking","thinking":"Whole."}]}}"#,
+                ),
+            ],
+        );
+        assert_eq!(
+            whole.events,
+            vec![ChatEvent::Thinking {
+                id: "claude-thinking-2".into(),
+                delta: "Whole.".into()
             }]
         );
     }

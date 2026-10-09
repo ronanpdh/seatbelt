@@ -56,20 +56,3 @@ export function table(head: string[], rows: (string | Node)[][], className = "gr
   t.append(body);
   return t;
 }
-
-/** Text that may hold code fences: fenced parts become code blocks, the rest stays text. */
-export function richText(text: string): DocumentFragment {
-  const out = document.createDocumentFragment();
-  const parts = text.split(/^```[^\n]*\n?/m);
-  parts.forEach((part, i) => {
-    if (part === "") return;
-    if (i % 2 === 1) {
-      const pre = el("pre", "code");
-      pre.append(el("code", undefined, part.replace(/\n$/, "")));
-      out.append(pre);
-    } else {
-      out.append(el("div", "prose", part.replace(/^\n+|\n+$/g, "")));
-    }
-  });
-  return out;
-}

@@ -24,6 +24,12 @@ pub enum ChatEvent {
         detail: String,
         status: ToolStatus,
     },
+    /// What a tool was given, whole, for the window to show when its line is opened.
+    ToolInput { id: String, input: String },
+    /// What a tool gave back: its output, error or diff.
+    ToolOutput { id: String, output: String },
+    /// More of the agent's reasoning, as the CLI shows it; created by its first piece.
+    Thinking { id: String, delta: String },
     /// The CLI asks before a tool use; answered with `answer(id, allow)`.
     Approval {
         id: String,
@@ -119,6 +125,42 @@ pub fn summary(input: &Value) -> String {
     cut(&text, 2000)
 }
 
+/// The most of one tool's input or output the window is sent; the ledger keeps all of it.
+pub const MAX_TOOL_TEXT: usize = 20_000;
+
+/// A tool's input or output for the window: a string as it is, anything else as indented
+/// JSON, cut to MAX_TOOL_TEXT characters.
+pub fn shown(value: &Value) -> String {
+    let text = match value {
+        Value::Null => String::new(),
+        Value::String(s) => s.clone(),
+        other => serde_json::to_string_pretty(other).unwrap_or_default(),
+    };
+    cut(&text, MAX_TOOL_TEXT)
+}
+
+/// The text of content blocks (`[{"type": "text", "text": ...}, ...]`, as the Messages API
+/// and MCP give a tool's result), or a string as it is; other blocks are named, not shown.
+pub fn content_text(content: &Value) -> String {
+    let text = match content {
+        Value::String(s) => s.clone(),
+        Value::Array(blocks) => blocks
+            .iter()
+            .map(
+                |b| match (str_of(b, "type"), b.get("text").and_then(Value::as_str)) {
+                    (_, Some(text)) => text.to_string(),
+                    ("", None) => b.to_string(),
+                    (kind, None) => format!("[{kind}]"),
+                },
+            )
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Value::Null => String::new(),
+        other => serde_json::to_string_pretty(other).unwrap_or_default(),
+    };
+    cut(&text, MAX_TOOL_TEXT)
+}
+
 pub fn cut(text: &str, max: usize) -> String {
     match text.char_indices().nth(max) {
         Some((at, _)) => format!("{}…", &text[..at]),
@@ -167,6 +209,24 @@ mod tests {
                 .chars()
                 .count(),
             2001
+        );
+    }
+
+    #[test]
+    fn tool_text_is_a_string_as_it_is_and_anything_else_as_indented_json() {
+        assert_eq!(shown(&json!("ls\nout")), "ls\nout");
+        assert_eq!(shown(&json!({"a": 1})), "{\n  \"a\": 1\n}");
+        assert_eq!(shown(&Value::Null), "");
+        assert_eq!(
+            content_text(
+                &json!([{"type": "text", "text": "one"}, {"type": "image"}, {"type": "text", "text": "two"}])
+            ),
+            "one\n[image]\ntwo"
+        );
+        assert_eq!(content_text(&json!("plain")), "plain");
+        assert_eq!(
+            shown(&json!("x".repeat(MAX_TOOL_TEXT + 5))).chars().count(),
+            MAX_TOOL_TEXT + 1
         );
     }
 

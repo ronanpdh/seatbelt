@@ -7,7 +7,9 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::{json, Value};
 
-use super::protocol::{about_sign_in, cut, str_of, ChatEvent, Driver, Step, ToolStatus};
+use super::protocol::{
+    about_sign_in, cut, shown, str_of, ChatEvent, Driver, Step, ToolStatus, MAX_TOOL_TEXT,
+};
 
 /// A permission request: its JSON-RPC id, the agent's options, and the tool call's id.
 type Waiting = (Value, Vec<Value>, String);
@@ -22,6 +24,9 @@ pub struct Acp {
     /// The assistant message being streamed: a new one after each tool call.
     message: Option<String>,
     messages: u32,
+    /// The reasoning being streamed: a new one after each message or tool call.
+    thought: Option<String>,
+    thoughts: u32,
     /// Permission requests waiting, by our id: the agent's request id, its options, and the
     /// tool call it is about.
     waiting: HashMap<String, Waiting>,
@@ -64,6 +69,23 @@ fn content_text(content: Option<&Value>) -> String {
         .filter_map(|c| c.pointer("/content/text").and_then(Value::as_str))
         .collect();
     cut(&parts.join("\n"), 2000)
+}
+
+/// A tool call's content for the window: its text, and each diff as the file's new text.
+fn tool_content(content: Option<&Value>) -> String {
+    let parts: Vec<String> = content
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|c| match str_of(c, "type") {
+            "diff" => Some(format!("{}\n{}", str_of(c, "path"), str_of(c, "newText"))),
+            _ => c
+                .pointer("/content/text")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        })
+        .collect();
+    cut(&parts.join("\n\n"), MAX_TOOL_TEXT)
 }
 
 impl Acp {
@@ -155,7 +177,26 @@ impl Acp {
     fn update(&mut self, params: &Value, step: &mut Step) {
         let update = params.get("update").cloned().unwrap_or_default();
         match str_of(&update, "sessionUpdate") {
+            "agent_thought_chunk" => {
+                let text = update.pointer("/content/text").and_then(Value::as_str);
+                if let Some(text) = text {
+                    let id = match &self.thought {
+                        Some(id) => id.clone(),
+                        None => {
+                            self.thoughts += 1;
+                            let id = format!("gemini-thinking-{}", self.thoughts);
+                            self.thought = Some(id.clone());
+                            id
+                        }
+                    };
+                    step.show(ChatEvent::Thinking {
+                        id,
+                        delta: text.to_string(),
+                    });
+                }
+            }
             "agent_message_chunk" => {
+                self.thought = None;
                 let text = update.pointer("/content/text").and_then(Value::as_str);
                 if let Some(text) = text {
                     let id = match &self.message {
@@ -175,6 +216,7 @@ impl Acp {
             }
             kind @ ("tool_call" | "tool_call_update") => {
                 self.message = None;
+                self.thought = None;
                 let id = str_of(&update, "toolCallId").to_string();
                 let name = if kind == "tool_call" {
                     let name = tool_name(str_of(&update, "kind"));
@@ -188,13 +230,29 @@ impl Acp {
                     status = ToolStatus::Declined;
                 }
                 step.show(ChatEvent::Tool {
-                    id,
+                    id: id.clone(),
                     name,
                     detail: cut(str_of(&update, "title"), 2000),
                     status,
                 });
+                let content = tool_content(update.get("content"));
+                if kind == "tool_call" {
+                    // what it was given: its raw input if the agent sends it, else its content
+                    let input = match update.get("rawInput") {
+                        Some(raw) if !raw.is_null() => shown(raw),
+                        _ => content,
+                    };
+                    if !input.is_empty() {
+                        step.show(ChatEvent::ToolInput { id, input });
+                    }
+                } else if !content.is_empty() {
+                    step.show(ChatEvent::ToolOutput {
+                        id,
+                        output: content,
+                    });
+                }
             }
-            _ => {} // thoughts, plans, commands and modes: not shown
+            _ => {} // plans, commands and modes: not shown
         }
     }
 
@@ -397,6 +455,10 @@ mod tests {
                     detail: "echo hi > out.txt".into(),
                     status: ToolStatus::Running
                 },
+                ChatEvent::ToolInput {
+                    id: "run_1".into(),
+                    input: "[cwd /work]".into(),
+                },
                 ChatEvent::Approval {
                     id: "gemini-0".into(),
                     tool: "Shell".into(),
@@ -468,6 +530,58 @@ mod tests {
         let fs = a.read(line(r#"{"jsonrpc":"2.0","id":6,"method":"fs/read_text_file","params":{"path":"/etc/passwd"}}"#));
         assert_eq!(fs.write[0]["error"]["code"], -32601);
         assert!(fs.events.is_empty());
+    }
+
+    #[test]
+    fn thoughts_raw_input_and_tool_output_and_diffs_reach_the_window() {
+        let (mut a, _) = started();
+        let mut events = vec![];
+        for l in [
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"Plan "}}}}"#,
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"it."}}}}"#,
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call","toolCallId":"w1","status":"pending","title":"Write a.txt","kind":"edit","rawInput":{"file_path":"a.txt"}}}}"#,
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call_update","toolCallId":"w1","status":"completed","content":[{"type":"diff","path":"a.txt","oldText":null,"newText":"hello"}]}}}"#,
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"Again."}}}}"#,
+        ] {
+            events.extend(a.read(line(l)).events);
+        }
+        assert_eq!(
+            events,
+            vec![
+                ChatEvent::Thinking {
+                    id: "gemini-thinking-1".into(),
+                    delta: "Plan ".into()
+                },
+                ChatEvent::Thinking {
+                    id: "gemini-thinking-1".into(),
+                    delta: "it.".into()
+                },
+                ChatEvent::Tool {
+                    id: "w1".into(),
+                    name: "Edit".into(),
+                    detail: "Write a.txt".into(),
+                    status: ToolStatus::Running
+                },
+                ChatEvent::ToolInput {
+                    id: "w1".into(),
+                    input: "{\n  \"file_path\": \"a.txt\"\n}".into()
+                },
+                ChatEvent::Tool {
+                    id: "w1".into(),
+                    name: String::new(),
+                    detail: String::new(),
+                    status: ToolStatus::Done
+                },
+                ChatEvent::ToolOutput {
+                    id: "w1".into(),
+                    output: "a.txt\nhello".into()
+                },
+                ChatEvent::Thinking {
+                    id: "gemini-thinking-2".into(),
+                    delta: "Again.".into()
+                },
+            ]
+        );
     }
 
     #[test]

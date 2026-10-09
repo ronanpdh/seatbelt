@@ -4,8 +4,9 @@
 //! The web view can do only what these commands allow: open a chat or a terminal tab for one
 //! of the three CLIs in a folder; send a chat message, answer its approvals, interrupt or end
 //! it; write to, resize or close a tab; list runs; show, verify or open the page of a run by
-//! its id; report usage; check a folder; quit. It never names a program to run or a file to
-//! open, and never writes to a CLI's protocol itself.
+//! its id; report usage; open an http(s) link from a reply in the browser; check a folder;
+//! quit. It never names a program to run or a file to open, and never writes to a CLI's
+//! protocol itself.
 //!
 //! No native dialogs: macOS's `+[NSOpenPanel openPanel]` can return nil (a code-signature
 //! mismatch after an in-place update is one reported cause), and the binding the dialog plugin
@@ -281,6 +282,29 @@ async fn open_page(
         .map_err(|e| e.to_string())
 }
 
+/// Open a link from a reply in the system's browser: only `http` and `https`, and nothing
+/// with spaces or control characters in it. The window never follows a link itself.
+#[tauri::command]
+fn open_link(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    let url = web_url(&url)?;
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+fn web_url(url: &str) -> Result<&str, String> {
+    let lower = url.to_ascii_lowercase();
+    let web = (lower.starts_with("https://") || lower.starts_with("http://"))
+        && url.len() <= 4096
+        && url.len() > "https://".len()
+        && !url.chars().any(|c| c.is_whitespace() || c.is_control());
+    if web {
+        Ok(url)
+    } else {
+        Err("only http and https links open".into())
+    }
+}
+
 /// End every chat and tab as closing it would, then quit: the answer to "quit-requested".
 #[tauri::command]
 async fn quit(app: tauri::AppHandle) -> Result<(), String> {
@@ -341,6 +365,7 @@ pub fn run() {
             verify_run,
             usage_report,
             open_page,
+            open_link,
             quit,
         ])
         .build(tauri::generate_context!())
@@ -360,7 +385,24 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::folder;
+    use super::{folder, web_url};
+
+    #[test]
+    fn only_web_links_open() {
+        assert!(web_url("https://example.com/a?b=c").is_ok());
+        assert!(web_url("HTTP://example.com").is_ok());
+        for bad in [
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "https://",
+            "https://a b",
+            "https://a\nb",
+            "ftp://x",
+            "/tmp/x",
+        ] {
+            assert!(web_url(bad).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn a_folder_is_a_full_path_to_a_directory_with_tilde_for_home() {
