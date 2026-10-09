@@ -34,6 +34,8 @@ type Session = {
   conversation: string | null;
   /** The model and effort the chat starts with; null: the CLI's own setting. */
   choice: Choice | null;
+  /** The permission mode the chat starts with; null: the CLI's own. */
+  mode: string | null;
 };
 type View =
   | { kind: "session"; session: Session }
@@ -204,6 +206,27 @@ function updateCliButtons(): void {
 // starts with them, if the CLI still offers them ---------------------------------------------
 
 const CHOICE_KEY = "seatbelt.model.";
+// a mode that skips every approval is never offered, so never remembered; and the drivers
+// set only a mode they offer, whatever is stored here
+const MODE_KEY = "seatbelt.mode.";
+
+function rememberedMode(cli: Cli): string | null {
+  try {
+    const saved = localStorage.getItem(MODE_KEY + cli.name);
+    return saved && saved.length <= 64 ? saved : null;
+  } catch {
+    return null;
+  }
+}
+
+function rememberMode(cli: Cli, mode: string | null): void {
+  try {
+    if (mode === null) localStorage.removeItem(MODE_KEY + cli.name);
+    else localStorage.setItem(MODE_KEY + cli.name, mode);
+  } catch {
+    // not remembered this time; this session still uses it
+  }
+}
 
 function rememberedChoice(cli: Cli): Choice | null {
   try {
@@ -253,6 +276,7 @@ async function newSession(cli: Cli): Promise<void> {
     signingIn: false,
     conversation: null,
     choice: rememberedChoice(cli),
+    mode: rememberedMode(cli),
   };
   sessions.push(s);
   byId("tabs").append(s.item);
@@ -289,11 +313,15 @@ async function startChat(s: Session, resume: string | null = null, divider = "")
         s.choice = choice;
         rememberChoice(s.cli, choice);
       },
+      choseMode: (mode) => {
+        s.mode = mode;
+        rememberMode(s.cli, mode);
+      },
     });
     s.chat = chat;
   }
   s.chat.hidden = false;
-  await s.chat.start(s.folder, resume, divider, s.choice);
+  await s.chat.start(s.folder, resume, divider, s.choice, s.mode);
   if (isShown(s)) s.chat.focus();
 }
 

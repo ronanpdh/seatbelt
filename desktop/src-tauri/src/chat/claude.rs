@@ -7,8 +7,8 @@ use std::collections::{HashMap, HashSet};
 use serde_json::{json, Value};
 
 use super::protocol::{
-    checked, content_text, cut, shown, str_of, summary, ChatEvent, Choice, Driver, Model, Models,
-    Step, ToolStatus,
+    checked, content_text, cut, shown, str_of, summary, ChatEvent, Choice, Driver, Mode, Model,
+    Models, Modes, Step, ToolStatus,
 };
 
 /// The message a denied tool use gets, which Claude reads.
@@ -41,17 +41,51 @@ pub struct Claude {
     /// Control requests this app sent, by number: what each asked.
     requests: u32,
     asked: HashMap<String, Asked>,
-    /// Messages held until the model chosen at the start is set.
+    /// Messages held until the model and mode chosen at the start are set.
     queued: Vec<String>,
+    modes: Modes,
+    /// The plan each ExitPlanMode call gave, by its tool use id, for its approval card: the
+    /// approval request itself comes with no input.
+    plans: HashMap<String, String>,
 }
 
 /// A control request this app sent, for its response.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum Asked {
     Initialize,
     Settings,
     Model,
     Effort,
+    /// A permission mode, and the one before it, to go back to if it is refused.
+    Mode(Option<String>),
+}
+
+/// The permission modes offered: Claude Code's, but `bypassPermissions`, which skips every
+/// approval. Named and described as Claude Code's documentation names them.
+fn modes() -> Vec<Mode> {
+    vec![
+        Mode::new("default", "Manual", "Runs without asking: reads only."),
+        Mode::new(
+            "acceptEdits",
+            "Accept edits",
+            "Runs without asking: reads, file edits, and common filesystem commands (mkdir, touch, mv, cp).",
+        ),
+        Mode::new(
+            "plan",
+            "Plan",
+            "Researches and proposes changes without making them: edits stay blocked until you approve the plan.",
+        ),
+        Mode::new(
+            "auto",
+            "Auto",
+            "Runs without asking: everything, with background safety checks by a classifier.",
+        ),
+        Mode::new(
+            "dontAsk",
+            "Don't ask",
+            "Runs without asking: reads and pre-approved tools; anything that would ask is denied.",
+        ),
+    ]
 }
 
 /// Claude Code's models, from its answer to `initialize`.
@@ -88,13 +122,24 @@ fn models_of(answer: &Value) -> Vec<Model> {
 
 impl Claude {
     /// A session that resumes conversation `resume` (already checked as a plain id), if any,
-    /// on the model and effort `choice`, if it is one Claude Code offers.
-    pub fn new(resume: Option<&str>, choice: Option<Choice>) -> Self {
+    /// on the model and effort `choice` and the permission mode `mode`, if they are offered.
+    pub fn new(resume: Option<&str>, choice: Option<Choice>, mode: Option<String>) -> Self {
         Self {
             resume: resume.map(str::to_string),
             models: Models::wanting(choice),
+            modes: Modes::wanting(mode),
             ..Self::default()
         }
+    }
+
+    /// Set permission mode `mode`; the window shows it at once, and goes back if refused.
+    fn set_mode_line(&mut self, mode: &str, step: &mut Step) {
+        let before = self.modes.current.replace(mode.to_string());
+        let line = self.ask(
+            Asked::Mode(before),
+            json!({"subtype": "set_permission_mode", "mode": mode}),
+        );
+        step.send(line);
     }
 
     fn ask(&mut self, asked: Asked, request: Value) -> Value {
@@ -147,12 +192,28 @@ impl Claude {
                 if let Some(choice) = self.models.listed(list, step) {
                     self.apply(choice, step);
                 }
+                self.modes.using(str_of(&answer, "current_permission_mode"));
+                if let Some(mode) = self.modes.listed(modes(), step) {
+                    self.set_mode_line(&mode, step);
+                }
                 for text in std::mem::take(&mut self.queued) {
                     step.send(Self::user_line(&text));
                 }
                 if !self.models.list.is_empty() {
                     step.show(self.models.event());
                 }
+                step.show(self.modes.event());
+            }
+            Asked::Mode(before) if failed => {
+                // refused: the window shows the mode Claude Code is still in, and says why
+                self.modes.current = before;
+                step.show(ChatEvent::Notice {
+                    text: format!(
+                        "Claude Code did not change the permission mode: {}",
+                        cut(str_of(&response, "error"), 2000)
+                    ),
+                });
+                step.show(self.modes.event());
             }
             Asked::Settings if !failed => {
                 let using = answer
@@ -231,6 +292,17 @@ impl Claude {
             _ => what,
         };
         let tool_use = str_of(&request, "tool_use_id").to_string();
+        // leaving plan mode asks with no input: the card shows the plan the call gave, if any
+        let detail = if str_of(&request, "tool_name") == "ExitPlanMode" {
+            let said = "Allow approves the plan: Claude Code leaves plan mode and starts on it.";
+            match self.plans.remove(&tool_use) {
+                Some(plan) if detail.is_empty() => format!("{plan}\n\n{said}"),
+                _ if detail.is_empty() => said.to_string(),
+                _ => detail,
+            }
+        } else {
+            detail
+        };
         self.waiting.insert(request_id.clone(), (input, tool_use));
         step.show(ChatEvent::Approval {
             id: request_id,
@@ -287,6 +359,14 @@ impl Driver for Claude {
 
     fn read(&mut self, line: Value) -> Step {
         let mut step = Step::default();
+        // the permission mode it is in, said as each turn starts and when it changes (as when
+        // a plan is approved): the window follows it
+        if str_of(&line, "type") == "system"
+            && self.modes.known
+            && self.modes.using(str_of(&line, "permissionMode"))
+        {
+            step.show(self.modes.event());
+        }
         // a subagent's own messages: its tools show, its words stay inside it
         let subagent = line.get("parent_tool_use_id").is_some_and(|p| !p.is_null());
         match str_of(&line, "type") {
@@ -358,6 +438,12 @@ impl Driver for Claude {
                         "tool_use" => {
                             let id = str_of(block, "id").to_string();
                             let input = block.get("input").unwrap_or(&Value::Null);
+                            if str_of(block, "name") == "ExitPlanMode" {
+                                let plan = str_of(input, "plan");
+                                if !plan.is_empty() {
+                                    self.plans.insert(id.clone(), cut(plan, 4000));
+                                }
+                            }
                             step.show(ChatEvent::Tool {
                                 id: id.clone(),
                                 name: str_of(block, "name").to_string(),
@@ -468,7 +554,7 @@ impl Driver for Claude {
     fn send(&mut self, text: &str) -> Result<Step, String> {
         let mut step = Step::default();
         self.sent = true;
-        if self.models.holds() {
+        if self.models.holds() || self.modes.holds() {
             self.queued.push(text.to_string());
         } else {
             step.send(Self::user_line(text));
@@ -516,6 +602,14 @@ impl Driver for Claude {
         let mut step = Step::default();
         self.apply(choice, &mut step);
         step.show(self.models.event());
+        Ok(step)
+    }
+
+    fn set_mode(&mut self, mode: &str) -> Result<Step, String> {
+        self.modes.offered(mode)?;
+        let mut step = Step::default();
+        self.set_mode_line(mode, &mut step);
+        step.show(self.modes.event());
         Ok(step)
     }
 }
@@ -803,12 +897,12 @@ mod tests {
 
     #[test]
     fn a_conversation_is_resumed_by_its_id_and_a_refusal_is_said_once() {
-        let mut c = Claude::new(Some("s-1"), None);
+        let mut c = Claude::new(Some("s-1"), None, None);
         assert_eq!(c.args()[c.args().len() - 2..], ["--resume", "s-1"]);
         assert!(!Claude::default().args().contains(&"--resume".to_string()));
         let gone = c.read(line(r#"{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"s-1"}"#));
         assert_eq!(gone.events, vec![ChatEvent::Resumed { ok: false }]);
-        let mut c = Claude::new(Some("s-1"), None);
+        let mut c = Claude::new(Some("s-1"), None, None);
         c.send("hi").unwrap();
         let init = feed(
             &mut c,
@@ -855,7 +949,7 @@ mod tests {
             model: None,
             effort: None,
             current: None,
-        }] = &listed.events[..]
+        }, ChatEvent::Modes { .. }] = &listed.events[..]
         else {
             panic!("{:?}", listed.events);
         };
@@ -903,7 +997,7 @@ mod tests {
 
     #[test]
     fn a_choice_from_before_is_set_before_the_first_message() {
-        let mut c = Claude::new(None, Some(pick("haiku", Some("high"))));
+        let mut c = Claude::new(None, Some(pick("haiku", Some("high"))), None);
         c.start("/w");
         assert!(c.send("hi").unwrap().write.is_empty()); // held until the model is set
         let step = c.read(line(MODELS));
@@ -921,11 +1015,98 @@ mod tests {
             ]
         );
 
-        let mut gone = Claude::new(None, Some(pick("opus-3", None)));
+        let mut gone = Claude::new(None, Some(pick("opus-3", None)), None);
         gone.start("/w");
         gone.send("hi").unwrap();
         let step = gone.read(line(MODELS));
         assert!(matches!(&step.events[0], ChatEvent::Log { text } if text.contains("opus-3")));
+        assert_eq!(step.write.len(), 1);
+        assert_eq!(step.write[0]["message"]["content"], "hi");
+    }
+
+    #[test]
+    fn a_permission_mode_is_set_followed_and_a_refusal_said() {
+        let mut c = Claude::default();
+        c.start("/w");
+        let listed = c.read(line(MODELS));
+        let Some(ChatEvent::Modes {
+            modes,
+            mode,
+            current,
+        }) = listed.events.last()
+        else {
+            panic!("{:?}", listed.events);
+        };
+        assert_eq!(
+            modes.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["default", "acceptEdits", "plan", "auto", "dontAsk"]
+        );
+        assert_eq!(
+            (mode.as_deref(), current.as_deref()),
+            (Some("default"), Some("default"))
+        );
+        // the mode that skips every approval is not offered, whatever is asked
+        assert!(c.set_mode("bypassPermissions").is_err());
+        let plan = c.set_mode("plan").unwrap();
+        assert_eq!(
+            plan.write,
+            vec![
+                json!({"type": "control_request", "request_id": "seatbelt-3",
+                "request": {"subtype": "set_permission_mode", "mode": "plan"}})
+            ]
+        );
+        assert!(
+            matches!(&plan.events[..], [ChatEvent::Modes { mode: Some(m), .. }] if m == "plan")
+        );
+        // Claude Code says so; that is no news
+        let said = c.read(line(
+            r#"{"type":"system","subtype":"status","status":null,"permissionMode":"plan"}"#,
+        ));
+        assert!(said.events.is_empty());
+        let refused = c.read(line(r#"{"type":"control_response","response":{"subtype":"error","request_id":"seatbelt-3","error":"not now"}}"#));
+        assert!(
+            matches!(&refused.events[0], ChatEvent::Notice { text } if text.contains("not now"))
+        );
+        assert!(
+            matches!(&refused.events[1], ChatEvent::Modes { mode: Some(m), .. } if m == "default")
+        );
+        // a plan approved: Claude Code leaves plan mode, and the window follows
+        c.set_mode("plan").unwrap();
+        let ask = c.read(line(r#"{"type":"control_request","request_id":"r5","request":{"subtype":"can_use_tool","tool_name":"ExitPlanMode","display_name":"ExitPlanMode","input":{},"tool_use_id":"toolu_plan","requires_user_interaction":true}}"#));
+        assert!(matches!(&ask.events[..],
+            [ChatEvent::Approval { tool, detail, .. }] if tool == "ExitPlanMode" && detail.starts_with("Allow approves the plan")));
+        // with the plan its call gave, as P9's did
+        c.read(line(r#"{"type":"assistant","message":{"id":"m","content":[{"type":"tool_use","id":"toolu_p2","name":"ExitPlanMode","input":{"plan":"1. Write out.txt\n2. Check it"}}]}}"#));
+        let ask = c.read(line(r#"{"type":"control_request","request_id":"r6","request":{"subtype":"can_use_tool","tool_name":"ExitPlanMode","input":{},"tool_use_id":"toolu_p2"}}"#));
+        assert!(matches!(&ask.events[..],
+            [ChatEvent::Approval { detail, .. }] if detail.starts_with("1. Write out.txt\n2. Check it\n\nAllow approves")));
+        let left = c.read(line(
+            r#"{"type":"system","subtype":"status","status":null,"permissionMode":"default"}"#,
+        ));
+        assert!(
+            matches!(&left.events[..], [ChatEvent::Modes { mode: Some(m), .. }] if m == "default")
+        );
+    }
+
+    #[test]
+    fn a_mode_from_before_is_set_before_the_first_message_if_offered() {
+        let mut c = Claude::new(None, None, Some("acceptEdits".into()));
+        c.start("/w");
+        assert!(c.send("hi").unwrap().write.is_empty()); // held until the mode is set
+        let step = c.read(line(MODELS));
+        assert_eq!(
+            step.write[0]["request"],
+            json!({"subtype": "set_permission_mode", "mode": "acceptEdits"})
+        );
+        assert_eq!(step.write[1]["message"]["content"], "hi");
+
+        let mut never = Claude::new(None, None, Some("bypassPermissions".into()));
+        never.start("/w");
+        never.send("hi").unwrap();
+        let step = never.read(line(MODELS));
+        assert!(
+            matches!(&step.events[0], ChatEvent::Log { text } if text.contains("bypassPermissions"))
+        );
         assert_eq!(step.write.len(), 1);
         assert_eq!(step.write[0]["message"]["content"], "hi");
     }

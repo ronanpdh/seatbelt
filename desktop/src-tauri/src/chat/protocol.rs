@@ -1,8 +1,8 @@
 //! What a chat shows, whichever CLI it runs, and what each CLI's driver must do.
 //!
 //! A driver turns one CLI's headless protocol into `ChatEvent`s, and the window's few actions
-//! (send a message, answer an approval, choose a model, interrupt) into that protocol's
-//! messages. Drivers do
+//! (send a message, answer an approval, choose a model or a permission mode, interrupt) into
+//! that protocol's messages. Drivers do
 //! no I/O: they take a parsed line and return what to show and what to write, so each is tested
 //! with the lines the real CLIs printed (design: "Checked against the real CLIs").
 
@@ -59,6 +59,16 @@ pub enum ChatEvent {
         /// The model the CLI says it is using, as it names it, when it says.
         current: Option<String>,
     },
+    /// The permission modes offered and the one in use; sent again whenever either changes.
+    Modes {
+        modes: Vec<Mode>,
+        /// The mode in use, by id from `modes`; None while the CLI is in one not offered.
+        mode: Option<String>,
+        /// The mode the CLI says it is in, as it names it, when it says.
+        current: Option<String>,
+    },
+    /// A line for the conversation, from the app: the CLI refused a change, say.
+    Notice { text: String },
     /// A line for the session's log, not the conversation.
     Log { text: String },
     /// The session has ended. `report` is what `seatbelt run` recorded.
@@ -182,6 +192,96 @@ impl Models {
     }
 }
 
+/// A permission mode a chat offers. Only modes that still ask before some tool uses are
+/// offered: one that skips every approval (Claude Code's `bypassPermissions`, Gemini CLI's
+/// `yolo`, Codex's full access) never is, whatever the CLI lists or the window asks for.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Mode {
+    /// What the CLI is told, or for Codex the app's own name for a preset.
+    pub id: String,
+    pub name: String,
+    pub description: String,
+}
+
+impl Mode {
+    pub fn new(id: &str, name: &str, description: &str) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            description: description.into(),
+        }
+    }
+}
+
+/// What a driver knows of permission modes: those offered, and the one in use.
+#[derive(Debug, Default)]
+pub struct Modes {
+    pub list: Vec<Mode>,
+    pub known: bool,
+    /// The mode in use, as the CLI names it: what it said, or what was last set.
+    pub current: Option<String>,
+    /// Asked for as the chat started: set once the list is known, if it is on it.
+    pub wanted: Option<String>,
+}
+
+impl Modes {
+    pub fn wanting(wanted: Option<String>) -> Self {
+        Self {
+            wanted,
+            ..Self::default()
+        }
+    }
+
+    pub fn event(&self) -> ChatEvent {
+        ChatEvent::Modes {
+            modes: self.list.clone(),
+            mode: self
+                .current
+                .clone()
+                .filter(|c| self.list.iter().any(|m| &m.id == c)),
+            current: self.current.clone(),
+        }
+    }
+
+    /// `mode`, if it is one offered.
+    pub fn offered(&self, mode: &str) -> Result<(), String> {
+        if self.list.iter().any(|m| m.id == mode) {
+            Ok(())
+        } else {
+            Err(format!("{mode} is not one of the permission modes offered"))
+        }
+    }
+
+    /// The list is known: the mode asked for at the start, to set now if it is offered and
+    /// not already in use.
+    pub fn listed(&mut self, list: Vec<Mode>, step: &mut Step) -> Option<String> {
+        self.list = list;
+        self.known = true;
+        let wanted = self.wanted.take()?;
+        if let Err(e) = self.offered(&wanted) {
+            step.show(ChatEvent::Log {
+                text: format!("the permission mode chosen before is not used: {e}"),
+            });
+            return None;
+        }
+        (self.current.as_deref() != Some(wanted.as_str())).then_some(wanted)
+    }
+
+    /// What the CLI says it is in; true if that is news.
+    pub fn using(&mut self, current: &str) -> bool {
+        if current.is_empty() || self.current.as_deref() == Some(current) {
+            return false;
+        }
+        self.current = Some(current.to_string());
+        true
+    }
+
+    /// A message waits until the mode asked for at the start is set.
+    pub fn holds(&self) -> bool {
+        self.wanted.is_some() && !self.known
+    }
+}
+
 /// What a driver gives back for one line: events for the window and lines to write.
 #[derive(Debug, Default, PartialEq)]
 pub struct Step {
@@ -214,13 +314,15 @@ pub trait Driver: Send {
     fn interrupt(&mut self) -> Step;
     /// Use `choice` from the next message on; refused unless it is on the CLI's own list.
     fn choose(&mut self, choice: Choice) -> Result<Step, String>;
+    /// Use permission mode `mode` from the next message on; refused unless it is offered.
+    fn set_mode(&mut self, mode: &str) -> Result<Step, String>;
 }
 
 /// A one-line summary of a tool's input for an approval card or a tool line: the command, the
 /// file or the pattern when there is one, else the input as compact JSON, cut to 2000
 /// characters.
 pub fn summary(input: &Value) -> String {
-    const KEYS: [&str; 7] = [
+    const KEYS: [&str; 8] = [
         "command",
         "cmd",
         "file_path",
@@ -228,6 +330,7 @@ pub fn summary(input: &Value) -> String {
         "pattern",
         "url",
         "query",
+        "plan",
     ];
     let text = KEYS
         .iter()

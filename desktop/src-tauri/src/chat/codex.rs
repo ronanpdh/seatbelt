@@ -8,8 +8,8 @@ use std::collections::HashMap;
 use serde_json::{json, Value};
 
 use super::protocol::{
-    about_sign_in, checked, content_text, cut, shown, str_of, ChatEvent, Choice, Driver, Model,
-    Models, Step, ToolStatus, MAX_TOOL_TEXT,
+    about_sign_in, checked, content_text, cut, shown, str_of, ChatEvent, Choice, Driver, Mode,
+    Model, Models, Modes, Step, ToolStatus, MAX_TOOL_TEXT,
 };
 
 const APP: &str = "seatbelt-desktop";
@@ -35,6 +35,48 @@ pub struct Codex {
     resume: Option<String>,
     /// The model and effort are given with each turn, once one is chosen.
     models: Models,
+    /// So is the permission mode: an approval policy and a sandbox.
+    modes: Modes,
+    mode_chosen: Option<String>,
+    /// The thread's own sandbox as it started, kept for the preset of its kind.
+    start_sandbox: Option<Value>,
+}
+
+/// The permission modes offered: two of the presets Codex's documentation names, both asking
+/// before going outside the sandbox. Its full access, with no sandbox and no approvals, is not.
+fn modes() -> Vec<Mode> {
+    vec![
+        Mode::new(
+            "auto",
+            "Auto",
+            "Workspace-write sandbox; asks before going outside it (on-request approvals).",
+        ),
+        Mode::new(
+            "read-only",
+            "Read-only",
+            "Read-only sandbox; asks before going outside it (on-request approvals).",
+        ),
+    ]
+}
+
+/// The mode a thread is in, from its approval policy and sandbox: a preset's id, or else
+/// both as Codex names them.
+fn mode_of(result: &Value) -> String {
+    let approval = match result.get("approvalPolicy") {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Object(o)) => o.keys().next().cloned().unwrap_or_default(),
+        _ => String::new(),
+    };
+    let sandbox = result
+        .pointer("/sandbox/type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    match (approval.as_str(), sandbox) {
+        ("on-request", "workspaceWrite") => "auto".into(),
+        ("on-request", "readOnly") => "read-only".into(),
+        ("", "") => String::new(),
+        _ => format!("{approval}, {sandbox}"),
+    }
 }
 
 /// Codex's models, from `model/list`: those its own picker shows.
@@ -75,12 +117,29 @@ fn models_of(result: &Value) -> Vec<Model> {
 
 impl Codex {
     /// A session that resumes thread `resume` (already checked as a plain id), if any, on the
-    /// model and effort `choice`, if it is one Codex offers.
-    pub fn new(resume: Option<&str>, choice: Option<Choice>) -> Self {
+    /// model and effort `choice` and the permission mode `mode`, if they are offered.
+    pub fn new(resume: Option<&str>, choice: Option<Choice>, mode: Option<String>) -> Self {
         Self {
             resume: resume.map(str::to_string),
             models: Models::wanting(choice),
+            modes: Modes::wanting(mode),
             ..Self::default()
+        }
+    }
+
+    /// The sandbox for preset `mode`: the thread's own, if it started in one of that kind, so
+    /// its writable roots and network access are kept; else the preset's.
+    fn sandbox(&self, mode: &str) -> Value {
+        let kind = if mode == "read-only" {
+            "readOnly"
+        } else {
+            "workspaceWrite"
+        };
+        match &self.start_sandbox {
+            Some(own) if str_of(own, "type") == kind => own.clone(),
+            _ if kind == "readOnly" => json!({"type": "readOnly", "networkAccess": false}),
+            _ => json!({"type": "workspaceWrite", "writableRoots": [], "networkAccess": false,
+                "excludeTmpdirEnvVar": false, "excludeSlashTmp": false}),
         }
     }
 
@@ -115,6 +174,10 @@ impl Codex {
             "input": [{"type": "text", "text": text, "text_elements": []}]});
         // the model and effort chosen, for this turn and the ones after; no effort chosen is
         // the model's own default, said rather than left to the effort of an earlier turn
+        if let Some(mode) = &self.mode_chosen {
+            params["approvalPolicy"] = json!("on-request");
+            params["sandboxPolicy"] = self.sandbox(mode);
+        }
         if let Some(choice) = &self.models.chosen {
             params["model"] = json!(choice.model);
             let model = self.models.list.iter().find(|m| m.id == choice.model);
@@ -224,6 +287,13 @@ impl Codex {
                     if self.models.using(str_of(&result, "model")) && self.models.known {
                         step.show(self.models.event());
                     }
+                    self.start_sandbox = result.get("sandbox").filter(|s| s.is_object()).cloned();
+                    self.modes.using(&mode_of(&result));
+                    if let Some(mode) = self.modes.listed(modes(), step) {
+                        self.modes.current = Some(mode.clone());
+                        self.mode_chosen = Some(mode);
+                    }
+                    step.show(self.modes.event());
                     self.flush(step);
                 }
             }
@@ -552,6 +622,15 @@ impl Driver for Codex {
         step.show(self.models.event());
         Ok(step)
     }
+
+    fn set_mode(&mut self, mode: &str) -> Result<Step, String> {
+        self.modes.offered(mode)?;
+        self.modes.current = Some(mode.to_string());
+        self.mode_chosen = Some(mode.to_string());
+        let mut step = Step::default();
+        step.show(self.modes.event());
+        Ok(step)
+    }
 }
 
 #[cfg(test)]
@@ -616,9 +695,9 @@ mod tests {
             model,
             effort,
             current,
-        } = &step.events[1]
+        } = &step.events[2]
         else {
-            panic!("{:?}", step.events[1]);
+            panic!("{:?}", step.events[2]);
         };
         // the hidden model is left out, as Codex's own picker leaves it out
         assert_eq!(
@@ -670,6 +749,68 @@ mod tests {
         );
     }
 
+    /// A session whose thread started as `thread` says (its approval policy and sandbox).
+    fn started_as(thread: &str, mode: Option<&str>) -> (Codex, Step) {
+        let mut c = Codex::new(None, None, mode.map(str::to_string));
+        c.start("/w");
+        c.read(line(r#"{"id":1,"result":{}}"#));
+        c.read(line(
+            r#"{"id":2,"result":{"account":null,"requiresOpenaiAuth":false}}"#,
+        ));
+        let step = c.read(line(thread));
+        c.read(line(LIST));
+        (c, step)
+    }
+
+    /// `thread/start` as P7 gave it in a trusted folder, cut to the fields that matter, with
+    /// network access on.
+    const TRUSTED: &str = r#"{"id":3,"result":{"thread":{"id":"th-1"},"model":"gpt","approvalPolicy":"on-request","sandbox":{"type":"workspaceWrite","writableRoots":[],"networkAccess":true,"excludeTmpdirEnvVar":false,"excludeSlashTmp":false}}}"#;
+
+    #[test]
+    fn a_permission_mode_goes_with_each_turn_after() {
+        let (mut c, step) = started_as(TRUSTED, None);
+        let Some(ChatEvent::Modes { modes, mode, .. }) = step
+            .events
+            .iter()
+            .find(|e| matches!(e, ChatEvent::Modes { .. }))
+        else {
+            panic!("{:?}", step.events);
+        };
+        assert_eq!(
+            modes.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["auto", "read-only"]
+        );
+        assert_eq!(mode.as_deref(), Some("auto"));
+        // nothing chosen: the thread's own
+        assert!(turn(&mut c, "a").get("sandboxPolicy").is_none());
+        assert!(c.set_mode("full-access").is_err());
+        let chosen = c.set_mode("read-only").unwrap();
+        assert!(chosen.write.is_empty()); // it goes with the next turn
+        let params = turn(&mut c, "b");
+        assert_eq!(params["approvalPolicy"], "on-request");
+        assert_eq!(
+            params["sandboxPolicy"],
+            json!({"type": "readOnly", "networkAccess": false})
+        );
+        // back to Auto: the thread's own workspace sandbox, network access and all
+        c.set_mode("auto").unwrap();
+        let params = turn(&mut c, "c");
+        assert_eq!(params["sandboxPolicy"]["type"], "workspaceWrite");
+        assert_eq!(params["sandboxPolicy"]["networkAccess"], true);
+    }
+
+    #[test]
+    fn a_thread_in_a_mode_not_offered_says_which_and_a_mode_from_before_is_used() {
+        let full = r#"{"id":3,"result":{"thread":{"id":"th-1"},"approvalPolicy":"never","sandbox":{"type":"dangerFullAccess"}}}"#;
+        let (_, step) = started_as(full, None);
+        assert!(step.events.iter().any(|e| matches!(e,
+            ChatEvent::Modes { mode: None, current: Some(c), .. } if c == "never, dangerFullAccess")));
+        let (mut c, _) = started_as(TRUSTED, Some("read-only"));
+        assert_eq!(turn(&mut c, "x")["sandboxPolicy"]["type"], "readOnly");
+        let (mut c, _) = started_as(TRUSTED, Some("full-access"));
+        assert!(turn(&mut c, "x").get("sandboxPolicy").is_none());
+    }
+
     #[test]
     fn a_choice_from_before_is_used_if_offered_and_waits_for_the_list() {
         let mut c = Codex::new(
@@ -678,6 +819,7 @@ mod tests {
                 model: "gpt-mini".into(),
                 effort: None,
             }),
+            None,
         );
         c.start("/w");
         c.read(line(r#"{"id":1,"result":{}}"#));
@@ -698,6 +840,7 @@ mod tests {
                 model: "gpt-old".into(),
                 effort: None,
             }),
+            None,
         );
         gone.start("/w");
         gone.read(line(r#"{"id":1,"result":{}}"#));
@@ -714,7 +857,7 @@ mod tests {
 
     #[test]
     fn a_thread_is_resumed_by_its_id_or_a_new_one_starts() {
-        let mut c = Codex::new(Some("th-7"), None);
+        let mut c = Codex::new(Some("th-7"), None, None);
         let mut all = c.start("/work");
         for l in [
             r#"{"id":1,"result":{}}"#,
@@ -731,13 +874,14 @@ mod tests {
                 "params": {"threadId": "th-7", "cwd": "/work", "excludeTurns": true}})
         );
         assert_eq!(
-            all.events,
-            vec![
+            all.events[..2],
+            [
                 ChatEvent::Resumed { ok: true },
                 ChatEvent::Conversation { id: "th-7".into() }
             ]
         );
-        let mut gone = Codex::new(Some("th-gone"), None);
+        assert!(matches!(all.events[2], ChatEvent::Modes { .. }));
+        let mut gone = Codex::new(Some("th-gone"), None, None);
         gone.start("/w");
         gone.read(line(r#"{"id":1,"result":{}}"#));
         gone.read(line(

@@ -3,13 +3,13 @@
 // things happened: its reasoning (folded), its words (Markdown), its tool steps (each opens to
 // what it was given and what came back), and any approval it asks for. Model and tool text is
 // untrusted: it is only ever set as text, and Markdown is built as elements, never as HTML.
-// Under the message box, the model and effort: the CLI's own list, chosen from for the next
-// message on.
+// Under the message box, the model, effort and permission mode: the CLI's own lists (only the
+// modes that still ask before some tools), chosen from for the next message on.
 
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { button, el, plain } from "./dom";
 import { markdown } from "./markdown";
-import type { ChatEvent, Choice, Cli, Model, Report, ToolStatus } from "./types";
+import type { ChatEvent, Choice, Cli, Mode, Model, Report, ToolStatus } from "./types";
 
 const STATUS_TEXT: Record<ToolStatus, string> = {
   running: "running",
@@ -31,10 +31,15 @@ export type ChatHooks = {
   startOver: () => void;
   /** A model and effort were chosen: the session starts with them again, as new chats do. */
   chose: (choice: Choice) => void;
+  /** A permission mode was chosen: the same. After a refusal, the mode still in use (null:
+   * one not offered, so none is remembered). */
+  choseMode: (mode: string | null) => void;
 };
 
 /** What the CLI said of its models, last. */
 type Models = Extract<ChatEvent, { kind: "models" }>;
+/** What the CLI said of its permission modes, last. */
+type Modes = Extract<ChatEvent, { kind: "modes" }>;
 
 /** One reply: the agent's part of a turn. */
 type Reply = {
@@ -78,7 +83,12 @@ export class ChatPane {
   private markExited: () => void = () => undefined;
   private readonly modelSelect: HTMLSelectElement;
   private readonly effortSelect: HTMLSelectElement;
+  private readonly modeSelect: HTMLSelectElement;
   private readonly picker: HTMLElement;
+  private modes: Modes | null = null;
+  private wantedMode: string | null = null;
+  /** A mode was refused: the one the CLI says it is still in is what to remember. */
+  private refusedMode = false;
   private models: Models | null = null;
   /** Asked for as this process started: said if the CLI does not offer it. */
   private wanted: Choice | null = null;
@@ -128,15 +138,24 @@ export class ChatPane {
     this.modelSelect.setAttribute("aria-label", "Model");
     this.effortSelect = el("select", "pick-effort");
     this.effortSelect.setAttribute("aria-label", "Reasoning effort");
+    this.modeSelect = el("select", "pick-mode");
+    this.modeSelect.setAttribute("aria-label", "Permission mode");
     this.modelSelect.addEventListener("change", () => void this.choose(true));
     this.effortSelect.addEventListener("change", () => void this.choose(false));
+    this.modeSelect.addEventListener("change", () => void this.chooseMode());
     this.picker = el("div", "picker");
     this.picker.hidden = true;
-    const effortLabel = el("label", "pick");
-    effortLabel.append(el("span", "muted", "Effort"), this.effortSelect);
-    const modelLabel = el("label", "pick");
-    modelLabel.append(el("span", "muted", "Model"), this.modelSelect);
-    this.picker.append(modelLabel, effortLabel);
+    const label = (text: string, select: HTMLSelectElement) => {
+      const l = el("label", "pick");
+      l.append(el("span", "muted", text), select);
+      l.hidden = true;
+      return l;
+    };
+    this.picker.append(
+      label("Model", this.modelSelect),
+      label("Effort", this.effortSelect),
+      label("Mode", this.modeSelect),
+    );
     const foot = el("div", "composer-foot");
     foot.append(this.picker, hint);
     composer.append(row, foot);
@@ -149,9 +168,15 @@ export class ChatPane {
   }
 
   /** Start the CLI's session: a new conversation, or `resume`, by the CLI's own id, on the
-   * model and effort `choice` if the CLI offers them. What is already in the window stays;
-   * `divider`, if given, marks where this part begins. */
-  async start(folder: string, resume: string | null = null, divider = "", choice: Choice | null = null): Promise<void> {
+   * model and effort `choice` and the permission mode `mode` if the chat offers them. What is
+   * already in the window stays; `divider`, if given, marks where this part begins. */
+  async start(
+    folder: string,
+    resume: string | null = null,
+    divider = "",
+    choice: Choice | null = null,
+    mode: string | null = null,
+  ): Promise<void> {
     this.id = null;
     this.generation += 1;
     this.ended = false;
@@ -160,7 +185,10 @@ export class ChatPane {
     this.sentAny = false;
     this.signInShown = false;
     this.wanted = choice;
-    this.models = null; // a new process: its own list, when it says
+    this.wantedMode = mode;
+    this.refusedMode = false;
+    this.models = null; // a new process: its own lists, when it says
+    this.modes = null;
     this.exited = new Promise((done) => (this.markExited = done));
     if (divider) this.feed.append(el("div", "divider", divider));
     const events = new Channel<ChatEvent>();
@@ -174,6 +202,7 @@ export class ChatPane {
         resume,
         model: choice?.model ?? null,
         effort: choice?.effort ?? null,
+        mode,
         events,
       });
       if (!this.ended) this.hooks.changed("running", "recording");
@@ -253,18 +282,101 @@ export class ChatPane {
     this.sendButton.disabled = !this.running;
     this.input.disabled = !this.running;
     // a choice is for the next message: not while a turn runs
-    const fixed = !this.running || this.busy || this.choosing || !this.models;
-    this.modelSelect.disabled = fixed;
-    this.effortSelect.disabled = fixed;
+    const fixed = !this.running || this.busy || this.choosing;
+    this.modelSelect.disabled = fixed || !this.models;
+    this.effortSelect.disabled = fixed || !this.models;
+    this.modeSelect.disabled = fixed || !this.modes;
     this.picker.title = this.busy ? "Choose when this turn is done" : "";
   }
 
-  // -- the model and effort ---------------------------------------------------------------
+  // -- the model, effort and permission mode ----------------------------------------------
+
+  private showPicker(): void {
+    const show = (select: HTMLSelectElement, on: boolean) => ((select.parentElement as HTMLElement).hidden = !on);
+    show(this.modelSelect, Boolean(this.models?.models.length));
+    show(this.modeSelect, Boolean(this.modes?.modes.length));
+    this.picker.hidden = !this.models?.models.length && !this.modes?.modes.length;
+  }
+
+  /** "Your next messages go to …", for a change just made: one line, changed again while it
+   * is the last thing in the conversation. */
+  private noteChoice(model: Model | undefined, effort: string | null, mode: Mode | undefined): void {
+    const name = model?.name ?? this.models?.current ?? null;
+    const effortText = model?.efforts.length ? `, with ${effort ?? "its default"} effort` : "";
+    const text = name
+      ? `Your next messages go to ${name}${effortText}${mode ? `, in ${mode.name} mode` : ""}.`
+      : `Your next messages are in ${mode?.name ?? "the CLI's own"} mode.`;
+    if (this.choiceNote && this.feed.lastElementChild === this.choiceNote) this.choiceNote.textContent = text;
+    else {
+      this.choiceNote = el("div", "line note", text);
+      this.feed.append(this.choiceNote);
+    }
+  }
+
+  private mode(id: string | null): Mode | undefined {
+    return this.modes?.modes.find((x) => x.id === id);
+  }
+
+  /** The permission modes offered and the one in use, as the select shows them. */
+  private showModes(m: Modes): void {
+    this.modes = m;
+    if (this.refusedMode) {
+      this.refusedMode = false;
+      this.hooks.choseMode(m.mode);
+    }
+    if (this.wantedMode) {
+      if (m.mode !== this.wantedMode) {
+        this.note(`${this.cli.label} does not offer the ${this.wantedMode} mode here, so it stays in its own.`, "note");
+      }
+      this.wantedMode = null;
+    }
+    const select = this.modeSelect;
+    select.replaceChildren();
+    if (m.mode === null) {
+      // a mode not offered (its own setting): shown, not chosen again
+      const own = el("option", undefined, m.current ? `${m.current} (current)` : "Current mode");
+      own.value = "";
+      own.disabled = true;
+      own.title = `${this.cli.label}'s own setting`;
+      select.append(own);
+    }
+    for (const mode of m.modes) {
+      const option = el("option", undefined, mode.name);
+      option.value = mode.id;
+      option.title = mode.description;
+      select.append(option);
+    }
+    select.value = m.mode ?? "";
+    select.title = this.mode(m.mode)?.description ?? "";
+    this.showPicker();
+    this.update();
+  }
+
+  /** The user chose a permission mode: it applies from the next message. */
+  private async chooseMode(): Promise<void> {
+    const m = this.modes;
+    if (!m || !this.running || this.busy) return;
+    const mode = this.mode(this.modeSelect.value);
+    if (!mode) return;
+    this.choosing = true;
+    this.update();
+    try {
+      await invoke("chat_mode", { id: this.id, mode: mode.id });
+      this.noteChoice(this.model(this.models?.model ?? null), this.models?.effort ?? null, mode);
+      this.hooks.choseMode(mode.id);
+    } catch (e) {
+      this.note(plain(e), "error");
+      this.showModes(m); // back to what is in use
+    } finally {
+      this.choosing = false;
+      this.update();
+      this.scroll(true);
+    }
+  }
 
   /** The CLI's models and what is in use, as the selects show them. */
   private showModels(m: Models): void {
     this.models = m;
-    this.picker.hidden = m.models.length === 0;
     if (this.wanted) {
       if (m.model !== this.wanted.model) {
         const was = this.wanted.effort ? `${this.wanted.model} with ${this.wanted.effort} effort` : this.wanted.model;
@@ -292,6 +404,7 @@ export class ChatPane {
     const chosen = this.model(m.model);
     models.title = chosen?.description ?? "";
     this.showEfforts(chosen, m.effort);
+    this.showPicker();
     this.update();
   }
 
@@ -330,13 +443,7 @@ export class ChatPane {
     this.update();
     try {
       await invoke("chat_choose", { id: this.id, model: choice.model, effort: choice.effort });
-      const effortText = model.efforts.length ? `, with ${effort ?? "its default"} effort` : "";
-      const text = `Your next messages go to ${model.name}${effortText}.`;
-      if (this.choiceNote && this.feed.lastElementChild === this.choiceNote) this.choiceNote.textContent = text;
-      else {
-        this.choiceNote = el("div", "line note", text);
-        this.feed.append(this.choiceNote);
-      }
+      this.noteChoice(model, effort, this.mode(this.modes?.mode ?? null));
       this.hooks.chose(choice);
     } catch (e) {
       this.note(plain(e), "error");
@@ -497,6 +604,17 @@ export class ChatPane {
         break;
       case "models":
         this.showModels(event);
+        break;
+      case "modes":
+        this.showModes(event);
+        break;
+      case "notice":
+        // a mode refused: the line that announced it, if nothing came after, goes, and it is
+        // not remembered for the next chat
+        if (this.choiceNote && this.feed.lastElementChild === this.choiceNote) this.choiceNote.remove();
+        this.choiceNote = null;
+        this.refusedMode = true;
+        this.note(event.text, "error");
         break;
       case "log":
         this.logLine(event.text);

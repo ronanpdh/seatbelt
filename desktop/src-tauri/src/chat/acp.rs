@@ -8,8 +8,8 @@ use std::collections::{HashMap, HashSet};
 use serde_json::{json, Value};
 
 use super::protocol::{
-    about_sign_in, checked, cut, shown, str_of, ChatEvent, Choice, Driver, Model, Models, Step,
-    ToolStatus, MAX_TOOL_TEXT,
+    about_sign_in, checked, cut, shown, str_of, ChatEvent, Choice, Driver, Mode, Model, Models,
+    Modes, Step, ToolStatus, MAX_TOOL_TEXT,
 };
 
 /// A permission request: its JSON-RPC id, the agent's options, and the tool call's id.
@@ -41,6 +41,47 @@ pub struct Acp {
     resume: Option<String>,
     loading: bool,
     models: Models,
+    modes: Modes,
+    /// `session/set_mode` requests in flight, by id: the mode before, to go back to if refused.
+    mode_before: HashMap<u64, Option<String>>,
+}
+
+/// The permission modes Gemini CLI lists that the chat offers: not `yolo`, which approves
+/// every tool, nor any mode added later until it has been looked at.
+const MODES: [&str; 3] = ["default", "autoEdit", "plan"];
+
+/// The mode a chunk of the agent's text says it changed to: Gemini CLI 0.63.0 says a change
+/// of permission mode, its own or one asked for, as a message chunk of exactly
+/// `[MODE_UPDATE] <mode>` (its `handleApprovalModeChanged`).
+fn mode_update(text: &str) -> Option<&str> {
+    let mode = text.strip_prefix("[MODE_UPDATE] ")?;
+    (!mode.is_empty() && mode.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+        .then_some(mode)
+}
+
+/// The session's permission modes, from its `session/new` or `session/load` result, as it
+/// names and describes them, and the one it is in.
+fn modes_of(result: &Value) -> (Vec<Mode>, &str) {
+    let list = result
+        .pointer("/modes/availableModes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|m| MODES.contains(&str_of(m, "id")))
+        .map(|m| {
+            let id = str_of(m, "id");
+            let name = match str_of(m, "name") {
+                "" => id,
+                name => name,
+            };
+            Mode::new(id, name, str_of(m, "description"))
+        })
+        .collect();
+    let current = result
+        .pointer("/modes/currentModeId")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    (list, current)
 }
 
 /// The models a session offers, from its `session/new` or `session/load` result, and the one
@@ -125,13 +166,25 @@ fn tool_content(content: Option<&Value>) -> String {
 
 impl Acp {
     /// A session that loads session `resume` (already checked as a plain id), if any, on the
-    /// model `choice`, if it is one Gemini CLI offers.
-    pub fn new(resume: Option<&str>, choice: Option<Choice>) -> Self {
+    /// model `choice` and the permission mode `mode`, if they are offered.
+    pub fn new(resume: Option<&str>, choice: Option<Choice>, mode: Option<String>) -> Self {
         Self {
             resume: resume.map(str::to_string),
             models: Models::wanting(choice),
+            modes: Modes::wanting(mode),
             ..Self::default()
         }
+    }
+
+    /// Set permission mode `mode`; the window shows it at once, and goes back if refused.
+    fn set_mode_line(&mut self, session: &str, mode: &str) -> Value {
+        let before = self.modes.current.replace(mode.to_string());
+        let line = self.request(
+            "session/set_mode",
+            json!({"sessionId": session, "modeId": mode}),
+        );
+        self.mode_before.insert(self.next_id, before);
+        line
     }
 
     fn set_model(&mut self, session: &str, model: &str) -> Value {
@@ -154,6 +207,15 @@ impl Acp {
         }
         if !self.models.list.is_empty() {
             step.show(self.models.event());
+        }
+        let (list, current) = modes_of(result);
+        self.modes.using(current);
+        if let Some(mode) = self.modes.listed(list, step) {
+            let line = self.set_mode_line(session, &mode);
+            step.send(line);
+        }
+        if !self.modes.list.is_empty() {
+            step.show(self.modes.event());
         }
     }
 
@@ -188,21 +250,20 @@ impl Acp {
     }
 
     fn response(&mut self, line: &Value, step: &mut Step) {
-        let Some(method) = line
-            .get("id")
-            .and_then(Value::as_u64)
-            .and_then(|id| self.pending.remove(&id))
-        else {
+        let id = line.get("id").and_then(Value::as_u64);
+        let Some(method) = id.and_then(|id| self.pending.remove(&id)) else {
             return;
         };
+        let before = id.and_then(|id| self.mode_before.remove(&id));
         if let Some(error) = line.get("error") {
             let mut message = str_of(error, "message").to_string();
             if let Some(data) = error.get("data").filter(|d| !d.is_null()) {
-                message = format!(
-                    "{message}: {}",
-                    data.as_str()
-                        .map_or_else(|| data.to_string(), str::to_string)
-                );
+                // Gemini CLI puts the reason in `details` (P8): that, rather than the JSON
+                let said = data
+                    .as_str()
+                    .or_else(|| data.get("details").and_then(Value::as_str))
+                    .map_or_else(|| data.to_string(), str::to_string);
+                message = format!("{message}: {said}");
             }
             let message = cut(&message, 2000);
             if method == "session/load" {
@@ -214,6 +275,16 @@ impl Acp {
                 step.show(ChatEvent::Resumed { ok: false });
                 let new = self.session_new();
                 step.send(new);
+                return;
+            }
+            if let Some(before) = before {
+                // refused (Gemini CLI refuses Auto Edit in a folder it does not trust): the
+                // window shows the mode it is still in, and says why
+                self.modes.current = before;
+                step.show(ChatEvent::Notice {
+                    text: format!("Gemini CLI did not change the permission mode: {message}"),
+                });
+                step.show(self.modes.event());
                 return;
             }
             if method == "session/set_model" {
@@ -318,6 +389,21 @@ impl Acp {
                     });
                 }
             }
+            "agent_message_chunk"
+                if update
+                    .pointer("/content/text")
+                    .and_then(Value::as_str)
+                    .and_then(mode_update)
+                    .is_some() =>
+            {
+                // a change of mode, not words for the chat
+                let text = update.pointer("/content/text").and_then(Value::as_str);
+                if let Some(mode) = text.and_then(mode_update) {
+                    if self.modes.using(mode) {
+                        step.show(self.modes.event());
+                    }
+                }
+            }
             "agent_message_chunk" => {
                 self.thought = None;
                 let text = update.pointer("/content/text").and_then(Value::as_str);
@@ -375,7 +461,10 @@ impl Acp {
                     });
                 }
             }
-            _ => {} // plans, commands and modes: not shown
+            "current_mode_update" if self.modes.using(str_of(&update, "currentModeId")) => {
+                step.show(self.modes.event());
+            }
+            _ => {} // plans and commands: not shown
         }
     }
 
@@ -522,6 +611,16 @@ impl Driver for Acp {
         step.send(line);
         self.models.chosen = Some(choice);
         step.show(self.models.event());
+        Ok(step)
+    }
+
+    fn set_mode(&mut self, mode: &str) -> Result<Step, String> {
+        self.modes.offered(mode)?;
+        let session = self.session.clone().ok_or("the session has not started")?;
+        let mut step = Step::default();
+        let line = self.set_mode_line(&session, mode);
+        step.send(line);
+        step.show(self.modes.event());
         Ok(step)
     }
 }
@@ -721,7 +820,7 @@ mod tests {
 
     #[test]
     fn a_session_is_loaded_without_its_replayed_history_or_a_new_one_starts() {
-        let mut a = Acp::new(Some("s-9"), None);
+        let mut a = Acp::new(Some("s-9"), None, None);
         a.start("/w");
         let load = a.read(line(r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}}"#));
         assert_eq!(
@@ -742,7 +841,7 @@ mod tests {
         let after = a.read(line(r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"new"}}}}"#));
         assert_eq!(after.events.len(), 1);
 
-        let mut b = Acp::new(Some("s-9"), None);
+        let mut b = Acp::new(Some("s-9"), None, None);
         b.start("/w");
         b.read(line(r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}}"#));
         let failed = b.read(line(
@@ -751,7 +850,7 @@ mod tests {
         assert!(failed.events.contains(&ChatEvent::Resumed { ok: false }));
         assert_eq!(failed.write[0]["method"], "session/new");
 
-        let mut c = Acp::new(Some("s-9"), None);
+        let mut c = Acp::new(Some("s-9"), None, None);
         c.start("/w");
         let unsupported = c.read(line(
             r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#,
@@ -762,7 +861,10 @@ mod tests {
 
     /// `session/new` as Gemini CLI 0.63.0 answered it, cut to the fields that matter.
     const NEW: &str = r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s-1",
-        "modes":{"availableModes":[{"id":"default","name":"Default"}],"currentModeId":"default"},
+        "modes":{"availableModes":[{"id":"default","name":"Default","description":"Prompts for approval"},
+            {"id":"autoEdit","name":"Auto Edit","description":"Auto-approves edit tools"},
+            {"id":"yolo","name":"YOLO","description":"Auto-approves all tools"},
+            {"id":"plan","name":"Plan","description":"Read-only mode"}],"currentModeId":"default"},
         "models":{"availableModels":[{"modelId":"auto","name":"Auto","description":"Let Gemini CLI decide"},
             {"modelId":"gemini-2.5-pro","name":"gemini-2.5-pro"}],"currentModelId":"auto"}}}"#;
 
@@ -824,7 +926,7 @@ mod tests {
 
     #[test]
     fn a_choice_from_before_is_set_before_the_first_prompt() {
-        let mut a = Acp::new(None, Some(pick("gemini-2.5-pro")));
+        let mut a = Acp::new(None, Some(pick("gemini-2.5-pro")), None);
         a.start("/w");
         a.read(line(
             r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#,
@@ -839,14 +941,14 @@ mod tests {
             ["session/set_model", "session/prompt"]
         );
         // what it already uses is not set again
-        let mut same = Acp::new(None, Some(pick("auto")));
+        let mut same = Acp::new(None, Some(pick("auto")), None);
         same.start("/w");
         same.read(line(
             r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#,
         ));
         assert!(same.read(line(NEW)).write.is_empty());
         // one it no longer offers is left out, and the log says so
-        let mut gone = Acp::new(None, Some(pick("gemini-1.0")));
+        let mut gone = Acp::new(None, Some(pick("gemini-1.0")), None);
         gone.start("/w");
         gone.read(line(
             r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#,
@@ -861,6 +963,78 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["session/prompt"]
         );
+    }
+
+    #[test]
+    fn a_permission_mode_is_set_on_the_session_and_a_refusal_said() {
+        let mut a = Acp::default();
+        a.start("/w");
+        a.read(line(
+            r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#,
+        ));
+        let new = a.read(line(NEW));
+        let Some(ChatEvent::Modes { modes, mode, .. }) = new
+            .events
+            .iter()
+            .find(|e| matches!(e, ChatEvent::Modes { .. }))
+        else {
+            panic!("{:?}", new.events);
+        };
+        // YOLO approves every tool: not offered
+        assert_eq!(
+            modes.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+            ["Default", "Auto Edit", "Plan"]
+        );
+        assert_eq!(modes[1].description, "Auto-approves edit tools");
+        assert_eq!(mode.as_deref(), Some("default"));
+        assert!(a.set_mode("yolo").is_err());
+        let set = a.set_mode("autoEdit").unwrap();
+        assert_eq!(
+            set.write,
+            vec![
+                json!({"jsonrpc": "2.0", "id": 3, "method": "session/set_mode",
+                "params": {"sessionId": "s-1", "modeId": "autoEdit"}})
+            ]
+        );
+        let refused = a.read(line(r#"{"jsonrpc":"2.0","id":3,"error":{"code":-32603,"message":"Internal error","data":{"details":"Cannot enable privileged approval modes in an untrusted folder."}}}"#));
+        assert!(
+            matches!(&refused.events[0], ChatEvent::Notice { text } if text.ends_with("Internal error: Cannot enable privileged approval modes in an untrusted folder."))
+        );
+        assert!(
+            matches!(&refused.events[1], ChatEvent::Modes { mode: Some(m), .. } if m == "default")
+        );
+        // Gemini CLI says a change as a chunk of text: the chat shows the mode, not the text
+        let said = a.read(line(r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"[MODE_UPDATE] autoEdit"}}}}"#));
+        assert!(
+            matches!(&said.events[..], [ChatEvent::Modes { mode: Some(m), .. }] if m == "autoEdit")
+        );
+        let words = a.read(line(r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"[MODE_UPDATE] is a tag"}}}}"#));
+        assert!(matches!(&words.events[..], [ChatEvent::Text { .. }]));
+        let moved = a.read(line(r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"current_mode_update","currentModeId":"plan"}}}"#));
+        assert!(
+            matches!(&moved.events[..], [ChatEvent::Modes { mode: Some(m), .. }] if m == "plan")
+        );
+        // a mode from before is set ahead of the first prompt; YOLO never is
+        let mut b = Acp::new(None, None, Some("plan".into()));
+        b.start("/w");
+        b.read(line(
+            r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#,
+        ));
+        b.send("hi").unwrap();
+        let step = b.read(line(NEW));
+        assert_eq!(
+            step.write
+                .iter()
+                .map(|l| l["method"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["session/set_mode", "session/prompt"]
+        );
+        let mut y = Acp::new(None, None, Some("yolo".into()));
+        y.start("/w");
+        y.read(line(
+            r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#,
+        ));
+        assert!(y.read(line(NEW)).write.is_empty());
     }
 
     #[test]

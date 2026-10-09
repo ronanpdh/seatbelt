@@ -195,8 +195,8 @@ fn open_tab(
     state.tabs.open(launch, events)
 }
 
-/// Start a chat: the CLI's headless session, through `seatbelt run`, on `model` and `effort`
-/// if the CLI offers them.
+/// Start a chat: the CLI's headless session, through `seatbelt run`, on `model`, `effort` and
+/// permission mode `mode` if the chat offers them.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // a command's arguments are what the web view names
 fn open_chat(
@@ -207,6 +207,7 @@ fn open_chat(
     resume: Option<String>,
     model: Option<String>,
     effort: Option<String>,
+    mode: Option<String>,
     events: Channel<ChatEvent>,
 ) -> Result<u32, String> {
     let start = prepare(&app, &state, &cli, cwd)?;
@@ -219,6 +220,7 @@ fn open_chat(
         report: start.report,
         resume: resume.as_deref(),
         choice: model.map(|model| Choice { model, effort }),
+        mode,
     };
     state.chats.open(launch, events)
 }
@@ -247,6 +249,12 @@ fn chat_choose(
     effort: Option<String>,
 ) -> Result<(), String> {
     state.chats.choose(id, Choice { model, effort })
+}
+
+/// Use permission mode `mode` from the chat's next message on, if it is one the chat offers.
+#[tauri::command]
+fn chat_mode(state: State<'_, AppState>, id: u32, mode: String) -> Result<(), String> {
+    state.chats.set_mode(id, &mode)
 }
 
 #[tauri::command]
@@ -408,6 +416,7 @@ pub fn run() {
             chat_send,
             chat_answer,
             chat_choose,
+            chat_mode,
             chat_interrupt,
             close_chat,
             list_runs,

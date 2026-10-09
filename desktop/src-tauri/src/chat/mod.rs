@@ -1,8 +1,8 @@
 //! Chats: each is `seatbelt run --exe <path> <cli> -- <headless arguments>` with pipes instead
 //! of a terminal, so it is recorded exactly as a terminal session is. seatbelt says its own
 //! lines on stderr; stdout carries only the CLI's protocol, which a driver turns into chat
-//! events. The window can send a message, answer an approval, choose a model the CLI offers,
-//! interrupt, or end the chat; it never writes to the CLI itself.
+//! events. The window can send a message, answer an approval, choose a model or a permission
+//! mode the chat offers, interrupt, or end the chat; it never writes to the CLI itself.
 
 mod acp;
 mod claude;
@@ -32,12 +32,17 @@ const EOF_WAIT: Duration = Duration::from_secs(3);
 const MAX_LINE: usize = 32 * 1024 * 1024;
 
 /// The driver for `cli`, resuming conversation `resume` (a plain id: see `conversation_id`),
-/// on the model and effort `choice` if the CLI offers it.
-fn driver(cli: &str, resume: Option<&str>, choice: Option<Choice>) -> Option<Box<dyn Driver>> {
+/// on the model and effort `choice` and the permission mode `mode`, if the CLI offers them.
+fn driver(
+    cli: &str,
+    resume: Option<&str>,
+    choice: Option<Choice>,
+    mode: Option<String>,
+) -> Option<Box<dyn Driver>> {
     match cli {
-        "claude" => Some(Box::new(claude::Claude::new(resume, choice))),
-        "codex" => Some(Box::new(codex::Codex::new(resume, choice))),
-        "gemini" => Some(Box::new(acp::Acp::new(resume, choice))),
+        "claude" => Some(Box::new(claude::Claude::new(resume, choice, mode))),
+        "codex" => Some(Box::new(codex::Codex::new(resume, choice, mode))),
+        "gemini" => Some(Box::new(acp::Acp::new(resume, choice, mode))),
         _ => None,
     }
 }
@@ -54,6 +59,8 @@ pub struct Launch<'a> {
     pub resume: Option<&'a str>,
     /// The model and effort to use, if the CLI offers them; else its own setting.
     pub choice: Option<Choice>,
+    /// The permission mode to use, if it is one offered; else the CLI's own.
+    pub mode: Option<String>,
 }
 
 struct Session {
@@ -107,7 +114,8 @@ impl Chats {
             Some(id) => Some(protocol::conversation_id(id).ok_or("not a conversation id")?),
             None => None,
         };
-        let mut driver = driver(launch.cli, resume, launch.choice).ok_or("no chat for that CLI")?;
+        let mut driver =
+            driver(launch.cli, resume, launch.choice, launch.mode).ok_or("no chat for that CLI")?;
         let mut child = Command::new(launch.seatbelt)
             .arg("run")
             .arg("--exe")
@@ -193,6 +201,14 @@ impl Chats {
         let session = self.session(id)?;
         let mut session = lock(&session);
         let step = session.driver.choose(choice)?;
+        session.apply(step);
+        Ok(())
+    }
+
+    pub fn set_mode(&self, id: u32, mode: &str) -> Result<(), String> {
+        let session = self.session(id)?;
+        let mut session = lock(&session);
+        let step = session.driver.set_mode(mode)?;
         session.apply(step);
         Ok(())
     }
@@ -435,6 +451,7 @@ printf '{{"run": "claude-1", "recorded": true}}' > "$SEATBELT_RUN_REPORT"
                     report: dir.join("report.json"),
                     resume: None,
                     choice: None,
+                    mode: None,
                 },
                 events,
             )

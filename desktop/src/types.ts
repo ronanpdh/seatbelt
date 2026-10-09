@@ -27,6 +27,9 @@ export type Model = {
   default_effort: string | null;
 };
 
+/** A permission mode a chat offers: only those that still ask before some tool uses. */
+export type Mode = { id: string; name: string; description: string };
+
 /** A model, and an effort (null: the model's own default), by the CLI's own ids. */
 export type Choice = { model: string; effort: string | null };
 
@@ -44,6 +47,8 @@ export type ChatEvent =
   | { kind: "conversation"; id: string }
   | { kind: "resumed"; ok: boolean }
   | { kind: "models"; models: Model[]; model: string | null; effort: string | null; current: string | null }
+  | { kind: "modes"; modes: Mode[]; mode: string | null; current: string | null }
+  | { kind: "notice"; text: string }
   | { kind: "log"; text: string }
   | { kind: "exit"; code: number | null; report: Report | null };
 
