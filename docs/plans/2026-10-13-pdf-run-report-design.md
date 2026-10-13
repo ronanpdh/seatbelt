@@ -86,8 +86,9 @@
 | D10 | The desktop app under Xvfb, as for the desktop design's L checks, with a stand-in `xdg-open` that logs what it is given: a run's view, "Open as PDF"; then the same with `seatbelt` installed without the extra | the button showed "Making the PDF…", then the stand-in was given `<runs folder>/<run id>.pdf`, mode 0600, 22 pages, attested, with the denied Bash call's result in full. Without the extra, nothing was opened and the view showed "seatbelt made no PDF: a PDF needs the pdf extra: …" |
 | D11 | `uv tree --invert --package brotli`; `httpx2.AsyncClient().headers` | brotli comes from `fonttools[woff]`, through WeasyPrint; httpx2's default `Accept-Encoding` is then `gzip, deflate, br` |
 | D12 | `cargo test`, clippy (`-D warnings`), `tsc` | 60 tests pass, adding a run's PDF found by its id and what seatbelt printed, on one line; clippy and tsc clean |
-| D13 | On the maintainer's Mac, "Open as PDF" with Homebrew's WeasyPrint installed; then, here, how the libraries are found | the app showed "WeasyPrint cannot load a library it needs (cannot load library 'libgobject-2.0-0' …)": dyld had looked in `~/lib`, `/usr/local/lib` and `/usr/lib`, not `/opt/homebrew/lib`. In WeasyPrint 70.0, `gobject` is tried as `gobject-2.0` among other names; cffi tries such a name with `dlopen`, then with `ctypes.util.find_library`, which on macOS tries `lib<name>.dylib` through `dyld_find`, which reads `DYLD_FALLBACK_LIBRARY_PATH` from `os.environ` when called and uses macOS's own fallback only when it is unset. The fix's rule is unit-tested; it has not been run on a Mac yet |
+| D13 | On the maintainer's Mac, "Open as PDF" with Homebrew's WeasyPrint installed; then, here, how the libraries are found | the app showed "WeasyPrint cannot load a library it needs (cannot load library 'libgobject-2.0-0' …)": dyld had looked in `~/lib`, `/usr/local/lib` and `/usr/lib`, not `/opt/homebrew/lib`. In WeasyPrint 70.0, `gobject` is tried as `gobject-2.0` among other names; cffi tries such a name with `dlopen`, then with `ctypes.util.find_library`, which on macOS tries `lib<name>.dylib` through `dyld_find`, which reads `DYLD_FALLBACK_LIBRARY_PATH` from `os.environ` when called and uses macOS's own fallback only when it is unset. The fix's rule is unit-tested; on a Mac, see D15 |
 | D14 | After the second reader: a run id of 200,000 characters | 283 s before the run id was cut (the reader's measurement), 0.55 s after |
+| D15 | On the maintainer's Mac, after the fix: `seatbelt doctor`, then "Open as PDF" in the app | `seatbelt doctor` said "No such command 'doctor'": the installed `seatbelt` was older than the fix. Reinstalled from this branch (`uv tool install --force '.[pdf]'`), "Open as PDF" worked: "pdf works now on desktop" (the maintainer's report) |
 
 ## Rejected (ours)
 
@@ -102,7 +103,7 @@
 
 - A report over an evidence pack, which `docs/BUILD.md` lists as planned.
 - PDF/A and tagged (accessible) PDF: WeasyPrint has options for both, not tried.
-- Pango on Windows, and the macOS fix (D13) on a Mac: "Open as PDF" has been run only on Linux.
+- Pango on Windows. On macOS, "Open as PDF" has been run on the maintainer's Mac only (D15), with Homebrew's WeasyPrint.
 - Fonts: WeasyPrint uses the system's. A script with no installed font was not tried.
 - A time or memory limit on rendering, which WeasyPrint's security notes suggest. The length limits above are what bound it.
 - A PDF written elsewhere with `--out` is the user's own copy: `erase` does not know about it, as for the page.
@@ -127,5 +128,6 @@ All pages read 2026-10-13.
 | Design | the gateway drops the caller's `Accept-Encoding` and the upstream's `Content-Encoding` | `src/seatbelt/gateway/app.py` (`_STRIP_REQUEST`, with the comment "httpx2 decodes the body, so let it ask only for encodings it can decode"; `_STRIP_RESPONSE`) |
 | Design | the dependency-floors rule | `CHANGELOG.md` (0.5.2): "Dependency floors are the lowest releases the tests pass with, and never below the first release from which no later one has a known advisory." |
 | Checks | D1 to D12, D14 | run in this repository's development container on 2026-10-13. D7 uses the generator of the HTML design's C7 |
+| Checks | D15 | the maintainer's report from their Mac, 2026-10-13: "No such command 'doctor'", then "pdf works now on desktop" |
 | Checks | D13 | the maintainer's report from their Mac, 2026-10-13; CPython 3.12 `Lib/ctypes/macholib/dyld.py` (`dyld_env`: "if env is None: env = os.environ"; `dyld_default_search`; `DEFAULT_LIBRARY_FALLBACK`) and `Lib/ctypes/util.py` (darwin `find_library`); cffi's `api.py` (`_load_backend_lib`); WeasyPrint 70.0's `text/ffi.py` (`_dlopen` and the names it tries) |
 | Design | WeasyPrint's troubleshooting for macOS | https://doc.courtbouillon.org/weasyprint/stable/first_steps.html ("Troubleshooting"): "On macOS, you can set the `DYLD_FALLBACK_LIBRARY_PATH` environment variable" |
