@@ -133,7 +133,10 @@ def test_anthropic_round_trip_is_relayed_and_recorded(gw: Gateway) -> None:
     sent = gw.seen[0]
     assert sent.headers["x-api-key"].startswith("sk-ant-REAL") and "sbk_" not in str(sent.headers)
     assert sent.headers["anthropic-version"] == "2023-06-01"
-    assert "x-seatbelt-run" not in sent.headers and "br" not in sent.headers["accept-encoding"]
+    assert "x-seatbelt-run" not in sent.headers
+    # the client's accept-encoding is not passed on: httpx2 asks only for what it can decode,
+    # which is br too when brotli is installed (as the pdf extra's fonttools installs it)
+    assert sent.headers["accept-encoding"] == httpx2.AsyncClient().headers["accept-encoding"]
     assert json.loads(sent.content) == body
     kinds = [e.kind for e in gw.events()]
     assert kinds == [Kind.RUN_START, Kind.MODEL_REQUEST, Kind.MODEL_RESPONSE, Kind.TOOL_CALL]

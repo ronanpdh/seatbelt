@@ -29,7 +29,7 @@ from seatbelt.ledger.events import Event, Kind
 from seatbelt.ledger.store import LedgerError, read_events
 from seatbelt.locks import RUNNING, try_lock
 from seatbelt.record.recorder import Recorder
-from seatbelt.report import page_path
+from seatbelt.report import page_path, pdf_path
 
 SHIPPED = ".shipped"
 STATE = ".state.json"  # the importer's
@@ -63,6 +63,7 @@ class Target:
     object_keys: list[str]
     leftover: bool = False  # already named by an earlier, interrupted erasure
     page: Path | None = None  # its HTML page: a copy of what the ledger holds
+    pdf: Path | None = None  # its PDF, if one was made beside it: the same
 
 
 @dataclass
@@ -90,7 +91,7 @@ class Result:
     ledgers: int = 0
     sidecars: int = 0
     marks: int = 0
-    pages: int = 0
+    pages: int = 0  # HTML pages and PDFs
     state_entries: int = 0
     closed: list[str] = field(default_factory=list[str])  # interrupted records closed
     to_check: list[str] = field(default_factory=list[str])  # as in Plan: not removed
@@ -230,6 +231,7 @@ def _mark_hashes(mark: Path) -> set[str]:
 def _target(folder: Path, ledger: Path, digest: str, leftover: bool) -> Target:
     side = sidecar(ledger)
     page = page_path(ledger)
+    pdf = pdf_path(ledger)
     mark = folder / SHIPPED / ledger.stem
     keys: list[str] = []
     if mark.exists():
@@ -247,6 +249,7 @@ def _target(folder: Path, ledger: Path, digest: str, leftover: bool) -> Target:
         object_keys=keys,
         leftover=leftover,
         page=page if page.exists() else None,
+        pdf=pdf if pdf.exists() else None,
     )
 
 
@@ -345,9 +348,10 @@ def erase(
                 },
             )
         for t in p.targets:
-            if t.page is not None:  # first: if this is interrupted, the ledger finds it again
-                t.page.unlink(missing_ok=True)
-                result.pages += 1
+            for view in (t.page, t.pdf):  # first: if interrupted, the ledger finds them again
+                if view is not None:
+                    view.unlink(missing_ok=True)
+                    result.pages += 1
             t.ledger.unlink(missing_ok=True)
             result.ledgers += 1
             if t.sidecar is not None:

@@ -57,6 +57,10 @@ anthropic = [
 openai-agents = [
     "openai-agents>=0.19",
 ]
+# a run as a PDF (`seatbelt reconstruct --pdf`); WeasyPrint needs the Pango library installed
+pdf = [
+    "weasyprint>=70.0",
+]
 # kept so `seatbelt-ai[gateway]` still installs; its packages are now core dependencies
 gateway = [
     "anyio>=4.14.2",
@@ -91,6 +95,8 @@ dev = [
     "botocore>=1.43",  # oracle for the sink's SigV4 signing in tests; never shipped
     "botocore-stubs>=1.43.67",  # types for the test oracle
     "pyjwt>=2.15.0",
+    "weasyprint>=70.0",  # pdf extra: the PDF tests
+    "pypdf>=6.20.1",  # reads the PDFs the tests write; never shipped
 ]
 fuzz = [
     "atheris>=3.1",

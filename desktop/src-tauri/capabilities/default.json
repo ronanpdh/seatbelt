@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The main window: Tauri's core defaults and the app's own commands, nothing more. Pages open and folders are picked from the Rust side, so the web view gets no opener, dialog or shell permission.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

@@ -158,6 +158,51 @@ def test_a_local_run_writes_its_page_beside_the_ledger_and_says_where(
     assert shlex.split(line.removeprefix("page:")) == [str(page)]
 
 
+def test_a_local_run_reports_its_ledger_page_and_exit_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: Provider
+) -> None:
+    monkeypatch.setenv("SEATBELT_HOME", str(tmp_path / "home"))
+    report = tmp_path / "report.json"
+    monkeypatch.setenv("SEATBELT_RUN_REPORT", str(report))
+    run_cli("claude", ["-c", CLAUDE], config=_config(tmp_path, provider), exe=fake_claude(tmp_path))
+    (ledger,) = (tmp_path / "home" / "runs").glob("*.jsonl")
+    data = json.loads(report.read_text())
+    assert (data["recorded_by"], data["recorded"], data["exit"]) == ("local", True, 7)
+    assert data["ledgers"] == [str(ledger)] and data["pages"] == [str(page_path(ledger))]
+    assert data["run"] == next(iter(read_events(ledger))).attrs["run.name"]
+
+
+def test_a_quiet_run_says_only_its_warnings_and_still_records_and_reports(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    provider: Provider,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """SEATBELT_QUIET: for a host, such as the desktop app, that shows the run its own way."""
+    monkeypatch.setenv("SEATBELT_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("SEATBELT_QUIET", "1")
+    report = tmp_path / "report.json"
+    monkeypatch.setenv("SEATBELT_RUN_REPORT", str(report))
+    code = run_cli(
+        "claude", ["-c", CLAUDE], config=_config(tmp_path, provider), exe=fake_claude(tmp_path)
+    )
+    out, err = capfd.readouterr()
+    assert code == 7 and out.strip() == "hi"
+    assert "recording claude" not in err and "recorded run" not in err
+    (ledger,) = (tmp_path / "home" / "runs").glob("*.jsonl")
+    assert sidecar(ledger).exists()
+    assert json.loads(report.read_text())["recorded"] is True
+
+
+def test_the_quiet_setting_is_seatbelts_own_and_not_passed_to_the_cli() -> None:
+    from seatbelt.gateway.launcher import environment
+
+    base = {"SEATBELT_QUIET": "1", "SEATBELT_NO_ANIMATION": "1", "PATH": "/bin"}
+    for local in (True, False):
+        env = environment("claude", "http://127.0.0.1:1", "k", "r", base, local)
+        assert "SEATBELT_QUIET" not in env and env["SEATBELT_NO_ANIMATION"] == "1"
+
+
 def test_html_false_in_the_config_writes_no_page(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: Provider
 ) -> None:

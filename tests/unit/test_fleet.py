@@ -132,6 +132,8 @@ def test_cli_report_with_no_directory_reads_this_machines_runs(
     runner = CliRunner()
     r = runner.invoke(app, ["report"])
     assert r.exit_code == 0 and "No runs recorded yet" in r.output
+    r = runner.invoke(app, ["report", "--json"])  # still JSON, for an app to read
+    assert r.exit_code == 0 and json.loads(r.output)["runs"] == 0
     keygen(tmp_path / "home" / "keys")
     signer = Signer.from_file(tmp_path / "home" / "keys" / "seatbelt.key")
     with Recorder.start(tmp_path / "home" / "runs", agent_id="gw", signer=signer) as rec:

@@ -142,7 +142,7 @@ In `tests/unit/test_html_report.py` unless named.
 - The `file://` CSP check in Firefox and Safari.
 - Pages on the org gateway, which holds everyone's ledgers. That needs its own decision about who may read them.
 - An index page for a runs folder (`seatbelt runs` lists them).
-- PDF.
+- PDF. (Since built, as an optional extra, on demand: [its design](2026-10-13-pdf-run-report-design.md).)
 - Recording the page's hash in an erasure record. The record names the ledgers it removed. The page is derived from one of them.
 
 ## Source map
