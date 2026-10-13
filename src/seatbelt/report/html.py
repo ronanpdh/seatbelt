@@ -135,30 +135,38 @@ def _duration(start: datetime, end: datetime) -> str:
     return f"{minutes}m {seconds:02d}s" if minutes else f"{seconds}s"
 
 
-def _detail(event: Event) -> tuple[str, int, str]:
-    """The event's attributes as JSON: whole up to DETAIL_LIMIT bytes (indented when that fits
-    too), else, as compact JSON, its first DETAIL_HEAD bytes, how many bytes from the middle
-    are left out, and the rest of the limit from its end. (Indenting makes `json` use its
+def detail(
+    event: Event, limit: int = DETAIL_LIMIT, head: int = DETAIL_HEAD
+) -> tuple[str, int, str]:
+    """The event's attributes as JSON: whole up to `limit` bytes (indented when that fits too),
+    else, as compact JSON, its first `head` bytes, how many bytes from the middle are left
+    out, and the rest of the limit from its end. (Indenting makes `json` use its
     pure-Python encoder, seconds on a long session's requests, which are cut anyway.) Cut
     before `printable`, which then makes C1 controls and bidirectional overrides visible;
     JSON escapes C0 controls."""
     raw = json.dumps(event.attrs, ensure_ascii=False, default=str)
     data = raw.encode()
-    if len(data) <= DETAIL_LIMIT:  # whole: indented if that fits too, else compact
+    if len(data) <= limit:  # whole: indented if that fits too, else compact
         pretty = json.dumps(event.attrs, indent=2, ensure_ascii=False, default=str)
-        return printable(pretty if len(pretty.encode()) <= DETAIL_LIMIT else raw), 0, ""
-    head = data[:DETAIL_HEAD].decode(errors="ignore")
-    end = data[len(data) - (DETAIL_LIMIT - DETAIL_HEAD) :].decode(errors="ignore")
-    left = len(data) - len(head.encode()) - len(end.encode())
-    return printable(head), left, printable(end)
+        return printable(pretty if len(pretty.encode()) <= limit else raw), 0, ""
+    start = data[:head].decode(errors="ignore")
+    end = data[len(data) - (limit - head) :].decode(errors="ignore")
+    left = len(data) - len(start.encode()) - len(end.encode())
+    return printable(start), left, printable(end)
 
 
-def _row(event: Event) -> Row:
+def _row(event: Event, limit: int, head: int, every: bool) -> Row:
+    """One event as the page shows it: with its detail, or, unless `every`, with its detail
+    only when it was refused or failed."""
     a = event.attrs
     actor = f"{event.actor.type}:{event.actor.id}"
     if event.actor.version:
         actor += f"@{event.actor.version}"
-    detail, cut, detail_end = _detail(event)
+    denied = event.kind is Kind.POLICY_CHECK and a.get("policy.allowed") is False
+    failed = bool(a.get("error")) or (event.kind is Kind.RUN_END and a.get("run.ok") is False)
+    shown, cut, detail_end = (
+        detail(event, limit, head) if every or denied or failed else ("", 0, "")
+    )
     return Row(
         seq=event.seq,
         time=event.ts.astimezone().strftime("%H:%M:%S.%f")[:-3],
@@ -166,13 +174,13 @@ def _row(event: Event) -> Row:
         css=_CSS[event.kind],
         actor=printable(actor),
         what=summary(event),
-        denied=event.kind is Kind.POLICY_CHECK and a.get("policy.allowed") is False,
-        failed=bool(a.get("error")) or (event.kind is Kind.RUN_END and a.get("run.ok") is False),
+        denied=denied,
+        failed=failed,
         id=printable(event.id),
         parent=printable(event.parent_id or ""),
         hash=event.hash,
         prev_hash=event.prev_hash,
-        detail=detail,
+        detail=shown,
         cut=cut,
         detail_end=detail_end,
     )
@@ -202,10 +210,20 @@ def _signed_sha256(ledger: Path) -> str | None:
         return None
 
 
-def build(ledger: Path, pubkey: Path | None = None, now: datetime | None = None) -> Page:
-    """What the page for `ledger` shows, after the checks `seatbelt reconstruct` makes. Raises
-    PageError for a ledger that cannot be read, a broken chain, a forged signature, or, with
-    `pubkey`, no signature. AttestError for a key file that cannot be read."""
+def build(
+    ledger: Path,
+    pubkey: Path | None = None,
+    now: datetime | None = None,
+    *,
+    limit: int = DETAIL_LIMIT,
+    head: int = DETAIL_HEAD,
+    every: bool = True,
+) -> Page:
+    """What the page for `ledger` shows, after the checks `seatbelt reconstruct` makes: each
+    event's detail up to `limit` bytes (see `detail`), or, unless `every`, only refused and
+    failed events' detail, as the PDF shows it. Raises PageError for a ledger that cannot be
+    read, a broken chain, a forged signature, or, with `pubkey`, no signature. AttestError for
+    a key file that cannot be read."""
     try:  # one read: the page shows, hashes and checks the same bytes
         raw = ledger.read_bytes()
         events = list(parse_events(raw, ledger))
@@ -272,29 +290,35 @@ def build(ledger: Path, pubkey: Path | None = None, now: datetime | None = None)
             page.refusals.append(Refusal(e.seq, _text(e.actor.id), _text(a.get("policy.reason"))))
         if a.get("error"):
             page.failures.append(Failure(e.seq, e.kind.value, _text(a.get("error"))))
-        page.rows.append(_row(e))
+        page.rows.append(_row(e, limit, head, every))
     page.models = dict(sorted(models.items()))
     page.tools = dict(sorted(tools.items()))
     return page
 
 
+def _source(name: str) -> str:
+    """A template from the package: also when it is installed as a zip."""
+    return resources.files(__package__).joinpath("templates", name).read_text("utf-8")
+
+
 @functools.cache
-def _template() -> jinja2.Template:
+def template(name: str = TEMPLATE) -> jinja2.Template:
+    """A report template, which can import the parts it shares (`_run.html`)."""
     # autoescape=True for every template: off is Jinja2's default, and select_autoescape goes by
     # a file's extension. StrictUndefined: a misspelt name fails a test instead of printing ""
     env = jinja2.Environment(
+        loader=jinja2.FunctionLoader(_source),
         autoescape=True,
         undefined=jinja2.StrictUndefined,
         trim_blocks=True,
         lstrip_blocks=True,
     )
-    source = resources.files(__package__).joinpath("templates", TEMPLATE).read_text("utf-8")
-    return env.from_string(source)
+    return env.get_template(name)
 
 
 def render(ledger: Path, pubkey: Path | None = None, now: datetime | None = None) -> str:
     """The page for `ledger` as HTML. Raises as `build` does."""
-    return _template().render(page=build(ledger, pubkey, now), detail_limit=DETAIL_LIMIT)
+    return template().render(page=build(ledger, pubkey, now), detail_limit=DETAIL_LIMIT)
 
 
 def write_page(

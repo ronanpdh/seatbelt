@@ -26,6 +26,8 @@ jobs:
           version: "0.12.20"  # same as ci.yml and release.yml
           enable-cache: false
           python-version: ${{ matrix.python }}
+      - name: Pango, for the PDF tests (WeasyPrint's documented Ubuntu packages)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends libpango-1.0-0 libharfbuzz0b libpangoft2-1.0-0 libharfbuzz-subset0
       - name: Direct dependencies at their floors, the rest at their latest
         run: uv lock --resolution lowest-direct
       - run: uv sync --frozen

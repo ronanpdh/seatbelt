@@ -278,6 +278,25 @@ export async function showRun(view: HTMLElement, run: Run, back: () => void): Pr
       }),
     );
   }
+  // made again each time, by seatbelt, after its checks: it says what they found then
+  const pdfNote = el("span", "error small");
+  const pdf = button(
+    "Open as PDF",
+    "ghost",
+    () => {
+      pdf.disabled = true;
+      pdf.textContent = "Making the PDF…";
+      pdfNote.textContent = "";
+      invoke("open_pdf", { id: run.id })
+        .catch((e) => (pdfNote.textContent = plain(e)))
+        .finally(() => {
+          pdf.disabled = false;
+          pdf.textContent = "Open as PDF";
+        });
+    },
+    "Make this run's PDF (seatbelt reconstruct --pdf) and open it",
+  );
+  top.append(pdf, pdfNote);
   const mine = ++latest;
   view.replaceChildren(top, heading(run.name), el("p", "muted", "Checking and loading…"));
   const [verified, page] = await Promise.all([
@@ -286,7 +305,7 @@ export async function showRun(view: HTMLElement, run: Run, back: () => void): Pr
   ]);
   if (!current(mine)) return;
   const again = button("Verify again", "ghost", () => void showRun(view, run, back));
-  top.append(again);
+  top.append(again, pdfNote); // the note last, after every button
   const parts: Node[] = [top];
   if (typeof page === "string") {
     parts.push(heading(run.name), verificationCard(verified), el("p", "error", `No view of this run: ${page}`));

@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="generator" content="seatbelt {{ page.version }}">
+<meta name="description" content="A view of run {{ page.run_id }}, not evidence: the ledger and its signature are">
+<title>{{ page.title }} · seatbelt run</title>
+<style>
+@page {
+  size: A4; margin: 16mm 14mm 18mm;
+  @top-left { content: "seatbelt run report"; font: 8pt sans-serif; color: #5d6673; }
+  @top-right { content: string(run); font: 8pt sans-serif; color: #5d6673; }
+  @bottom-left { content: "A view, not evidence: the ledger and its signature are."; font: 8pt sans-serif; color: #5d6673; }
+  @bottom-right { content: "Page " counter(page) " of " counter(pages); font: 8pt sans-serif; color: #5d6673; }
+}
+:root {
+  --ink: #1b1f24; --muted: #5d6673; --line: #d0d5dc; --code: #f1f3f6;
+  --good: #1a7f37; --good-bg: #e7f5ec; --warn: #9a6700; --warn-bg: #fff6dc;
+  --bad: #cf222e; --bad-bg: #ffecec;
+}
+* { box-sizing: border-box; }
+body { margin: 0; color: var(--ink); font: 9.5pt/1.4 "DejaVu Sans", "Liberation Sans", Helvetica, Arial, sans-serif; }
+code, pre, .mono { font-family: "DejaVu Sans Mono", "Liberation Mono", Menlo, Consolas, monospace; font-size: 8pt; }
+h1 { font-size: 18pt; margin: 2px 0; overflow-wrap: anywhere; string-set: run content(); }
+h2 { font-size: 12pt; margin: 0 0 8px; }
+h3 { font-size: 10pt; margin: 12px 0 6px; }
+header, section { border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; margin-bottom: 12px; }
+section.events, section.full { border: none; padding: 0; }
+.brand { color: var(--muted); font-size: 8.5pt; }
+.badge { background: var(--ink); color: #fff; font-weight: 700; padding: 0 6px; border-radius: 3px; }
+.sub { color: var(--muted); margin: 0 0 10px; overflow-wrap: anywhere; }
+/* Blocks and fixed tables only: WeasyPrint lays out grid, flex and auto-width tables in time
+   that grows much faster than a long value (check D6 in the design) */
+dl.facts { margin: 0; }
+dl.facts div { margin: 0 0 3px; }
+dt { color: var(--muted); font-size: 7.5pt; text-transform: uppercase; letter-spacing: .04em; }
+dl.facts dt, .full dt { display: inline-block; width: 30mm; vertical-align: top; }
+dd { display: inline; margin: 0; overflow-wrap: anywhere; }
+.pill { font-weight: 700; padding: 0 6px; border-radius: 8px; }
+.pill.ok, .pill.attested, .pill.yes { color: var(--good); background: var(--good-bg); }
+.pill.unchecked, .pill.unattested, .pill.incomplete, .pill.no { color: var(--warn); background: var(--warn-bg); }
+.pill.failed { color: var(--bad); background: var(--bad-bg); }
+.verdict p { margin: 0 0 8px; }
+.verdict.good { border-left: 3px solid var(--good); }
+.verdict.warn { border-left: 3px solid var(--warn); }
+.note { color: var(--muted); }
+pre { background: var(--code); border-radius: 4px; padding: 6px 8px; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.hash { overflow-wrap: anywhere; }
+.tiles { margin-bottom: 10px; }
+.tile { display: inline-block; width: 23.5%; margin: 0 1% 6px 0; border: 1px solid var(--line); border-radius: 4px; padding: 5px 8px; }
+.tile b { display: block; font-size: 13pt; }
+.tile span { color: var(--muted); font-size: 7.5pt; }
+.tile.alert b { color: var(--bad); }
+table { border-collapse: collapse; width: 100%; margin-bottom: 10px; table-layout: fixed; }
+th, td { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; }
+th { color: var(--muted); font-weight: 700; font-size: 7.5pt; text-transform: uppercase; letter-spacing: .04em; }
+td.n, th.n { text-align: right; white-space: nowrap; }
+th.n { width: 13%; }
+tfoot td { font-weight: 700; }
+a { color: inherit; }
+/* fixed: column widths from the header row, not measured over every row (a long run's list
+   took seconds longer to lay out) */
+table.events { font-size: 8pt; }
+table.events th.seq { width: 8%; }
+table.events th.time { width: 13%; }
+table.events th.kind { width: 15%; }
+table.events th.actor { width: 20%; }
+table.events td.seq { color: var(--muted); text-align: right; white-space: nowrap; }
+table.events td.time { color: var(--muted); white-space: nowrap; }
+table.events td.kind { font-weight: 700; }
+table.events td.actor { color: var(--muted); }
+table.events tr.denied td, table.events tr.failed td { background: var(--bad-bg); }
+tr { break-inside: avoid; }
+.full article { break-inside: avoid-page; border-top: 1px solid var(--line); padding-top: 8px; margin-top: 8px; }
+.full dl { margin: 0 0 6px; }
+.full dl > dd::after { content: "\A"; white-space: pre; }
+.full dt { text-transform: none; letter-spacing: 0; font-size: 8pt; }
+.cut { color: var(--warn); margin: 6px 0; }
+footer { color: var(--muted); font-size: 8pt; margin-top: 14px; }
+</style>
+</head>
+<body>
+{% import "_run.html" as parts %}
+{{ parts.header(page) }}
+{{ parts.checked(page, "PDF") }}
+{{ parts.summary(page) }}
+
+<section class="events">
+  <h2>Events</h2>
+  <p class="note">Every event in the ledger, in order, one line each. Events refused by policy or that failed are given in full after this list; the HTML page and the ledger hold everything recorded with every event.</p>
+  <table class="events">
+    <thead><tr><th class="n seq">Seq</th><th class="time">Time</th><th class="kind">Kind</th><th class="actor">Actor</th><th>Event</th></tr></thead>
+    <tbody>
+    {% for row in page.rows %}
+      <tr class="{{ 'denied' if row.denied else '' }}{{ ' failed' if row.failed else '' }}"><td class="seq">{% if row.denied or row.failed %}<a href="#e{{ row.seq }}">{{ row.seq }}</a>{% else %}{{ row.seq }}{% endif %}</td><td class="time mono">{{ row.time }}</td><td class="kind">{{ row.kind }}</td><td class="actor">{{ row.actor }}</td><td>{{ row.what }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+{% set full = page.rows | selectattr("detail") | list %}
+{% if full %}
+<section class="full">
+  <h2>Refused and failed events, in full</h2>
+  <p class="note">Everything recorded with each. An event over {{ "{:,}".format(detail_limit // 1024) }} KiB shows its start and its end; the ledger holds all of it.</p>
+  {% for row in full %}
+  <article id="e{{ row.seq }}">
+    <h3>{{ row.seq }} · {{ row.kind }}{{ " · refused by policy" if row.denied else "" }}{{ " · failed" if row.failed else "" }}</h3>
+    <dl>
+      <dt>Time</dt><dd class="mono">{{ row.time }}</dd>
+      <dt>Event id</dt><dd class="mono hash">{{ row.id }}</dd>
+      {% if row.parent %}<dt>Parent</dt><dd class="mono hash">{{ row.parent }}</dd>{% endif %}
+      <dt>Actor</dt><dd class="mono">{{ row.actor }}</dd>
+      <dt>Hash</dt><dd class="mono hash">{{ row.hash }}</dd>
+      <dt>Previous hash</dt><dd class="mono hash">{{ row.prev_hash }}</dd>
+    </dl>
+    <pre>{{ row.detail }}</pre>
+    {% if row.cut %}
+    <p class="cut">{{ "{:,}".format(row.cut) }} bytes from the middle of this event are left out here; the ledger holds them.</p>
+    <pre>{{ row.detail_end }}</pre>
+    {% endif %}
+  </article>
+  {% endfor %}
+</section>
+{% endif %}
+
+<footer>Made by seatbelt {{ page.version }} on {{ page.rendered }} from {{ page.ledger_file }}.</footer>
+</body>
+</html>

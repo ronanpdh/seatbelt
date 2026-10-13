@@ -20,7 +20,7 @@ from seatbelt.ledger.events import Actor, ActorType, Kind
 from seatbelt.ledger.store import Ledger, read_events
 from seatbelt.locks import RUNNING, Busy, hold_folder
 from seatbelt.record.recorder import Recorder
-from seatbelt.report import page_path
+from seatbelt.report import page_path, pdf_path
 from seatbelt.report.fleet import fleet
 from seatbelt.report.html import write_page
 from seatbelt.verify.attest import Attestation, verify_attestation
@@ -161,6 +161,31 @@ def test_erase_removes_the_persons_pages_and_no_one_elses(tmp_path: Path) -> Non
     for needle in (ALICE, "alice01", ALICE_MAIL):
         assert needle.encode() not in data, needle
     assert page_path(runs / "bob-a-3333.jsonl").exists()
+
+
+def test_erase_removes_the_persons_pdfs_with_their_pages(tmp_path: Path) -> None:
+    """A PDF made beside a ledger holds what it holds, as its page does."""
+    runs, _, signer = _build(tmp_path)
+    for ledger in runs.glob("*.jsonl"):
+        write_page(ledger)
+        pdf_path(ledger).write_bytes(b"%PDF-1.7 a stand-in: erase does not read it")
+    p = plan(runs, [ALICE])
+    assert sorted(t.pdf.name for t in p.targets if t.pdf is not None) == [
+        "auth0_alice01-a-1111.pdf",
+        "auth0_alice01-b-2222.pdf",
+        "auth0_alice01-c-6666.pdf",
+    ]
+    out = CliRunner().invoke(app, ["erase", str(runs), "--principal", ALICE, "--case", "DSR-5"])
+    assert "its PDF: auth0_alice01-a-1111.pdf" in out.output, out.output  # listed, not removed
+    assert pdf_path(runs / "auth0_alice01-a-1111.jsonl").exists()
+    r = erase(runs, [ALICE], "DSR-2026-016", signer, by="operator")
+    assert (r.ledgers, r.pages) == (3, 6)  # three pages and three PDFs
+    assert sorted(p.name for p in runs.glob("*.pdf")) == [
+        "anon-4444.pdf",
+        "bob-a-3333.pdf",
+        "unknown-5555.pdf",
+    ]
+    assert r.record is not None and list(read_events(r.record))[-2].attrs["erasure.pages"] == 6
 
 
 def test_an_erase_that_fails_partway_is_finished_by_the_next(

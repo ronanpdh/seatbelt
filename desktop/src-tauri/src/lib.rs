@@ -338,6 +338,24 @@ async fn open_page(
         .map_err(|e| e.to_string())
 }
 
+/// Make a run's PDF (`seatbelt reconstruct --pdf`, beside its ledger) and open it in the
+/// system's PDF viewer, outside the app's web view. It is made again each time, so it says
+/// what the checks found then.
+#[tauri::command]
+async fn open_pdf(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    let found = state.tools();
+    let pdf = tauri::async_runtime::spawn_blocking(move || runs::make_pdf(&found, &id))
+        .await
+        .map_err(|e| e.to_string())??;
+    app.opener()
+        .open_path(pdf.to_string_lossy(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 /// Open a link from a reply in the system's browser: only `http` and `https`, and nothing
 /// with spaces or control characters in it. The window never follows a link itself.
 #[tauri::command]
@@ -427,6 +445,7 @@ pub fn run() {
             verify_run,
             usage_report,
             open_page,
+            open_pdf,
             open_link,
             quit,
         ])

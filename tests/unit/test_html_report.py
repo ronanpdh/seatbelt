@@ -304,4 +304,5 @@ def test_pack_leaves_pages_out(tmp_path: Path) -> None:
 def test_the_template_ships_in_the_package() -> None:
     from importlib import resources
 
-    assert resources.files("seatbelt.report").joinpath("templates", "run.html").is_file()
+    for name in ("run.html", "_run.html", "run_pdf.html"):
+        assert resources.files("seatbelt.report").joinpath("templates", name).is_file(), name

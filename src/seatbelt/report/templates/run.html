@@ -98,102 +98,11 @@ footer { color: var(--muted); font-size: 13px; text-align: center; margin-top: 2
 </style>
 </head>
 <body>
+{% import "_run.html" as parts %}
 
-<header>
-  <div class="brand"><span class="badge">seatbelt</span> run report</div>
-  <h1>{{ page.title }}</h1>
-  <p class="sub mono">{{ page.run_id }}</p>
-  <dl class="facts">
-    <div><dt>Outcome</dt><dd><span class="pill {{ page.outcome }}">{{ page.outcome }}</span>{% if page.outcome_reason %} <span class="note">{{ page.outcome_reason }}</span>{% endif %}</dd></div>
-    <div><dt>Who</dt><dd>{{ page.principal or "not recorded" }}</dd></div>
-    <div><dt>Recorded by</dt><dd>{{ page.agent }}</dd></div>
-    {% if page.client %}<div><dt>Client</dt><dd>{{ page.client }}</dd></div>{% endif %}
-    <div><dt>Started</dt><dd>{{ page.started }}</dd></div>
-    <div><dt>Ended</dt><dd>{{ page.ended or "not ended" }}</dd></div>
-    <div><dt>Duration</dt><dd>{{ page.duration }}</dd></div>
-    <div><dt>Events</dt><dd>{{ page.events }}</dd></div>
-  </dl>
-</header>
-
-<section class="verdict {{ 'good' if page.complete and page.signature == 'attested' else 'warn' }}">
-  <h2>What was checked</h2>
-  <p>When this page was made ({{ page.rendered }}), the ledger <code>{{ page.ledger_file }}</code> was checked:</p>
-  <dl class="facts">
-    <div><dt>Hash chain</dt><dd><span class="pill yes">intact</span> {{ page.events }} events</dd></div>
-    <div><dt>Complete</dt><dd>{% if page.complete %}<span class="pill yes">yes</span>{% else %}<span class="pill no">no</span> <span class="note">no matching run.end</span>{% endif %}</dd></div>
-    <div><dt>Signature</dt><dd><span class="pill {{ page.signature }}">{{ page.signature }}</span> <span class="note">{{ page.signature_note }}</span></dd></div>
-    <div><dt>Final hash</dt><dd class="mono hash">{{ page.final_hash }}</dd></div>
-    <div><dt>Ledger SHA-256</dt><dd class="mono hash">{{ page.ledger_sha256 }}</dd></div>
-  </dl>
-  <p style="margin-top: 14px">This page is a view, not evidence: like any file, it can be edited. The ledger and its signature are what prove what happened. Check them again with:</p>
-  <pre><code>{{ page.verify_command }}</code></pre>
-</section>
-
-<section>
-  <h2>Summary</h2>
-  <div class="tiles">
-    <div class="tile"><b>{{ "{:,}".format(page.total.calls) }}</b><span>model calls</span></div>
-    <div class="tile"><b>{{ "{:,}".format(page.total.input_tokens) }}</b><span>input tokens</span></div>
-    <div class="tile"><b>{{ "{:,}".format(page.total.cache_read_input_tokens + page.total.cache_creation_input_tokens) }}</b><span>cache tokens (read + write)</span></div>
-    <div class="tile"><b>{{ "{:,}".format(page.total.output_tokens) }}</b><span>output tokens</span></div>
-    <div class="tile"><b>{{ "{:,}".format(page.tools.values() | sum) }}</b><span>tool calls</span></div>
-    <div class="tile {{ 'alert' if page.refusals else '' }}"><b>{{ page.refusals | length }}</b><span>refused by policy</span></div>
-    <div class="tile {{ 'alert' if page.failures else '' }}"><b>{{ page.failures | length }}</b><span>errors</span></div>
-  </div>
-
-  {% if page.models %}
-  <h3>Models</h3>
-  <table>
-    <thead><tr><th>Model</th><th class="n">Calls</th><th class="n">Input</th><th class="n">Cache read</th><th class="n">Cache write</th><th class="n">Output</th></tr></thead>
-    <tbody>
-    {% for model, u in page.models.items() %}
-      <tr><td class="mono">{{ model }}</td><td class="n">{{ "{:,}".format(u.calls) }}</td><td class="n">{{ "{:,}".format(u.input_tokens) }}</td><td class="n">{{ "{:,}".format(u.cache_read_input_tokens) }}</td><td class="n">{{ "{:,}".format(u.cache_creation_input_tokens) }}</td><td class="n">{{ "{:,}".format(u.output_tokens) }}</td></tr>
-    {% endfor %}
-    </tbody>
-    {% if page.models | length > 1 %}
-    <tfoot><tr><td>All models</td><td class="n">{{ "{:,}".format(page.total.calls) }}</td><td class="n">{{ "{:,}".format(page.total.input_tokens) }}</td><td class="n">{{ "{:,}".format(page.total.cache_read_input_tokens) }}</td><td class="n">{{ "{:,}".format(page.total.cache_creation_input_tokens) }}</td><td class="n">{{ "{:,}".format(page.total.output_tokens) }}</td></tr></tfoot>
-    {% endif %}
-  </table>
-  <p class="note">Input is as the provider reports it. Anthropic's leaves out its prompt cache, which is counted under cache read and cache write.</p>
-  {% endif %}
-
-  {% if page.tools %}
-  <h3>Tools</h3>
-  <table>
-    <thead><tr><th>Tool</th><th class="n">Calls</th></tr></thead>
-    <tbody>
-    {% for tool, n in page.tools.items() %}
-      <tr><td class="mono">{{ tool }}</td><td class="n">{{ "{:,}".format(n) }}</td></tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  {% endif %}
-
-  {% if page.refusals %}
-  <h3>Refused by policy</h3>
-  <table>
-    <thead><tr><th class="n">Seq</th><th>Rule</th><th>Reason</th></tr></thead>
-    <tbody>
-    {% for r in page.refusals %}
-      <tr><td class="n"><a href="#e{{ r.seq }}">{{ r.seq }}</a></td><td class="mono">{{ r.rule }}</td><td>{{ r.reason }}</td></tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  {% endif %}
-
-  {% if page.failures %}
-  <h3>Errors</h3>
-  <table>
-    <thead><tr><th class="n">Seq</th><th>Event</th><th>Error</th></tr></thead>
-    <tbody>
-    {% for f in page.failures %}
-      <tr><td class="n"><a href="#e{{ f.seq }}">{{ f.seq }}</a></td><td class="mono">{{ f.kind }}</td><td>{{ f.error }}</td></tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  {% endif %}
-</section>
-
+{{ parts.header(page) }}
+{{ parts.checked(page, "page") }}
+{{ parts.summary(page) }}
 <section>
   <h2>Timeline</h2>
   <p class="note">Every event in the ledger, in order. Open one to see everything recorded with it. An event over {{ "{:,}".format(detail_limit // 1024) }} KiB shows its start and its end, where a request's newest turn is; the ledger holds all of it.</p>

@@ -226,40 +226,52 @@ def reconstruct(
     html: Annotated[
         bool, typer.Option("--html", help="write the run as an HTML page instead of printing it")
     ] = False,
+    pdf: Annotated[
+        bool,
+        typer.Option("--pdf", help="write the run as a PDF instead of printing it (the pdf extra)"),
+    ] = False,
     out: Annotated[
         Path | None,
-        typer.Option(help="where --html writes the page; default: beside the ledger"),
+        typer.Option(help="where --html or --pdf writes; default: beside the ledger"),
     ] = None,
     json_out: Annotated[
         bool, typer.Option("--json", help="print what the page shows as JSON instead")
     ] = False,
 ) -> None:
     """Print the run as a timeline a reviewer can read, or with --html write it as a page to
-    open in a browser, or with --json print what that page shows. Refuses an altered ledger."""
+    open in a browser, or with --pdf as a PDF, or with --json print what that page shows.
+    Refuses an altered ledger."""
     if json_out:
-        if html or out is not None:
-            raise _json_error("--json prints the run; --html and --out write a page")
+        if html or pdf or out is not None:
+            raise _json_error("--json prints the run; --html, --pdf and --out write a file")
         _print_run(ledger, pubkey)
         return
-    if out is not None and not html:
-        console.print("[red]--out is where --html writes; add --html[/]")
+    if html and pdf:
+        console.print("[red]--html and --pdf each write a file: give one[/]")
         raise typer.Exit(code=1)
-    if out is not None and out.suffix.lower() not in (".html", ".htm"):
+    if out is not None and not (html or pdf):
+        console.print("[red]--out is where --html or --pdf writes; add --html or --pdf[/]")
+        raise typer.Exit(code=1)
+    if out is not None and html and out.suffix.lower() not in (".html", ".htm"):
         console.print(f"[red]{_shown(str(out))}: a page's name ends in .html[/]")
+        raise typer.Exit(code=1)
+    if out is not None and pdf and out.suffix.lower() != ".pdf":
+        console.print(f"[red]{_shown(str(out))}: a PDF's name ends in .pdf[/]")
         raise typer.Exit(code=1)
     path, pubkey = _resolved(ledger, pubkey)
     _check(path, pubkey)
-    if not html:
+    if not (html or pdf):
         timeline(path, console)
         return
     from seatbelt.report.html import PageError, write_page
+    from seatbelt.report.pdf import PdfUnavailable, write_pdf
 
-    try:
-        page = write_page(path, pubkey, out)  # by default beside the ledger, where erase looks
-    except (PageError, AttestError, OSError) as exc:
+    try:  # by default beside the ledger, where erase looks
+        written = write_pdf(path, pubkey, out) if pdf else write_page(path, pubkey, out)
+    except (PageError, PdfUnavailable, AttestError, OSError) as exc:
         console.print(f"[red]{_shown(str(exc))}[/]")
         raise typer.Exit(code=1) from exc
-    console.print(Text(f"wrote {printable(str(page))}"))
+    console.print(Text(f"wrote {printable(str(written))}"))
 
 
 def _print_run(ledger: str | None, pubkey: Path | None) -> None:
@@ -624,7 +636,7 @@ def erase(
     yes: Annotated[bool, typer.Option("--yes", help="erase; without it, only list")] = False,
 ) -> None:
     """Remove every ledger recorded under a person's principal ids, with its signature,
-    shipped mark and HTML page, inside a signed erasure record. Lists what it would remove
+    shipped mark, HTML page and PDF, inside a signed erasure record. Lists what it would remove
     unless --yes. Nothing may be writing: stop the gateway, and wait for imports and local
     runs to end."""
     from seatbelt.erase import erase as do_erase
@@ -666,6 +678,8 @@ def erase(
             console.print(Text(f"  {what}: {printable(t.ledger.name)} ({size} bytes)"))
             if t.page is not None:
                 console.print(Text(f"    its page: {printable(t.page.name)}"))
+            if t.pdf is not None:
+                console.print(Text(f"    its PDF: {printable(t.pdf.name)}"))
             for k in t.object_keys:
                 console.print(Text(f"    in the sink as {printable(k)}: not deleted by erase"))
         for o in p.orphans:
