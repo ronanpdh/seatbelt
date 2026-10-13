@@ -464,6 +464,19 @@ impl Driver for Claude {
                 }
             }
             "assistant" => {
+                // a sign-in that has run out ends the turn with an answer that says so (P20);
+                // the maintainer saw that error with no sign-in card, so the answer asks for
+                // sign-in itself, rather than only a 401 retry before it
+                if str_of(&line, "error") == "authentication_failed" && !self.signin_said {
+                    self.signin_said = true;
+                    let said = line
+                        .pointer("/message/content/0/text")
+                        .and_then(Value::as_str)
+                        .unwrap_or("Claude Code could not sign in to Anthropic.");
+                    step.show(ChatEvent::SignIn {
+                        reason: cut(said, 500),
+                    });
+                }
                 let content = line.pointer("/message/content").cloned();
                 for block in content
                     .as_ref()
@@ -880,6 +893,24 @@ mod tests {
                 delta: "Whole.".into()
             }]
         );
+    }
+
+    #[test]
+    fn a_sign_in_that_ran_out_asks_for_sign_in_even_with_no_retry_before_it() {
+        // the lines Claude Code 2.1.295 printed for a token a stand-in answered 401
+        // authentication_error, with the retries left out
+        let mut c = Claude::default();
+        let answer = r#"{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"Failed to authenticate. API Error: 401 OAuth token has expired. Please obtain a new token or refresh your existing token."}]},"error":"authentication_failed","parent_tool_use_id":null}"#;
+        let step = c.read(line(answer));
+        assert!(matches!(&step.events[0],
+            ChatEvent::SignIn { reason } if reason.contains("OAuth token has expired")));
+        // said once: a retry after it does not ask again
+        let retry = r#"{"type":"system","subtype":"api_retry","attempt":1,"max_retries":10,"retry_delay_ms":508,"error_status":401,"error":"authentication_failed"}"#;
+        assert!(!c
+            .read(line(retry))
+            .events
+            .iter()
+            .any(|e| matches!(e, ChatEvent::SignIn { .. })));
     }
 
     #[test]
