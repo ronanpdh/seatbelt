@@ -3,7 +3,7 @@
 //!
 //! The app adds no recording of its own: `seatbelt run` records the CLI exactly as it does in
 //! any terminal, and writes a report of what it recorded (`SEATBELT_RUN_REPORT`) as it exits.
-//! A login sends no model traffic, so it runs by itself.
+//! A CLI's login runs by itself: signing in is not a session to record.
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -52,7 +52,7 @@ struct Tab {
 }
 
 /// What a tab runs: `seatbelt run --exe <exe> <cli>` in `cwd`, or, with no seatbelt, the CLI
-/// by itself: its own login, which sends no model traffic, so there is nothing to record.
+/// by itself: its own login, as signing in is not a session to record.
 pub struct Launch<'a> {
     pub seatbelt: Option<&'a Path>,
     pub cli: &'a str,

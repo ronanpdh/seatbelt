@@ -1,6 +1,6 @@
 //! Seatbelt desktop: Claude Code, Codex and Gemini CLI in tabs, each run through
 //! `seatbelt run`, so each is recorded and keeps its own sign-in. The one thing run without
-//! it is Claude Code's or Codex's own login command, which sends no model traffic.
+//! it is Claude Code's or Codex's own login command: signing in is not a session to record.
 //!
 //! The web view can do only what these commands allow: pick or check a folder; open a chat
 //! or a terminal tab for one of the three CLIs in a folder; send a chat message, answer its
@@ -202,8 +202,9 @@ fn open_tab(
 }
 
 /// Sign `cli` in again, in a terminal tab. Claude Code and Codex have a login command
-/// (`claude auth login`, `codex login`): it runs by itself, in the home folder, since it sends
-/// no model traffic to record. Gemini CLI signs in only from its own interface (`/auth`), so
+/// (`claude auth login`, `codex login`): it runs by itself, in the home folder, as signing in
+/// is not a session to record. Gemini CLI has no login command (P23) and signs in from its own
+/// interface (`/auth`), so
 /// that opens in `cwd` through `seatbelt run`, continuing `resume` if given, as a session's
 /// terminal does: anything it sends to a model there is recorded.
 #[tauri::command]
@@ -243,7 +244,7 @@ fn open_login(
     state.tabs.open(launch, events)
 }
 
-/// `seatbelt doctor`: its version, where runs go, its signing key, whether its config reads,
+/// `seatbelt doctor`: its version, where runs go, its public key, whether its config reads,
 /// and whether it can make a PDF.
 #[tauri::command]
 async fn seatbelt_checks(state: State<'_, AppState>) -> Result<serde_json::Value, String> {

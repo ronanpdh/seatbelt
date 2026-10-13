@@ -104,7 +104,7 @@ export class SettingsView {
     const pdf = doctor.pdf;
     rows.push(
       ["Runs folder", doctor.runs ?? "not known", "mono"],
-      ["Signing key", doctor.key ?? "none yet: the first local run makes one", doctor.key ? "mono" : undefined],
+      ["Public key", doctor.key ?? "none yet: the first local run makes one", doctor.key ? "mono" : undefined],
       ["Config", doctor.config ?? "reads", doctor.config ? "bad" : undefined],
       ["PDF of a run", pdf.ok ? `yes, with WeasyPrint ${pdf.weasyprint ?? ""}` : (pdf.reason ?? "no"), pdf.ok ? undefined : "warn"],
     );

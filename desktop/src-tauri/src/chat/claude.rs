@@ -897,8 +897,8 @@ mod tests {
 
     #[test]
     fn a_sign_in_that_ran_out_asks_for_sign_in_even_with_no_retry_before_it() {
-        // the lines Claude Code 2.1.295 printed for a token a stand-in answered 401
-        // authentication_error, with the retries left out
+        // modelled on the answer Claude Code 2.1.295 gave for a token a stand-in answered
+        // 401 authentication_error (P20), with the retries before it left out
         let mut c = Claude::default();
         let answer = r#"{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"Failed to authenticate. API Error: 401 OAuth token has expired. Please obtain a new token or refresh your existing token."}]},"error":"authentication_failed","parent_tool_use_id":null}"#;
         let step = c.read(line(answer));

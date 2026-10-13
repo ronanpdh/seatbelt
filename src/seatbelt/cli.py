@@ -59,7 +59,7 @@ def version() -> None:
 def doctor(
     json_out: Annotated[bool, typer.Option("--json", help="print the checks as JSON")] = False,
 ) -> None:
-    """Check this machine's setup: seatbelt's version, where it keeps runs and its signing key,
+    """Check this machine's setup: seatbelt's version, where it keeps runs and its public key,
     whether its config can be read, and whether it can write a run as a PDF (the pdf extra and
     the Pango library). Exits 1 only for a config it cannot read: a PDF is optional."""
     from seatbelt.report.pdf import PdfUnavailable, weasyprint_version
@@ -83,7 +83,7 @@ def doctor(
         lines = [
             f"seatbelt {__version__}",
             f"runs: {checks['runs'] or 'unknown'}",
-            f"signing key: {checks['key'] or 'none yet (made by the first local run)'}",
+            f"public key: {checks['key'] or 'none yet (made by the first local run)'}",
             f"config: {checks['config'] or 'ok'}",
             f"PDF: {f'yes, WeasyPrint {weasyprint}' if weasyprint else why_no_pdf}",
         ]

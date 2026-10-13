@@ -1,7 +1,7 @@
 // A CLI in a terminal (xterm.js over a PTY): its own interface, through `seatbelt run <cli>`,
 // which a session can open from its chat; or its sign-in, which is the CLI's own login command
-// (`claude auth login`, `codex login`), run by itself, or for Gemini CLI, which has none, its
-// own interface again, for /auth.
+// (`claude auth login`, `codex login`), run by itself, or for Gemini CLI, which has none
+// (design check P23), its own interface again, for /auth.
 
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { FitAddon } from "@xterm/addon-fit";

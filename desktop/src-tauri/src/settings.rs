@@ -137,8 +137,8 @@ fn note(cli: &str) -> Option<&'static str> {
              request to a model. If a chat says Claude Code could not sign in, sign in again.",
         ),
         "codex" => Some(
-            "Codex's login removes its stored sign-in as soon as it starts: stopping it before \
-             it finishes leaves Codex signed out.",
+            "Codex's login removes its stored sign-in before the sign-in is done: stopping it \
+             leaves Codex signed out.",
         ),
         _ => None,
     }
