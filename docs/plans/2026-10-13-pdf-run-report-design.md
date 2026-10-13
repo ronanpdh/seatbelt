@@ -7,10 +7,10 @@
 ## What exists
 
 - **Each run's HTML page** ([design](2026-10-09-html-run-report-design.md)): `<run id>.html` beside the ledger, written as the run ends, or by `seatbelt reconstruct [run] --html [--out]`.
-  - `html.build` reads the ledger once and refuses a broken chain, a forged signature, or no signature when a key is given. The page says what was checked when it was made.
+  - `html.build` shows, hashes and chain-checks one read of the ledger, and refuses it if the signature check, which reads it again, saw other bytes. It refuses a broken chain, a forged signature, or no signature when a key is given. The page says what was checked when it was made.
   - Jinja2 escapes every value (`autoescape=True`), and every string goes through `printable`.
   - The page is written mode 0600, to a temporary file renamed into place.
-  - `seatbelt erase` removes it with the ledger. `pack` takes only ledgers, signatures and `findings.json`.
+  - `seatbelt erase` removes it with the ledger. `pack` takes only ledgers, signatures, `findings.json` and, when given one, the scenario corpus.
 - **The HTML design rejected PDF:** "It needs a rendering engine as a dependency. Left for later."
 - **The desktop app's run view** opens the page in the system's browser (`open_page`). It finds a run's files by id, directly in the runs folder seatbelt names (`runs::file_of`).
 - **CI** runs the unit tests on Ubuntu with `uv sync --locked`, which installs the `dev` group. The `lowest` workflow runs them with direct dependencies at their floors, and runs `pip-audit` over every extra at its floor.
@@ -18,8 +18,8 @@
 ## What the maintainer chose (2026-10-13)
 
 - **One run,** not a report over an evidence pack.
-- **An optional `pdf` extra** that renders with WeasyPrint, not printing from the browser and not a pure-Python PDF library.
-- **The summary and one line per event,** with full detail only for refused and failed events.
+- **An optional `pdf` extra** that renders with WeasyPrint. The other options offered were printing from the browser, and a pure-Python PDF library.
+- **The summary and one line per event,** with full detail only for refused and failed events. The other options offered were every event in full, and the summary only.
 - **Both the CLI and the desktop app.**
 
 ## WeasyPrint
@@ -37,10 +37,10 @@
   - limit "rendering time and memory use".
 - **URL fetchers:** a class inheriting `URLFetcher` with its own `fetch` can be given as `url_fetcher`. WeasyPrint catches every exception a fetch raises and goes on without the resource, "except when they inherit from `FatalURLFetchingError`", which "stops the rendering". `FatalURLFetchingError` is a `BaseException`.
 - **Presentational hints** are off by default (`DEFAULT_OPTIONS`: `presentational_hints: False`).
-- **Advisories (D1):** every release from 62.3 to 68.1 has at least three, and 69.0 two; 70.0 has none.
+- **Advisories (D1):** each release checked from 62.3 to 68.1 (all but 63.0 and 64.0) has at least three, and 69.0 two; 70.0 has none.
   - PYSEC-2026-3412: CSS injection from HTML attributes "when HTML presentational hints are enabled".
   - PYSEC-2026-3940: `write_pdf()`'s `stylesheets` and `xmp_metadata` options "ignore the document's `url_fetcher`".
-  - CVE-2026-106443: image bytes "passed directly to Pillow's generic format dispatcher", which can hand them to Ghostscript.
+  - CVE-2026-106443: WeasyPrint "passes fetched image bytes directly to Pillow's generic format dispatcher", which invokes Ghostscript when it is installed.
 
 ## Design (ours)
 
@@ -49,15 +49,15 @@
    - `--html` and `--pdf` together are refused, as is `--out` without one of them.
    - Without the extra, or without Pango, it says how to get them, exits 1, and writes nothing.
 2. **What the PDF shows.**
-   - The page's header, its "What was checked" (saying "this PDF") and its summary. These come from template parts shared with the page (`templates/_run.html`), so the two cannot drift apart.
+   - The page's header, its "What was checked" (saying "this PDF") and its summary. These come from template parts shared with the page (`templates/_run.html`), so those parts say the same in both, apart from the PDF's cut values (3).
    - Every event on one line: sequence, time, kind, actor, and the one-line summary `reconstruct` prints.
    - Refused and failed events in full, as the page's detail shows them, up to 16 KiB (the first 4 KiB and the last 12 KiB). A refused or failed event's line links to its detail.
    - Running heads: "seatbelt run report" and the run's title; "A view, not evidence" and the page number.
 3. **Long values cannot stall it (D6).** WeasyPrint lays out an unbroken run of text in time that grows much faster than its length, worst in grid, flex and auto-width table layouts.
-   - The PDF's stylesheet uses only blocks and fixed-layout tables.
-   - Every ledger value in a fact or a table cell is cut to its first 500 characters, with a note of how many more the ledger holds.
-   - Every run of more than 80 characters with no space gets a zero-width space every 80 characters. A long value copied out of the PDF carries those characters.
-4. **It loads nothing (D3).** Ledger text is escaped by the same template parts as the page. The PDF's own template refers to no URL. WeasyPrint is given a URL fetcher that refuses every URL, files and `data:` included, by raising `FatalURLFetchingError`, so a document that asked for anything is not made at all.
+   - The PDF's stylesheet uses no grid, flex or auto-width table: blocks, inline text, fixed-layout tables, and fixed-width inline-blocks that hold only labels and numbers.
+   - Every ledger value in a fact or a table cell, and the run id, is cut to its first 500 characters, with a note of how many more the ledger holds. Two model or tool names that cut alike are kept apart by a number.
+   - In every value from the ledger, each run of more than 80 characters with no space gets a zero-width space every 80 characters. A long value copied out of the PDF carries those characters.
+4. **It loads nothing (D3).** Ledger text is escaped as on the page: the PDF's template and the parts it shares with the page are rendered by the same Jinja2 environment, with autoescaping on. The PDF's own template refers to no URL. WeasyPrint is given a URL fetcher that refuses every URL, files and `data:` included, by raising `FatalURLFetchingError`, so a document that asked for anything is not made at all.
    - Against the advisories: presentational hints stay off, no `stylesheets` or `xmp_metadata` option is passed, and the documents hold no images.
 5. **A view, not evidence,** as the page: made only from a ledger that verifies, and saying what was checked when it was made. Written mode 0600, to a temporary file renamed into place.
 6. **On demand only.** A PDF takes seconds for a long run (D7), and the page is already the per-run view written at the end of each run.
@@ -65,9 +65,10 @@
 8. **The desktop app.**
    - A run's view has "Open as PDF". The new `open_pdf` command runs `seatbelt reconstruct <ledger> --pdf`, finding the ledger by the run's id as `run_detail` does, then opens `<run id>.pdf` from the runs folder in the system's PDF viewer.
    - It is made again each time, so it says what the checks found then.
-   - When seatbelt makes none, its own last words are shown under the buttons.
-9. **Dependencies.** The extra is `pdf = ["weasyprint>=70.0"]`: the first release with no known advisory, as the dependency-floors rule asks. The `dev` group gets WeasyPrint and `pypdf>=6.20.1`, which the tests use to read PDFs back. CI installs WeasyPrint's Ubuntu packages before the unit tests, in `ci.yml` and `lowest.yml`.
-10. **The gateway and brotli (D11).** With `brotli` installed, the gateway's HTTP client asks upstream for `br` too, as it asks only for what it can decode, and the gateway already drops `Content-Encoding` from what it relays. A gateway test that assumed no `br` now checks the rule instead: the client's own `Accept-Encoding`, never the caller's.
+   - When seatbelt makes none, what it printed (its output, then its error output) is shown on one line under the buttons.
+9. **Dependencies.** The extra is `pdf = ["weasyprint>=70.0"]`: the first release from which no later one has a known advisory (69.0 has two, D1), as the dependency-floors rule asks. The `dev` group gets WeasyPrint and `pypdf>=6.20.1`, which the tests use to read PDFs back. CI installs WeasyPrint's Ubuntu packages before the unit tests, in `ci.yml` and `lowest.yml`.
+10. **macOS libraries (D13).** WeasyPrint names Pango and the libraries it uses by short names, which macOS does not look for in Homebrew's or MacPorts' folders; WeasyPrint's troubleshooting notes say to set `DYLD_FALLBACK_LIBRARY_PATH`. A variable set in a shell does not reach a seatbelt the desktop app starts. So on macOS, before loading WeasyPrint, seatbelt adds those folders that exist (`$HOMEBREW_PREFIX/lib`, `/opt/homebrew/lib`, `/usr/local/lib`, `/opt/local/lib`) to the variable in its own process, keeping what it held (or macOS's own fallback, when unset). That is enough: cffi, which loads the libraries, falls back to Python's own lookup, which reads the variable when it is called. WeasyPrint's own notice about a missing library is kept out of the output; seatbelt's error says it.
+11. **The gateway and brotli (D11).** With `brotli` installed, the gateway's HTTP client asks upstream for `br` too, as it asks only for what it can decode, and the gateway already drops `Content-Encoding` from what it relays. A gateway test that assumed no `br` now checks the rule instead: the client's own `Accept-Encoding`, never the caller's.
 
 ## Checks (2026-10-13)
 
@@ -77,14 +78,16 @@
 | D2 | `uv lock --check` with uv 0.12.20 (CI's); `pip-audit` over `uv export --no-dev --all-extras` of the lock | the lock passes. The audit reports urllib3 2.7.0 (PYSEC-2026-4175, -4176 and -4177, fixed in 2.8.0), locked the same on `main`, through `requests` and the `openai-agents` extra: not from this change |
 | D3 | WeasyPrint 70.0 with the refusing fetcher: an `<img>` with an `http:`, a `file:` and a `data:` URL; `@import`; a CSS `background` URL; a `<link>` stylesheet; `@font-face`. The PDF template rendered with a fetcher that counts | each stopped the render with `FatalURLFetchingError`; the template asked for no URL |
 | D4 | A reference run's HTML page rendered before and after the template parts moved to `_run.html` | byte-identical |
-| D5 | The reference run (a `<script>` and a right-to-left override in a prompt, an `<img onerror>` in an error, a refusal, a failed tool call) as a PDF | 3 pages, mode 0600; the markup shown as text and the override as `‮`; the refusal and the failed call in full; PDF title, subject, creator and producer set |
-| D6 | Layout time of one unbroken 3,000-character word in each construct; then a whole run with one unbroken value everywhere | a paragraph 0.21 s; `pre` 0.12 s; a fixed-layout table cell 0.38 s; an auto-width table cell 20.87 s; inside a grid 87.53 s; inside flexbox 454.97 s. In `pre`: 16,000 characters 1.61 s and 64,000 25.17 s, or 0.18 s and 1.07 s with a zero-width space every 80. A run with a 2,000-character value took 36.6 s before the change, and a test run with one of 49,152 had not finished after ten minutes; after it, 2,000 took 1.31 s, 49,152 0.95 s, and 200,000 0.82 s |
+| D5 | The reference run (a `<script>` and a right-to-left override in a prompt, an `<img onerror>` in an error, a refusal, a failed tool call) as a PDF | 3 pages, mode 0600; the markup shown as text and the override as `\u202e`; the refusal and the failed call in full; PDF title, subject, creator and producer set |
+| D6 | Layout time of one unbroken 3,000-character word in each construct; then a whole run with one unbroken value in every place the tests' run carries someone else's words | a paragraph 0.21 s; `pre` 0.12 s; a fixed-layout table cell 0.38 s; an auto-width table cell 20.87 s; inside a grid 87.53 s; inside flexbox 454.97 s. In `pre`: 16,000 characters 1.61 s and 64,000 25.17 s, or 0.18 s and 1.07 s with a zero-width space every 80. A run with a 2,000-character value took 36.6 s before the change, and a test run with one of 49,152 had not finished after ten minutes; after it, 2,000 took 1.31 s, 49,152 0.95 s, and 200,000 0.82 s |
 | D7 | The synthetic sessions of the HTML design's check C7, as PDFs | 150 turns (a 21.8 MB ledger): 11.3 s before fixed table layout (8.2 s of it layout), 3.9 to 4.4 s after; 20 pages, 0.1 MB. 400 turns (150.1 MB): 31.1 s before, 13.5 to 13.8 s after; 52 pages, 0.2 MB, a peak of 715 MB of memory |
 | D8 | The wheel built with uv 0.12.20; installed without the extra in a new virtualenv | it holds `templates/_run.html`, `run.html` and `run_pdf.html`, and `Requires-Dist: weasyprint>=70.0 ; extra == 'pdf'`. Installed without it, `--pdf` printed the install note, exited 1 and wrote nothing; `--html` still worked |
-| D9 | `pytest -m "not integration"` as root; ruff; pyright (strict) | 779 passed; 7 failed, the same 7 that fail as root on `main` (the sandbox refuses root; root ignores `chmod 500`). `tests/unit/test_pdf_report.py` has 19 tests. ruff and pyright clean |
+| D9 | `pytest -m "not integration"` as root; ruff; pyright (strict) | 779 passed; 7 failed, the same 7 that fail as root on `main` (the sandbox refuses root; root ignores `chmod 500`). `tests/unit/test_pdf_report.py` had 19 tests then, 26 after the second reader's fixes. ruff and pyright clean |
 | D10 | The desktop app under Xvfb, as for the desktop design's L checks, with a stand-in `xdg-open` that logs what it is given: a run's view, "Open as PDF"; then the same with `seatbelt` installed without the extra | the button showed "Making the PDF…", then the stand-in was given `<runs folder>/<run id>.pdf`, mode 0600, 22 pages, attested, with the denied Bash call's result in full. Without the extra, nothing was opened and the view showed "seatbelt made no PDF: a PDF needs the pdf extra: …" |
 | D11 | `uv tree --invert --package brotli`; `httpx2.AsyncClient().headers` | brotli comes from `fonttools[woff]`, through WeasyPrint; httpx2's default `Accept-Encoding` is then `gzip, deflate, br` |
-| D12 | `cargo test`, clippy (`-D warnings`), `tsc` | 60 tests pass, adding a run's PDF found by its id and seatbelt's last words on one line; clippy and tsc clean |
+| D12 | `cargo test`, clippy (`-D warnings`), `tsc` | 60 tests pass, adding a run's PDF found by its id and what seatbelt printed, on one line; clippy and tsc clean |
+| D13 | On the maintainer's Mac, "Open as PDF" with Homebrew's WeasyPrint installed; then, here, how the libraries are found | the app showed "WeasyPrint cannot load a library it needs (cannot load library 'libgobject-2.0-0' …)": dyld had looked in `~/lib`, `/usr/local/lib` and `/usr/lib`, not `/opt/homebrew/lib`. In WeasyPrint 70.0, `gobject` is tried as `gobject-2.0` among other names; cffi tries such a name with `dlopen`, then with `ctypes.util.find_library`, which on macOS tries `lib<name>.dylib` through `dyld_find`, which reads `DYLD_FALLBACK_LIBRARY_PATH` from `os.environ` when called and uses macOS's own fallback only when it is unset. The fix's rule is unit-tested; it has not been run on a Mac yet |
+| D14 | After the second reader: a run id of 200,000 characters | 283 s before the run id was cut (the reader's measurement), 0.55 s after |
 
 ## Rejected (ours)
 
@@ -92,14 +95,14 @@
 - **A pure-Python PDF library,** such as fpdf2: a second layout to keep in step with the page's.
 - **A headless browser,** through Playwright: a browser download as a dependency.
 - **Writing a PDF as each run ends:** seconds on the CLI's way out for a long run (D7), for a view the page already gives.
-- **Every event in full:** the maintainer's choice. A long run's PDF would run to hundreds of pages.
+- **Every event in full:** the maintainer's choice. A long run's would be far longer: the 150-turn run of D7 has 602 events, each up to 16 KiB in full.
 - **Refusing a document's requests one by one,** WeasyPrint's default when a fetch fails: the render would go on without the resource. Stopping it is the stronger answer, since the template asks for none.
 
 ## Not done
 
 - A report over an evidence pack, which `docs/BUILD.md` lists as planned.
 - PDF/A and tagged (accessible) PDF: WeasyPrint has options for both, not tried.
-- Pango on macOS and Windows, and "Open as PDF" outside Linux.
+- Pango on Windows, and the macOS fix (D13) on a Mac: "Open as PDF" has been run only on Linux.
 - Fonts: WeasyPrint uses the system's. A script with no installed font was not tried.
 - A time or memory limit on rendering, which WeasyPrint's security notes suggest. The length limits above are what bound it.
 - A PDF written elsewhere with `--out` is the user's own copy: `erase` does not know about it, as for the page.
@@ -123,4 +126,6 @@ All pages read 2026-10-13.
 | Design | brotli from `fonttools[woff]`; httpx2's default encodings | D11 |
 | Design | the gateway drops the caller's `Accept-Encoding` and the upstream's `Content-Encoding` | `src/seatbelt/gateway/app.py` (`_STRIP_REQUEST`, with the comment "httpx2 decodes the body, so let it ask only for encodings it can decode"; `_STRIP_RESPONSE`) |
 | Design | the dependency-floors rule | `CHANGELOG.md` (0.5.2): "Dependency floors are the lowest releases the tests pass with, and never below the first release from which no later one has a known advisory." |
-| Checks | D1 to D12 | run in this repository's development container on 2026-10-13. D7 uses the generator of the HTML design's C7 |
+| Checks | D1 to D12, D14 | run in this repository's development container on 2026-10-13. D7 uses the generator of the HTML design's C7 |
+| Checks | D13 | the maintainer's report from their Mac, 2026-10-13; CPython 3.12 `Lib/ctypes/macholib/dyld.py` (`dyld_env`: "if env is None: env = os.environ"; `dyld_default_search`; `DEFAULT_LIBRARY_FALLBACK`) and `Lib/ctypes/util.py` (darwin `find_library`); cffi's `api.py` (`_load_backend_lib`); WeasyPrint 70.0's `text/ffi.py` (`_dlopen` and the names it tries) |
+| Design | WeasyPrint's troubleshooting for macOS | https://doc.courtbouillon.org/weasyprint/stable/first_steps.html ("Troubleshooting"): "On macOS, you can set the `DYLD_FALLBACK_LIBRARY_PATH` environment variable" |

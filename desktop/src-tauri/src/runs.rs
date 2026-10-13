@@ -76,7 +76,7 @@ pub fn usage(tools: &Tools) -> Result<Value, String> {
 
 /// Make the run's PDF with `seatbelt reconstruct --pdf`, after the checks it makes, beside
 /// the ledger where seatbelt puts it and `erase` looks, and say where it is. When seatbelt
-/// makes none (a ledger that does not verify, or no `pdf` extra), its own words say why.
+/// makes none (a ledger that does not verify, or no `pdf` extra), what it printed says why.
 pub fn make_pdf(tools: &Tools, id: &str) -> Result<PathBuf, String> {
     let folder = folder(tools)?;
     let ledger = file_of(&folder, id, "jsonl")?;
@@ -95,9 +95,10 @@ pub fn make_pdf(tools: &Tools, id: &str) -> Result<PathBuf, String> {
     file_of(&folder, id, "pdf")
 }
 
-/// Why seatbelt made no PDF: the last thing it said, as one line.
+/// Why seatbelt made no PDF: what it printed (its reason goes to its output, a warning or a
+/// crash to its error output), on one line.
 fn failed(stdout: &[u8], stderr: &[u8]) -> String {
-    let said = [stderr, stdout]
+    let said = [stdout, stderr]
         .iter()
         .map(|out| {
             String::from_utf8_lossy(out)
@@ -105,8 +106,9 @@ fn failed(stdout: &[u8], stderr: &[u8]) -> String {
                 .collect::<Vec<_>>()
                 .join(" ")
         })
-        .find(|text| !text.is_empty())
-        .unwrap_or_default();
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
     format!("seatbelt made no PDF: {said}")
 }
 
@@ -189,15 +191,16 @@ mod tests {
     }
 
     #[test]
-    fn why_no_pdf_is_seatbelts_own_last_words_on_one_line() {
+    fn why_no_pdf_is_what_seatbelt_printed_on_one_line() {
         let extra = b"a PDF needs the pdf extra: pip install\n  'seatbelt-ai[pdf]'\n";
         assert_eq!(
             failed(extra, b""),
             "seatbelt made no PDF: a PDF needs the pdf extra: pip install 'seatbelt-ai[pdf]'"
         );
+        // a warning on its error output does not hide the reason
         assert_eq!(
-            failed(b"ignored", b"chain broken at seq 2"),
-            "seatbelt made no PDF: chain broken at seq 2"
+            failed(b"chain broken at seq 2", b"UserWarning: HarfBuzz-Subset\n"),
+            "seatbelt made no PDF: chain broken at seq 2 UserWarning: HarfBuzz-Subset"
         );
     }
 }

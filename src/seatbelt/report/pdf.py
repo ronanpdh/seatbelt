@@ -1,21 +1,26 @@
 """A run as a PDF: the HTML page's facts, checks and summary, then one line per event, with
-everything recorded only for the events refused by policy or that failed.
+what was recorded, up to 16 KiB (its start and end beyond that), only for the events refused by
+policy or that failed.
 
 Like the page, the PDF is a view, not evidence: it is made only from a ledger that verifies, and
 says what was checked when it was made. It is rendered by WeasyPrint, from the optional `pdf`
-extra, from the same escaped template parts as the page. The template refers to nothing outside
-itself, and the renderer is given a URL fetcher that refuses every URL and stops the render: a
-value that ever escaped the template still loads nothing. Design:
-docs/plans/2026-10-13-pdf-run-report-design.md.
+extra, from a template that shares the page's header, checks and summary, escaped as the page
+is. The template refers to nothing outside itself, and the renderer is given a URL fetcher that
+refuses every URL and stops the render: a value that ever escaped the template still loads
+nothing. Design: docs/plans/2026-10-13-pdf-run-report-design.md.
 """
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import importlib
+import io
 import os
 import re
+import sys
 import tempfile
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -25,10 +30,11 @@ from seatbelt.report.html import Page, PageError, build, template
 
 PDF_DETAIL_LIMIT = 16 * 1024  # bytes of a refused or failed event's detail; the ledger has all
 PDF_DETAIL_HEAD = 4 * 1024
-# WeasyPrint's line breaking takes time that grows faster than the length of an unbroken run of
-# text, worst in a table cell: one value of 64,000 characters took tens of seconds (check D6 in
-# the design). So a value in a fact or a table cell is cut to VALUE_LIMIT characters, and every
-# run of text longer than BREAK_EVERY gets a zero-width space every BREAK_EVERY characters.
+# WeasyPrint lays out an unbroken run of text in time that grows faster than its length, worse
+# in an auto-width table cell and far worse in grid and flex (check D6 in the design): one value
+# of 64,000 characters in a `pre` took 25 seconds. So a value from the ledger in a fact or a
+# table cell is cut to VALUE_LIMIT characters, and every run of text longer than BREAK_EVERY in
+# a value from the ledger gets a zero-width space every BREAK_EVERY characters.
 VALUE_LIMIT = 500
 BREAK_EVERY = 80
 TEMPLATE = "run_pdf.html"
@@ -40,13 +46,42 @@ INSTALL = (
 )
 
 
+# Where Homebrew (Apple silicon, then Intel) and MacPorts put Pango and the libraries it uses
+MAC_LIBRARY_DIRS = ("/opt/homebrew/lib", "/usr/local/lib", "/opt/local/lib")
+# where macOS looks when DYLD_FALLBACK_LIBRARY_PATH is unset; setting it replaces these
+_MAC_DEFAULT_FALLBACK = ("~/lib", "/usr/local/lib", "/lib", "/usr/lib")
+
+
 class PdfUnavailable(Exception):
     """WeasyPrint is not installed, or cannot load the system libraries it needs."""
 
 
+def mac_library_path(env: Mapping[str, str], is_dir: Callable[[str], bool]) -> str | None:
+    """`DYLD_FALLBACK_LIBRARY_PATH` with the folders Homebrew and MacPorts install into added
+    (those that exist), or None when it has them all. On macOS, WeasyPrint names Pango and the
+    libraries it uses by short names that the system looks for in none of those folders; its
+    troubleshooting notes say to set this variable. cffi, which loads them, falls back to
+    Python's own lookup, which reads the variable when it is called: so setting it in this
+    process is enough, and it reaches a seatbelt the desktop app starts, which a variable set
+    in a shell does not."""
+    current = [p for p in env.get("DYLD_FALLBACK_LIBRARY_PATH", "").split(":") if p]
+    base = current or [os.path.expanduser(p) for p in _MAC_DEFAULT_FALLBACK]
+    prefix = env.get("HOMEBREW_PREFIX")
+    wanted = [f"{prefix}/lib"] if prefix else []
+    added = [d for d in dict.fromkeys([*wanted, *MAC_LIBRARY_DIRS]) if d not in base]
+    added = [d for d in added if is_dir(d)]
+    return ":".join([*base, *added]) if added else None
+
+
 def _weasyprint() -> Any:  # Any: WeasyPrint has no type information
+    if sys.platform == "darwin":
+        path = mac_library_path(os.environ, os.path.isdir)
+        if path is not None:
+            os.environ["DYLD_FALLBACK_LIBRARY_PATH"] = path
     try:
-        return importlib.import_module("weasyprint")
+        # WeasyPrint prints its own notice when a library is missing; the error below says it
+        with contextlib.redirect_stdout(io.StringIO()):
+            return importlib.import_module("weasyprint")
     except ImportError as exc:
         raise PdfUnavailable(INSTALL) from exc
     except OSError as exc:  # installed, but Pango or a library it needs cannot be loaded
@@ -84,11 +119,26 @@ def _short(text: str) -> str:
     return _breakable(text)
 
 
+def _short_keys[V](values: dict[str, V]) -> dict[str, V]:
+    """`values` with each name made short as `_short` does; two that end up the same are kept
+    apart by a number, so no row takes another's place."""
+    shown: dict[str, V] = {}
+    for name, value in values.items():
+        key, n = _short(name), 1
+        while key in shown:
+            n += 1
+            key = f"{_short(name)} ({n})"
+        shown[key] = value
+    return shown
+
+
 def _for_pdf(page: Page) -> Page:
-    """`page` with every value from the ledger short enough, and breakable, to lay out."""
+    """`page` with every value from the ledger that it shows short enough, and breakable, to
+    lay out."""
     return dataclasses.replace(
         page,
         title=_short(page.title),
+        run_id=_short(page.run_id),
         name=_short(page.name),
         principal=_short(page.principal),
         client=_short(page.client),
@@ -96,8 +146,8 @@ def _for_pdf(page: Page) -> Page:
         outcome_reason=_short(page.outcome_reason),
         verify_command=_breakable(page.verify_command),
         ledger_file=_short(page.ledger_file),
-        models={_short(name): usage for name, usage in page.models.items()},
-        tools={_short(name): n for name, n in page.tools.items()},
+        models=_short_keys(page.models),
+        tools=_short_keys(page.tools),
         refusals=[
             dataclasses.replace(r, rule=_short(r.rule), reason=_short(r.reason))
             for r in page.refusals

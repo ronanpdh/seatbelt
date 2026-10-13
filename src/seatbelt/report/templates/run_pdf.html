@@ -29,8 +29,8 @@ section.events, section.full { border: none; padding: 0; }
 .brand { color: var(--muted); font-size: 8.5pt; }
 .badge { background: var(--ink); color: #fff; font-weight: 700; padding: 0 6px; border-radius: 3px; }
 .sub { color: var(--muted); margin: 0 0 10px; overflow-wrap: anywhere; }
-/* Blocks and fixed tables only: WeasyPrint lays out grid, flex and auto-width tables in time
-   that grows much faster than a long value (check D6 in the design) */
+/* No grid, flex or auto-width table: WeasyPrint lays those out in time that grows much faster
+   than a long value (check D6 in the design). Inline-blocks hold only labels and numbers */
 dl.facts { margin: 0; }
 dl.facts div { margin: 0 0 3px; }
 dt { color: var(--muted); font-size: 7.5pt; text-transform: uppercase; letter-spacing: .04em; }

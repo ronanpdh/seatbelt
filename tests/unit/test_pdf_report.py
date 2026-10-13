@@ -95,6 +95,42 @@ def test_a_long_unbroken_value_is_cut_and_breakable_and_quick_to_lay_out(tmp_pat
     assert time.monotonic() - started < 60  # under a second here; minutes before
 
 
+def test_a_long_run_id_and_names_that_cut_alike_are_shown_apart(tmp_path: Path) -> None:
+    page = build(_run(tmp_path), every=False, limit=PDF_DETAIL_LIMIT)
+    long = "m" * 2 * pdf.VALUE_LIMIT
+    page.run_id = "r" * 200_000
+    page.models = {f"{long}a": page.total, f"{long}b": page.total}
+    shown = pdf._for_pdf(page)  # pyright: ignore[reportPrivateUsage]
+    assert len(shown.run_id) < pdf.VALUE_LIMIT + 200
+    assert len(shown.models) == 2
+
+
+@pytest.mark.parametrize(
+    ("env", "dirs", "expected"),
+    [
+        # unset: macOS's own fallback first, then the folders that exist
+        ({}, {"/opt/homebrew/lib"}, "~/lib:/usr/local/lib:/lib:/usr/lib:/opt/homebrew/lib"),
+        ({}, {"/opt/local/lib"}, "~/lib:/usr/local/lib:/lib:/usr/lib:/opt/local/lib"),
+        # set: kept, and added to
+        ({"DYLD_FALLBACK_LIBRARY_PATH": "/x"}, {"/opt/homebrew/lib"}, "/x:/opt/homebrew/lib"),
+        (
+            {"HOMEBREW_PREFIX": "/brew"},
+            {"/brew/lib"},
+            "~/lib:/usr/local/lib:/lib:/usr/lib:/brew/lib",
+        ),
+        # nothing to add
+        ({"DYLD_FALLBACK_LIBRARY_PATH": "/opt/homebrew/lib"}, {"/opt/homebrew/lib"}, None),
+        ({}, set[str](), None),
+    ],
+)
+def test_on_macos_the_folders_homebrew_and_macports_use_are_searched(
+    env: dict[str, str], dirs: set[str], expected: str | None
+) -> None:
+    found = pdf.mac_library_path(env, dirs.__contains__)
+    home = os.path.expanduser("~")
+    assert found == (expected.replace("~", home) if expected else None)
+
+
 def test_ledger_text_stays_text_and_nothing_is_loaded(tmp_path: Path) -> None:
     """Any URL the document asked for would stop the render, so a PDF made at all loaded
     nothing; and the text is there as text."""
