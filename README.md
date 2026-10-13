@@ -8,6 +8,8 @@
 
 Seatbelt records what your AI agents do: every prompt, model response and tool call. The record is tamper-evident and signed, so you can prove later exactly what happened.
 
+It comes as a command-line tool, `seatbelt`, and a [desktop app](#desktop-app), not yet released, where you chat with your own Claude Code, Codex and Gemini CLI in one window and each chat is recorded.
+
 ## Quick start
 
 ```sh
@@ -31,6 +33,14 @@ For a run as a PDF, install the `pdf` extra (`uv tool install 'seatbelt-ai[pdf]'
 There is nothing to set up. How it works, where runs are saved, and what is and isn't recorded: [docs/local-recording.md](https://github.com/ronanpdh/seatbelt/blob/main/docs/local-recording.md).
 
 No agent to hand? `seatbelt demo` records an example run in `./runs` and prints the commands that check and replay it (`seatbelt verify runs/<run id>.jsonl`). `verify` and `reconstruct` take a file path, or the name of a run `seatbelt run` recorded, from `seatbelt runs`.
+
+## Desktop app
+
+<img src="https://raw.githubusercontent.com/ronanpdh/seatbelt/main/docs/assets/desktop-app.png" alt="The Seatbelt desktop app: New chat with Claude Code, Codex and Gemini CLI on the left; a run on the right, verified and signed, with its model usage and tools" width="100%">
+
+Chat with your own Claude Code, Codex and Gemini CLI in one window. Each chat runs its CLI through `seatbelt run`, so every session is recorded as a signed run, and each CLI keeps its own sign-in. Tool approvals are asked in the chat, and you pick the model and permission mode under the message box. Runs, a run's events and its verification, and usage across runs are views in the app; a run opens as its page in your browser, or as a PDF with the `pdf` extra.
+
+**Not released yet.** A chat drives each CLI's headless mode with your own sign-in, and the app ships only once Anthropic and OpenAI have answered whether they permit that for an app like this. To try it now, build it from [`desktop/`](https://github.com/ronanpdh/seatbelt/blob/main/desktop/README.md#develop), with `seatbelt` installed from a clone of this repository (`uv tool install --from . seatbelt-ai`): the app uses commands not yet in a release.
 
 ## What you get
 
