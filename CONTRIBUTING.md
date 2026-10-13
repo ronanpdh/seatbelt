@@ -32,6 +32,7 @@ New functionality comes with tests, and a bug fix comes with a test that fails w
 
 - Everything lands on `main` by pull request.
 - Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) (`feat:`, `fix:`, `docs:`, `chore:` ...).
+- Branches are named for the kind of change, with a short description: `feature/pdf-report`, `fix/expired-sign-in`, `chore/bump-uv`, `docs/gateway-guide` (the Conventional Commits type, with `feature/` for `feat`). Not a generated name, such as `claude/<words>`.
 - Add a line under `[Unreleased]` in [CHANGELOG.md](CHANGELOG.md) for anything a user would notice.
 - Dependency floors in `pyproject.toml` move by hand, only when code needs a newer release or the `lowest` workflow's audit reports an advisory against a floor. Dependabot updates `uv.lock` only.
 - A change to the ledger schema needs a schema version bump, a changelog note and, if it changes a design decision, an ADR in [docs/adr/](docs/adr/).
