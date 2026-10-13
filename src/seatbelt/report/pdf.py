@@ -90,6 +90,12 @@ def _weasyprint() -> Any:  # Any: WeasyPrint has no type information
         ) from exc
 
 
+def weasyprint_version() -> str:
+    """The WeasyPrint that would make a PDF, after loading it and Pango as `--pdf` does.
+    Raises PdfUnavailable, saying why there is none."""
+    return str(_weasyprint().__version__)
+
+
 def _refusing_fetcher(weasyprint: Any) -> Any:  # Any: WeasyPrint has no type information
     """A URL fetcher that refuses every URL, and stops the render rather than leave a gap: the
     template refers to no URL, so one asked for is ledger text that escaped it."""

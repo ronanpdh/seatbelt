@@ -1,6 +1,7 @@
 // The Seatbelt window. A session is a chat with one of the CLIs, run through `seatbelt run`
-// so it is recorded; the CLI's own terminal interface is opened only to sign in, or when
-// asked for. Runs, a run and usage are views of what seatbelt reports.
+// so it is recorded; a terminal is opened only for the CLI's sign-in, or for its own interface
+// when asked for. Runs, a run and usage are views of what seatbelt reports; Settings, of what
+// seatbelt and each CLI say of this computer's setup.
 // Everything that comes from a ledger, a model or a tool is untrusted: it is only ever set as
 // textContent, never as HTML.
 
@@ -10,6 +11,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { ChatPane } from "./chat";
 import { basename, button, byId, el, plain } from "./dom";
 import { showRun, showRuns, showUsage } from "./records";
+import { SettingsView } from "./settings";
 import { TermPane } from "./terminal";
 import type { Choice, Cli, Run, Tools } from "./types";
 import "./style.css";
@@ -42,6 +44,7 @@ type View =
   | { kind: "runs" }
   | { kind: "run"; run: Run }
   | { kind: "usage" }
+  | { kind: "settings" }
   | { kind: "empty" };
 
 const sessions: Session[] = [];
@@ -331,8 +334,9 @@ async function startChat(s: Session, resume: string | null = null, divider = "")
   if (isShown(s)) s.chat.focus();
 }
 
-/** The CLI's own interface, through `seatbelt run` in a terminal: to sign in, or because it
- * was asked for. The chat ends first, and starts again (a new run) when the terminal ends. */
+/** The CLI in a terminal: its sign-in (its own login command, or for Gemini CLI its own
+ * interface), or its own interface through `seatbelt run` because it was asked for. The chat
+ * ends first, and starts again (a new run) when the terminal ends. */
 async function openTerminal(s: Session, signIn: boolean): Promise<void> {
   const chat = s.chat;
   s.signingIn = signIn;
@@ -352,13 +356,13 @@ async function openTerminal(s: Session, signIn: boolean): Promise<void> {
         if (s.chat) s.chat.hidden = false;
         setState(s, "ended", report?.recorded ? `recorded ${report.run}` : "ended");
       } else {
-        const note = s.conversation
-          ? `Back from ${s.cli.label}'s own interface: the conversation continues.`
-          : `Back from ${s.cli.label}'s own interface.`;
+        const from = s.signingIn ? `${s.cli.label}'s sign-in` : `${s.cli.label}'s own interface`;
+        const note = s.conversation ? `Back from ${from}: the conversation continues.` : `Back from ${from}.`;
         void startChat(s, s.conversation, note);
       }
     },
     s.conversation,
+    signIn,
   );
   s.term = term;
   setState(s, "running", signIn ? "signing in" : "terminal");
@@ -407,7 +411,7 @@ function renderHead(s: Session): void {
         "div",
         "session-hint",
         s.signingIn
-          ? `Sign in with ${s.cli.label}'s own sign-in below, then leave it (/exit) to go back to the chat.`
+          ? `${s.cli.label}'s own sign-in, below. The chat starts again when it ends, or when you leave it (/exit).`
           : `${s.cli.label}'s own interface. Leave it (/exit) or press Back to chat.`,
       ),
     );
@@ -466,6 +470,7 @@ function show(next: View): void {
   byId("sessions-view").hidden = next.kind !== "session";
   const records = byId("records-view");
   records.hidden = !(next.kind === "runs" || next.kind === "run" || next.kind === "usage");
+  byId("settings-view").hidden = next.kind !== "settings";
   for (const s of sessions) {
     s.pane.hidden = !isShown(s);
     renderItem(s);
@@ -473,6 +478,7 @@ function show(next: View): void {
   }
   byId("nav-runs").classList.toggle("active", next.kind === "runs" || next.kind === "run");
   byId("nav-usage").classList.toggle("active", next.kind === "usage");
+  byId("nav-settings").classList.toggle("active", next.kind === "settings");
   if (next.kind === "session") {
     if (next.session.term) next.session.term.focus();
     else next.session.chat?.focus();
@@ -482,6 +488,8 @@ function show(next: View): void {
     void showRun(records, next.run, () => show({ kind: "runs" }));
   } else if (next.kind === "usage") {
     void showUsage(records);
+  } else if (next.kind === "settings") {
+    settings.opened();
   }
 }
 
@@ -492,11 +500,21 @@ function refreshRecords(): void {
 
 // -- wiring ------------------------------------------------------------------------------
 
+const settings = new SettingsView(byId("settings-view"), {
+  recheck: async () => {
+    await check();
+    return tools;
+  },
+  folder: () => folder ?? tools?.home ?? "",
+  recorded: () => refreshRecords(),
+});
+
 byId("recheck").addEventListener("click", () => void check());
 byId("browse").addEventListener("click", () => void browse());
 renderRecents();
 byId("nav-runs").addEventListener("click", () => show({ kind: "runs" }));
 byId("nav-usage").addEventListener("click", () => show({ kind: "usage" }));
+byId("nav-settings").addEventListener("click", () => show({ kind: "settings" }));
 const folderInput = byId<HTMLInputElement>("folder-input");
 folderInput.addEventListener("blur", () => showEnd(folderInput));
 folderInput.addEventListener("change", () => {

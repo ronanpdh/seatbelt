@@ -1,7 +1,9 @@
-//! Tabs: each is a pseudo-terminal running `seatbelt run <cli>`, shown by xterm.js.
+//! Tabs: each is a pseudo-terminal running `seatbelt run <cli>`, or a CLI's own login command,
+//! shown by xterm.js.
 //!
 //! The app adds no recording of its own: `seatbelt run` records the CLI exactly as it does in
 //! any terminal, and writes a report of what it recorded (`SEATBELT_RUN_REPORT`) as it exits.
+//! A login sends no model traffic, so it runs by itself.
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -49,17 +51,20 @@ struct Tab {
     exited: Arc<AtomicBool>,
 }
 
-/// What a tab runs: `seatbelt run --exe <exe> <cli>` in `cwd`.
+/// What a tab runs: `seatbelt run --exe <exe> <cli>` in `cwd`, or, with no seatbelt, the CLI
+/// by itself: its own login, which sends no model traffic, so there is nothing to record.
 pub struct Launch<'a> {
-    pub seatbelt: &'a Path,
+    pub seatbelt: Option<&'a Path>,
     pub cli: &'a str,
     pub exe: &'a Path,
     pub cwd: &'a Path,
     pub search_path: &'a OsStr,
-    pub report: PathBuf,
+    /// Where `seatbelt run` writes its report as it exits; None with no seatbelt.
+    pub report: Option<PathBuf>,
     pub cols: u16,
     pub rows: u16,
-    /// Arguments for the CLI, after `--`: those that resume a conversation, or none.
+    /// Arguments for the CLI (after `--` for `seatbelt run`): those that resume a
+    /// conversation, its login command, or none.
     pub args: Vec<String>,
 }
 
@@ -88,26 +93,43 @@ impl Tabs {
         let pair = native_pty_system()
             .openpty(size(launch.cols, launch.rows))
             .map_err(|e| format!("could not open a terminal: {e}"))?;
-        let mut cmd = CommandBuilder::new(launch.seatbelt);
-        cmd.arg("run");
-        cmd.arg("--exe");
-        cmd.arg(launch.exe);
-        cmd.arg(launch.cli);
-        if !launch.args.is_empty() {
-            cmd.arg("--");
-            cmd.args(&launch.args);
-        }
+        let mut cmd = match launch.seatbelt {
+            Some(seatbelt) => {
+                let mut cmd = CommandBuilder::new(seatbelt);
+                cmd.arg("run");
+                cmd.arg("--exe");
+                cmd.arg(launch.exe);
+                cmd.arg(launch.cli);
+                if !launch.args.is_empty() {
+                    cmd.arg("--");
+                    cmd.args(&launch.args);
+                }
+                if let Some(report) = &launch.report {
+                    cmd.env(RUN_REPORT_ENV, report);
+                }
+                // the app shows what the terminal is for: no belt, no lines that only inform
+                cmd.env(QUIET_ENV, "1");
+                cmd
+            }
+            None => {
+                let mut cmd = CommandBuilder::new(launch.exe);
+                cmd.args(&launch.args);
+                cmd
+            }
+        };
         cmd.cwd(launch.cwd);
         cmd.env("PATH", launch.search_path);
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
-        cmd.env(RUN_REPORT_ENV, &launch.report);
-        // the app shows what the terminal is for: no belt, no lines that only inform
-        cmd.env(QUIET_ENV, "1");
+        let started = if launch.seatbelt.is_some() {
+            "seatbelt"
+        } else {
+            launch.cli
+        };
         let mut child = pair
             .slave
             .spawn_command(cmd)
-            .map_err(|e| format!("could not start seatbelt: {e}"))?;
+            .map_err(|e| format!("could not start {started}: {e}"))?;
         drop(pair.slave); // the child holds it now; the reader sees the end when it exits
         let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
         let mut writer = pair.master.take_writer().map_err(|e| e.to_string())?;
@@ -151,7 +173,7 @@ impl Tabs {
             lock(&open).remove(&id); // closes the terminal: a reader still blocked ends
             let _ = events.send(TabEvent::Exit {
                 code,
-                report: take_report(&report),
+                report: report.as_deref().and_then(take_report),
             });
         });
         Ok(id)
@@ -353,8 +375,18 @@ mod tests {
 
     #[cfg(unix)]
     fn start(dir: &Path, script: &str) -> (Tabs, u32, mpsc::Receiver<serde_json::Value>) {
+        start_as(dir, script, true)
+    }
+
+    /// `start`, with the stand-in run as seatbelt (`recorded`) or as the CLI itself.
+    #[cfg(unix)]
+    fn start_as(
+        dir: &Path,
+        script: &str,
+        recorded: bool,
+    ) -> (Tabs, u32, mpsc::Receiver<serde_json::Value>) {
         use tauri::ipc::InvokeResponseBody;
-        let seatbelt = fake_seatbelt(dir, script);
+        let program = fake_seatbelt(dir, script);
         let (tx, rx) = mpsc::channel();
         let events = Channel::new(move |body| {
             if let InvokeResponseBody::Json(json) = body {
@@ -364,15 +396,23 @@ mod tests {
         });
         let tabs = Tabs::default();
         let launch = Launch {
-            seatbelt: &seatbelt,
+            seatbelt: recorded.then_some(program.as_path()),
             cli: "claude",
-            exe: Path::new("/opt/claude"),
+            exe: if recorded {
+                Path::new("/opt/claude")
+            } else {
+                &program
+            },
             cwd: dir,
             search_path: OsStr::new("/usr/bin:/bin"),
-            report: dir.join("report.json"),
+            report: recorded.then(|| dir.join("report.json")),
             cols: 100,
             rows: 30,
-            args: vec!["--resume".into(), "s-1".into()],
+            args: if recorded {
+                vec!["--resume".into(), "s-1".into()]
+            } else {
+                vec!["auth".into(), "login".into()]
+            },
         };
         let id = tabs.open(launch, events).unwrap();
         (tabs, id, rx)
@@ -459,6 +499,28 @@ while :; do sleep 0.1; done"#,
         assert_eq!(exit["report"]["exit"], 143);
         assert_eq!(tabs.running(), 0);
         assert_eq!(tabs.write(id, "x").unwrap_err(), "that tab has ended");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_login_runs_the_cli_itself_with_nothing_of_seatbelts() {
+        let dir = scratch("login");
+        let (tabs, _, rx) = start_as(
+            &dir,
+            r#"printf 'args: %s\n' "$*"
+[ -t 0 ] && [ -t 1 ] && echo 'on a terminal'
+echo "report=${SEATBELT_RUN_REPORT-unset} quiet=${SEATBELT_QUIET-unset}"
+exit 0"#,
+            false,
+        );
+        let (output, exit) = until_exit(&rx);
+        assert!(output.contains("args: auth login"), "{output}");
+        assert!(output.contains("on a terminal"), "{output}");
+        assert!(output.contains("report=unset quiet=unset"), "{output}");
+        assert_eq!(exit["code"], 0);
+        assert!(exit["report"].is_null());
+        assert_eq!(tabs.running(), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

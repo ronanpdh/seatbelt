@@ -271,6 +271,33 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path / "home"
 
 
+def test_doctor_says_where_runs_are_whether_the_config_reads_and_whether_pdfs_work(
+    home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    from seatbelt.report import pdf
+
+    r = runner.invoke(app, ["doctor", "--json"])
+    assert r.exit_code == 0, r.output
+    checks = json.loads(r.output)
+    assert checks["runs"] == str(home / "runs") and checks["config"] is None
+    assert set(checks["pdf"]) == {"ok", "weasyprint", "reason"}
+
+    def missing() -> str:
+        raise pdf.PdfUnavailable(pdf.INSTALL)
+
+    monkeypatch.setattr(pdf, "weasyprint_version", missing)
+    r = runner.invoke(app, ["doctor", "--json"])
+    assert r.exit_code == 0  # a PDF is optional
+    assert json.loads(r.output)["pdf"] == {"ok": False, "weasyprint": None, "reason": pdf.INSTALL}
+    (tmp_path / "config.toml").write_text("gatway = 1\n")
+    r = runner.invoke(app, ["doctor", "--json"])
+    assert r.exit_code == 1 and "unknown keys" in json.loads(r.output)["config"]
+    r = runner.invoke(app, ["doctor"])
+    assert r.exit_code == 1 and "seatbelt-ai[pdf]" in " ".join(r.output.split())
+
+
 def test_a_local_run_is_found_by_its_name_or_id_and_checked_against_this_machines_key(
     home: Path,
 ) -> None:

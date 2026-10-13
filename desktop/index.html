@@ -46,6 +46,10 @@
         <button id="nav-runs" type="button" class="nav">Runs</button>
         <button id="nav-usage" type="button" class="nav">Usage</button>
       </nav>
+
+      <nav class="records-nav" aria-label="Settings">
+        <button id="nav-settings" type="button" class="nav">Settings</button>
+      </nav>
     </aside>
 
     <main id="main">
@@ -57,9 +61,11 @@
           opens in a terminal for its own sign-in, then the chat starts.
         </p>
         <p>Runs and Usage show what seatbelt recorded, and whether each run verifies.</p>
+        <p>Settings shows what seatbelt and each CLI say of their setup, and signs a CLI in again.</p>
       </div>
       <div id="sessions-view" hidden></div>
       <div id="records-view" class="records" hidden></div>
+      <div id="settings-view" class="records" hidden></div>
     </main>
 
     <div id="quit" class="modal" role="dialog" aria-modal="true" aria-labelledby="quit-title" hidden>

@@ -55,6 +55,44 @@ def version() -> None:
     console.print(__version__)
 
 
+@app.command()
+def doctor(
+    json_out: Annotated[bool, typer.Option("--json", help="print the checks as JSON")] = False,
+) -> None:
+    """Check this machine's setup: seatbelt's version, where it keeps runs and its signing key,
+    whether its config can be read, and whether it can write a run as a PDF (the pdf extra and
+    the Pango library). Exits 1 only for a config it cannot read: a PDF is optional."""
+    from seatbelt.report.pdf import PdfUnavailable, weasyprint_version
+
+    checks: dict[str, Any] = {"version": __version__, "runs": None, "key": None, "config": None}
+    try:
+        runs, pub = _local_runs(None)
+        checks["runs"], checks["key"] = str(runs), str(pub) if pub else None
+    except ValueError as exc:  # a client config it cannot read
+        checks["config"] = str(exc)
+    weasyprint: str | None = None
+    why_no_pdf: str | None = None
+    try:
+        weasyprint = weasyprint_version()
+    except PdfUnavailable as exc:
+        why_no_pdf = str(exc)
+    checks["pdf"] = {"ok": weasyprint is not None, "weasyprint": weasyprint, "reason": why_no_pdf}
+    if json_out:
+        print(json.dumps(checks, indent=1))
+    else:
+        lines = [
+            f"seatbelt {__version__}",
+            f"runs: {checks['runs'] or 'unknown'}",
+            f"signing key: {checks['key'] or 'none yet (made by the first local run)'}",
+            f"config: {checks['config'] or 'ok'}",
+            f"PDF: {f'yes, WeasyPrint {weasyprint}' if weasyprint else why_no_pdf}",
+        ]
+        for text in lines:
+            console.print(Text(printable(text)))
+    if checks["config"] is not None:
+        raise typer.Exit(code=1)
+
+
 PubKey = Annotated[Path | None, typer.Option(help="public key from keygen; checks the attestation")]
 LedgerRef = Annotated[
     str | None,

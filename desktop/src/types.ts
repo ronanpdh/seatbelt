@@ -4,6 +4,31 @@ export type Cli = { name: string; label: string; path: string | null };
 export type Seatbelt = { path: string; version: string; supported: boolean; problem: string | null };
 export type Tools = { seatbelt: Seatbelt | null; clis: Cli[]; home: string | null };
 
+/** `seatbelt doctor --json` */
+export type Doctor = {
+  version: string;
+  runs: string | null;
+  key: string | null;
+  /** why its config cannot be read; null when it can */
+  config: string | null;
+  pdf: { ok: boolean; weasyprint: string | null; reason: string | null };
+};
+
+/** A CLI's version and sign-in, as it says them (settings.rs). */
+export type CliStatus = {
+  name: string;
+  label: string;
+  path: string | null;
+  version: string | null;
+  /** null: the CLI has no command that says, or did not answer */
+  signed_in: boolean | null;
+  sign_in: string;
+  /** what "Sign in again" runs, as it would be typed */
+  login: string;
+  /** what to know before trusting the answer or signing in again */
+  note: string | null;
+};
+
 /** What `seatbelt run` recorded, from its run report. */
 export type Report = {
   run: string;

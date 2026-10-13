@@ -1,12 +1,14 @@
 //! Seatbelt desktop: Claude Code, Codex and Gemini CLI in tabs, each run through
-//! `seatbelt run`, so each is recorded and keeps its own sign-in.
+//! `seatbelt run`, so each is recorded and keeps its own sign-in. The one thing run without
+//! it is Claude Code's or Codex's own login command, which sends no model traffic.
 //!
 //! The web view can do only what these commands allow: pick or check a folder; open a chat
 //! or a terminal tab for one of the three CLIs in a folder; send a chat message, answer its
 //! approvals, interrupt or end it; write to, resize or close a tab; list runs; show, verify or
-//! open the page of a run by its id; report usage; open an http(s) link from a reply in the
-//! browser; quit. It never names a program to run or a file to open, and never writes to a
-//! CLI's protocol itself.
+//! open the page of a run by its id; report usage; check seatbelt's setup and each CLI's
+//! version and sign-in; sign a CLI in again in a terminal; open an http(s) link from a reply
+//! in the browser; quit. It never names a program to run or a file to open, and never writes
+//! to a CLI's protocol itself.
 //!
 //! No native dialog in the app's own process on macOS: `+[NSOpenPanel openPanel]` can return
 //! nil (a code-signature mismatch after an in-place update is one reported cause), and the
@@ -19,6 +21,7 @@ mod chat;
 mod picker;
 mod pty;
 mod runs;
+mod settings;
 mod tools;
 
 use std::path::{Path, PathBuf};
@@ -185,17 +188,81 @@ fn open_tab(
         None => Vec::new(),
     };
     let launch = Launch {
-        seatbelt: &start.seatbelt,
+        seatbelt: Some(&start.seatbelt),
         cli: &cli,
         exe: &start.exe,
         cwd: &start.cwd,
         search_path: &start.search_path,
-        report: start.report,
+        report: Some(start.report),
         cols,
         rows,
         args,
     };
     state.tabs.open(launch, events)
+}
+
+/// Sign `cli` in again, in a terminal tab. Claude Code and Codex have a login command
+/// (`claude auth login`, `codex login`): it runs by itself, in the home folder, since it sends
+/// no model traffic to record. Gemini CLI signs in only from its own interface (`/auth`), so
+/// that opens in `cwd` through `seatbelt run`, continuing `resume` if given, as a session's
+/// terminal does: anything it sends to a model there is recorded.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)] // a command's arguments are what the web view names
+fn open_login(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    cli: String,
+    cwd: String,
+    cols: u16,
+    rows: u16,
+    resume: Option<String>,
+    events: Channel<TabEvent>,
+) -> Result<u32, String> {
+    let Some(args) = settings::login_args(&cli) else {
+        return open_tab(app, state, cli, cwd, cols, rows, resume, events);
+    };
+    let found = state.tools();
+    let exe = found
+        .cli(&cli)
+        .and_then(|c| c.path.clone())
+        .ok_or_else(|| format!("{cli} is not installed, or not on your PATH"))?;
+    let home = tools::home_dir()
+        .filter(|home| home.is_dir())
+        .ok_or("there is no home folder to sign in from")?;
+    let launch = Launch {
+        seatbelt: None,
+        cli: &cli,
+        exe: &exe,
+        cwd: &home,
+        search_path: &found.search_path,
+        report: None,
+        cols,
+        rows,
+        args: args.iter().map(ToString::to_string).collect(),
+    };
+    state.tabs.open(launch, events)
+}
+
+/// `seatbelt doctor`: its version, where runs go, its signing key, whether its config reads,
+/// and whether it can make a PDF.
+#[tauri::command]
+async fn seatbelt_checks(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let found = state.tools();
+    tauri::async_runtime::spawn_blocking(move || settings::doctor(&found))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Where `cli` is, its version, and whether it says it is signed in.
+#[tauri::command]
+async fn cli_status(
+    state: State<'_, AppState>,
+    cli: String,
+) -> Result<settings::CliStatus, String> {
+    let found = state.tools();
+    tauri::async_runtime::spawn_blocking(move || settings::cli_status(&found, &cli))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Start a chat: the CLI's headless session, through `seatbelt run`, on `model`, `effort` and
@@ -430,6 +497,7 @@ pub fn run() {
             check_folder,
             pick_folder,
             open_tab,
+            open_login,
             write_tab,
             resize_tab,
             close_tab,
@@ -446,6 +514,8 @@ pub fn run() {
             usage_report,
             open_page,
             open_pdf,
+            seatbelt_checks,
+            cli_status,
             open_link,
             quit,
         ])

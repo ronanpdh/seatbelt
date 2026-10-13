@@ -1,5 +1,7 @@
-// A CLI in its own interface: `seatbelt run <cli>` in a terminal (xterm.js over a PTY). The
-// app uses it to sign a CLI in; a session can also be opened this way from its chat.
+// A CLI in a terminal (xterm.js over a PTY): its own interface, through `seatbelt run <cli>`,
+// which a session can open from its chat; or its sign-in, which is the CLI's own login command
+// (`claude auth login`, `codex login`), run by itself, or for Gemini CLI, which has none, its
+// own interface again, for /auth.
 
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { FitAddon } from "@xterm/addon-fit";
@@ -38,6 +40,8 @@ export class TermPane {
     private readonly onExit: (code: number | null, report: Report | null) => void,
     /** The conversation to continue in the CLI's own interface, by its own id. */
     private readonly resume: string | null = null,
+    /** Open the CLI's sign-in (`open_login`) rather than its interface. */
+    private readonly login = false,
   ) {
     this.term = new Terminal({
       cursorBlink: true,
@@ -89,7 +93,7 @@ export class TermPane {
     this.fit();
     try {
       this.running = true;
-      this.id = await invoke<number>("open_tab", {
+      this.id = await invoke<number>(this.login ? "open_login" : "open_tab", {
         cli: this.cli.name,
         cwd: this.folder,
         cols: this.term.cols,
