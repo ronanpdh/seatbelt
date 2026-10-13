@@ -26,6 +26,8 @@ seatbelt runs                        # list your runs by name
 seatbelt report                      # what your runs did: models, tools, tokens, anything refused or altered
 ```
 
+For a run as a PDF, install the `pdf` extra (`uv tool install 'seatbelt-ai[pdf]'`; it needs the Pango library, see [WeasyPrint's install notes](https://doc.courtbouillon.org/weasyprint/stable/first_steps.html)), then `seatbelt reconstruct claude-99ce72ff --pdf`.
+
 There is nothing to set up. How it works, where runs are saved, and what is and isn't recorded: [docs/local-recording.md](https://github.com/ronanpdh/seatbelt/blob/main/docs/local-recording.md).
 
 No agent to hand? `seatbelt demo` records an example run in `./runs` and prints the commands that check and replay it (`seatbelt verify runs/<run id>.jsonl`). `verify` and `reconstruct` take a file path, or the name of a run `seatbelt run` recorded, from `seatbelt runs`.
@@ -99,7 +101,7 @@ uv run seatbelt scenarios scenarios/ --target examples.scenario_target:target   
 | `seatbelt report [runs...] [--pubkey] [--people] [--json]` | usage by person, model and tool; refused, failed, open and unsigned runs. Takes several folders; `--people` joins one person's ids ([guide](https://github.com/ronanpdh/seatbelt/blob/main/docs/deploy/gateway.md#one-row-per-person)). With no `runs`, this machine's runs | a ledger is broken or forged, a signature's ledger is missing, or with a key given (with no `runs`, this machine's key) one ended unsigned; a bad people file |
 | `seatbelt runs [--limit] [--json]` | lists this machine's runs by name, newest first; `--json` adds each run's ledger and page paths | |
 | `seatbelt verify [run or ledger] [--pubkey]` | checks the hash chain and attestation; a local run against this machine's key. With no argument, the latest run | broken, forged (a signature that does not match the ledger counts, key or not), incomplete, or unattested with a key given |
-| `seatbelt reconstruct [run or ledger] [--pubkey] [--html] [--out]` | prints the run as a timeline, or with `--html` writes it as a page (`<run id>.html` beside the ledger, or `--out`); with no argument, the latest run | same as verify; an `--out` not ending in `.html` |
+| `seatbelt reconstruct [run or ledger] [--pubkey] [--html] [--pdf] [--out]` | prints the run as a timeline, or with `--html` writes it as a page (`<run id>.html` beside the ledger, or `--out`), or with `--pdf` as a PDF (`<run id>.pdf`; needs the `pdf` extra); with no argument, the latest run | same as verify; an `--out` not ending in `.html` or `.pdf`; `--pdf` without the `pdf` extra |
 | `seatbelt demo [--out runs]` | records a scripted example run | |
 | `seatbelt keygen [dir]` | writes an Ed25519 key pair | a key file exists |
 | `seatbelt attest <ledger> --key` | signs a finished ledger into `<id>.attest.json` | broken or incomplete chain, sidecar exists |

@@ -21,6 +21,14 @@ When a run's ledger is closed and signed, seatbelt writes `<run id>.html` beside
 - **Any ledger, any time:** `seatbelt reconstruct <run> --html` writes `<run id>.html` beside the ledger, making a run's page again, or where `--out` says. A page written elsewhere is your own copy: `seatbelt erase` does not know about it. A killed run's ledger gets its page when the next run closes it.
 - `html = false` in the settings turns pages off. A page that cannot be written is a warning; the run still ends signed.
 
+### A PDF of the run
+
+`seatbelt reconstruct <run> --pdf` writes `<run id>.pdf` beside the ledger, or where `--out` says (a name ending in `.pdf`). It needs the `pdf` extra, `uv tool install 'seatbelt-ai[pdf]'`, which adds WeasyPrint; WeasyPrint needs the Pango library ([its install notes](https://doc.courtbouillon.org/weasyprint/stable/first_steps.html)). Without them, `--pdf` says so and writes nothing.
+
+- **What it shows:** the page's facts, what was checked and the summary, then every event on one line, and in full only the events refused by policy or that failed. A refused or failed event over 16 KiB shows its start and end (4 KiB and 12 KiB); a value from the ledger in a table or the facts shows its first 500 characters. The page and the ledger hold the rest.
+- **Made on demand, not as each run ends:** it takes seconds for a long run. For the same 150-call run as above it took about 4 seconds in our test, and for the 400-call one about 14.
+- **The same rules as the page:** made only from a ledger that verifies, a view and not evidence, written mode 0600, removed by `seatbelt erase` with the ledger, left out by `seatbelt pack` and a `[sink]`. It loads nothing: a document that asked for any file or address would not be made at all.
+
 To record through your organisation's gateway instead, see [Through a gateway](#through-a-gateway).
 
 ## How it works
