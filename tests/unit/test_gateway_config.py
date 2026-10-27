@@ -117,3 +117,18 @@ def test_allow_http_accepts_an_upstream_on_a_private_network(tmp_path: Path) -> 
     )
     with pytest.raises(ValueError, match="url must be https://"):  # http only, not anything
         load_config(p)
+
+
+def test_the_compliance_api_url_is_https_or_on_this_machine(tmp_path: Path) -> None:
+    """The Compliance API key reads every transcript in the org. No allow_http."""
+    p = tmp_path / "g.yaml"
+    p.write_text("ledgers: runs\ncompliance: {url: 'http://api.anthropic.com'}\n")
+    with pytest.raises(ValueError, match=r"(?s)compliance\.url\n.*must be https://") as e:
+        load_config(p)
+    assert "Leave it unset for https://api.anthropic.com" in str(e.value)
+    p.write_text("ledgers: runs\ncompliance: {url: 'http://127.0.0.1:9000'}\n")
+    local = load_config(p).compliance
+    assert local is not None and local.url == "http://127.0.0.1:9000"  # a test server
+    p.write_text("ledgers: runs\ncompliance: {}\n")
+    default = load_config(p).compliance
+    assert default is not None and default.url == "https://api.anthropic.com"

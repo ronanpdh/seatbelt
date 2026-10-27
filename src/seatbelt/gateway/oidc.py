@@ -17,6 +17,7 @@ from typing import Any, cast
 import httpx2
 import jwt
 
+from seatbelt.gateway import urls
 from seatbelt.gateway.config import OidcConfig
 
 JWKS_LIFESPAN = 300.0  # seconds a fetched key set is trusted before it is fetched again
@@ -84,6 +85,11 @@ class OidcVerifier:
             uri = doc.get("jwks_uri")
             if not isinstance(uri, str):
                 raise OidcUnavailable("the provider's discovery document names no jwks_uri")
+            if not urls.allowed(uri):  # as `jwks_url` in the config must be
+                raise OidcUnavailable(
+                    f"the provider's discovery document names a jwks_uri that is not "
+                    f"{urls.HTTPS}: {uri}"
+                )
             self._jwks_url = uri
         return self._jwks_url
 

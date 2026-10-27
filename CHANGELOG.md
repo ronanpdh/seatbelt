@@ -50,6 +50,7 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
   - A `gateway` or `[upstreams]` URL in `~/.config/seatbelt/config.toml` that is plain `http://` to another host now stops `seatbelt run` before the CLI starts. `allow_http = true`, at the top of the file, accepts it, for a gateway or proxy on a private network.
   - A gateway upstream that is plain `http://` to another host now stops the gateway at startup, and a reload that adds one keeps the running config. `allow_http: true` on that upstream accepts it.
   - A base URL in your environment (`ANTHROPIC_BASE_URL`, `GOOGLE_GEMINI_BASE_URL` or `CODE_ASSIST_ENDPOINT`) that is plain `http://` to another host is still forwarded to by the local recorder, with a warning, since refusing it would stop a setup that works. `allow_http = true` quiets it.
+- `https://` is required for the OIDC `issuer` and `jwks_url`, the `jwks_uri` a provider's discovery document names, and `compliance.url`, with `http://` to this machine still accepted, and no opt-out. Fetched over plain `http://`, a provider's key set could be swapped by anyone on the network path, who could then sign in to the gateway as anyone; the Compliance API key, which reads every transcript in the org, crossed the network in the clear. A config with such a URL is refused at startup; a discovery document naming an `http://` `jwks_uri` counts as a failed fetch.
 
 ## [0.6.0] - 2026-10-09
 

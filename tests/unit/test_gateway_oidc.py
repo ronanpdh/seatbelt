@@ -150,6 +150,30 @@ def test_a_rotated_key_is_fetched_but_not_more_than_once_per_cooldown(idp: Provi
     assert len(idp.fetched) == 2  # within the cooldown: no fetch storm from junk key ids
 
 
+@pytest.mark.parametrize("field", ["issuer", "jwks_url"])
+def test_the_providers_urls_are_https_or_on_this_machine(field: str) -> None:
+    """Fetched over plain http, anyone on the path could put their own key in the key set and
+    sign in as anyone. No allow_http: the keys are public, and providers serve them over https."""
+    base: dict[str, Any] = {"issuer": ISSUER, "audience": CLIENT_ID}
+    for url in ("http://login.example.com/tenant/v2.0", "login.example.com/tenant/v2.0"):
+        with pytest.raises(ValueError, match=f"(?s){field}\n.*must be https://"):
+            OidcConfig.model_validate({**base, field: url})
+    local = "http://127.0.0.1:8080/realms/test"  # a test provider on this machine
+    assert getattr(OidcConfig.model_validate({**base, field: local}), field) == local
+    with pytest.raises(ValueError, match="allow_http"):
+        OidcConfig.model_validate({**base, field: "http://login.example.com/", "allow_http": True})
+
+
+def test_a_discovery_document_naming_a_plain_http_key_set_is_refused(idp: Provider) -> None:
+    def fetch(url: str) -> dict[str, Any]:
+        doc = idp.fetch(url)
+        return {**doc, "jwks_uri": "http://login.example.com/keys"} if "jwks_uri" in doc else doc
+
+    with pytest.raises(OidcError, match="names a jwks_uri that is not https://"):
+        OidcVerifier(_cfg(), fetch).verify(idp.token())
+    assert idp.fetched == [f"{ISSUER}/.well-known/openid-configuration"]  # keys never fetched
+
+
 def test_only_asymmetric_algorithms_are_configurable() -> None:
     with pytest.raises(ValueError, match="asymmetric"):
         _cfg(algorithms=["HS256"])
