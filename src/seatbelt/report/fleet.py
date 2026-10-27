@@ -15,12 +15,11 @@ from typing import Any, cast
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
-from seatbelt.attest.manifest import sidecar
 from seatbelt.erase import erased_hashes, erased_sidecar
 from seatbelt.ledger.events import Event, Kind
-from seatbelt.ledger.store import LedgerError, read_events
+from seatbelt.ledger.store import LedgerError, parse_events
 from seatbelt.verify.attest import Attestation, verify_attestation
-from seatbelt.verify.chain import verify_events
+from seatbelt.verify.chain import snapshot, verify_events
 
 
 class Usage(BaseModel):
@@ -132,15 +131,16 @@ def fleet(
     dirs = [runs] if isinstance(runs, Path) else list(runs)
     paths = sorted(p for d in dirs for p in d.glob("*.jsonl"))
     for path in paths:
-        try:
-            events = list(read_events(path))
-        except (OSError, UnicodeDecodeError, LedgerError):
+        try:  # one read: what is counted is what is checked
+            snap = snapshot(path)
+            events = list(parse_events(snap.data, path))
+        except (OSError, LedgerError):
             out.broken.append(path.stem)
             continue
         if not events:  # emptied after it was signed, or a crash before its first event
-            if not sidecar(path).exists():
+            if snap.signature is None and snap.unreadable is None:
                 out.incomplete.append(path.stem)
-            elif verify_attestation(path, pubkey).status is Attestation.FORGED:
+            elif verify_attestation(path, pubkey, snap).status is Attestation.FORGED:
                 out.forged.append(path.stem)
             else:
                 out.broken.append(path.stem)
@@ -150,7 +150,7 @@ def fleet(
             continue
         run_id = events[0].run_id
         last = events[-1]
-        status = verify_attestation(path, pubkey).status
+        status = verify_attestation(path, pubkey, snap).status
         if status is Attestation.FORGED:
             out.forged.append(run_id)
             continue

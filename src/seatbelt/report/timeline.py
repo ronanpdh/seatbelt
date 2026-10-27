@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -83,7 +84,10 @@ def _describe(event: Event) -> str:
             return ""
 
 
-def timeline(path: Path, console: Console | None = None) -> None:
+def timeline(
+    path: Path, console: Console | None = None, events: Iterable[Event] | None = None
+) -> None:
+    """Print the run at `path`: `events`, the ones a caller checked, else the file's."""
     console = console or Console()
     table = Table(title=Text(f"run {printable(path.stem)}"), show_lines=False)
     table.add_column("seq", justify="right", style="dim")
@@ -92,7 +96,7 @@ def timeline(path: Path, console: Console | None = None) -> None:
     table.add_column("actor")
     table.add_column("what")
     table.add_column("hash", style="dim")
-    for e in read_events(path):
+    for e in read_events(path) if events is None else events:
         actor = f"{e.actor.type}:{e.actor.id}" + (f"@{e.actor.version}" if e.actor.version else "")
         cells = (
             str(e.seq),

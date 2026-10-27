@@ -118,8 +118,10 @@ def keygen(directory: Path) -> tuple[Path, Path]:
     return key, pub
 
 
-def attest(ledger: Path, signer: Signer) -> Path:
+def attest(ledger: Path, signer: Signer, data: bytes | None = None) -> Path:
+    """Sign `ledger` into its sidecar. `data` is the ledger's bytes as the caller read and
+    checked them, which are then what is signed; without it the file is read once here."""
     out = sidecar(ledger)
-    manifest = signer.sign(build(ledger))
+    manifest = signer.sign(build(ledger, data))
     _write_private(out, (manifest.model_dump_json() + "\n").encode())
     return out
