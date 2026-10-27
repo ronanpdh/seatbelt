@@ -546,3 +546,79 @@ def test_html_in_the_client_config_is_true_or_false(tmp_path: Path) -> None:
     path.write_text('html = "no"\n')
     with pytest.raises(ValueError, match="html is true or false"):
         load_client_config(path)
+
+
+@pytest.mark.parametrize(
+    "gateway", ["https://gw.corp", "http://127.0.0.1:8080", "http://[::1]:8080", "http://localhost"]
+)
+def test_the_gateway_is_https_or_on_this_machine(tmp_path: Path, gateway: str) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(f'gateway = "{gateway}"\nkey = "sbk_abc"\n')
+    assert load_client_config(path).gateway == gateway
+
+
+@pytest.mark.parametrize("gateway", ["http://gw.corp", "http://10.0.0.5:8080", "gw.corp"])
+def test_a_gateway_over_the_network_in_the_clear_is_refused(tmp_path: Path, gateway: str) -> None:
+    """`fetch_policy`, `end_run` and the CLI send the employee's key as a Bearer token, and
+    the CLI every prompt: over plain http, anyone on the path reads both."""
+    path = tmp_path / "config.toml"
+    path.write_text(f'gateway = "{gateway}"\nkey = "sbk_abc"\n')
+    with pytest.raises(ValueError, match="gateway must be https://") as e:
+        load_client_config(path)
+    assert "Use the gateway's https:// URL" in str(e.value)
+    assert f"set allow_http = true at the top of {path}" in str(e.value)
+    path.write_text(f'allow_http = true\ngateway = "{gateway}"\nkey = "sbk_abc"\n')
+    if gateway.startswith("http://"):  # a gateway on a private network
+        assert load_client_config(path).gateway == gateway
+    else:
+        with pytest.raises(ValueError, match="gateway must be https://"):  # http only
+            load_client_config(path)
+
+
+def test_an_upstream_over_the_network_in_the_clear_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('[upstreams]\nanthropic = "http://llm-proxy.corp:4000"\n')
+    with pytest.raises(ValueError, match=r"\[upstreams\] anthropic must be https://") as e:
+        load_client_config(path)
+    assert f"set allow_http = true at the top of {path}" in str(e.value)
+    path.write_text('allow_http = true\n[upstreams]\nanthropic = "http://llm-proxy.corp:4000"\n')
+    assert load_client_config(path).upstreams == {"anthropic": "http://llm-proxy.corp:4000"}
+    # appended below the table, TOML puts it in [upstreams]: said, not "maps a provider"
+    path.write_text('[upstreams]\nanthropic = "http://llm-proxy.corp:4000"\nallow_http = true\n')
+    with pytest.raises(ValueError, match="allow_http goes at the top of the file"):
+        load_client_config(path)
+    path.write_text('allow_http = "yes"\n')
+    with pytest.raises(ValueError, match="allow_http is true or false"):
+        load_client_config(path)
+
+
+@pytest.mark.parametrize(
+    ("cli", "env", "config", "warned"),
+    [
+        ("claude", {"ANTHROPIC_BASE_URL": "http://llm-proxy.corp"}, "", ["ANTHROPIC_BASE_URL"]),
+        ("gemini", {"CODE_ASSIST_ENDPOINT": "http://10.0.0.5/"}, "", ["CODE_ASSIST_ENDPOINT"]),
+        ("codex", {"ANTHROPIC_BASE_URL": "http://llm-proxy.corp"}, "", []),  # not codex's
+        ("claude", {"ANTHROPIC_BASE_URL": "https://llm-proxy.corp"}, "", []),
+        ("claude", {"ANTHROPIC_BASE_URL": "http://127.0.0.1:4000"}, "", []),
+        ("claude", {"ANTHROPIC_BASE_URL": "http://llm-proxy.corp"}, "allow_http = true\n", []),
+        (  # [upstreams] replaces it, and was checked as the config was read
+            "claude",
+            {"ANTHROPIC_BASE_URL": "http://llm-proxy.corp"},
+            '[upstreams]\nanthropic = "https://llm-proxy.corp"\n',
+            [],
+        ),
+    ],
+)
+def test_a_plain_http_base_url_in_the_environment_is_warned_about(
+    tmp_path: Path, cli: str, env: dict[str, str], config: str, warned: list[str]
+) -> None:
+    """Not refused: the CLI sent its prompts there in the clear without seatbelt too."""
+    from seatbelt.gateway.launcher import chained_warnings
+
+    path = tmp_path / "config.toml"
+    path.write_text(config)
+    warnings = chained_warnings(cli, env, load_client_config(path))
+    assert [w.split()[1] for w in warnings] == warned
+    for w in warnings:
+        assert f"is plain http://: {cli}'s prompts" in w
+        assert f"set allow_http = true at the top of {path}" in w

@@ -64,3 +64,56 @@ def test_add_principal_keeps_the_file_readable_and_paths_relative(tmp_path: Path
     p.write_text(MINIMAL)
     add_principal(p, "alice@corp")
     assert "signing_key: keys/seatbelt.key" in p.read_text()  # not resolved to absolute
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://api.anthropic.com",
+        "http://127.0.0.1:4000",  # the local recorder's tests run fake providers here
+        "http://127.0.0.2",
+        "http://[::1]:4000",
+        "http://localhost:4000",
+        "http://LOCALHOST",
+    ],
+)
+def test_an_upstream_is_https_or_on_this_machine(tmp_path: Path, url: str) -> None:
+    p = tmp_path / "g.yaml"
+    p.write_text(f"ledgers: runs\nupstreams:\n  anthropic: {{url: '{url}', key_env: K}}\n")
+    assert load_config(p).upstreams["anthropic"].url == url
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://llm-proxy.corp:4000",
+        "http://10.0.0.5",
+        "http://localhost.corp.example",
+        "http://127.0.0.1.nip.io",
+        "api.anthropic.com",  # no scheme
+        "ftp://api.anthropic.com",
+        "https://",
+    ],
+)
+def test_an_upstream_over_the_network_in_the_clear_is_refused(tmp_path: Path, url: str) -> None:
+    """Over plain http, every prompt and the provider key (or the client's own credentials,
+    passed through) cross the network readable by anyone on the path."""
+    p = tmp_path / "g.yaml"
+    p.write_text(f"ledgers: runs\nupstreams:\n  anthropic: {{url: '{url}', key_env: K}}\n")
+    with pytest.raises(ValueError, match=r"upstreams\.anthropic\n.*url must be https://") as e:
+        load_config(p)
+    assert "add allow_http: true to this upstream" in str(e.value)  # what to change
+
+
+def test_allow_http_accepts_an_upstream_on_a_private_network(tmp_path: Path) -> None:
+    p = tmp_path / "g.yaml"
+    p.write_text(
+        "ledgers: runs\nupstreams:\n"
+        "  anthropic: {url: 'http://litellm.mesh:4000', key_env: K, allow_http: true}\n"
+    )
+    assert load_config(p).upstreams["anthropic"].allow_http
+    p.write_text(
+        "ledgers: runs\nupstreams:\n  anthropic: {url: 'ftp://x', key_env: K, allow_http: true}\n"
+    )
+    with pytest.raises(ValueError, match="url must be https://"):  # http only, not anything
+        load_config(p)

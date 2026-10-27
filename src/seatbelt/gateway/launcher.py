@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
-from seatbelt.gateway import badge, claude_code
+from seatbelt.gateway import badge, claude_code, urls
 from seatbelt.gateway.badge import say
 from seatbelt.terminal import printable
 
@@ -90,6 +90,28 @@ def chained_upstreams(env: Mapping[str, str]) -> dict[str, str]:
         for var, name in _CHAINED.items()
         if env.get(var) and "/_seatbelt/" not in env[var]
     }
+
+
+def chained_warnings(cli: str, env: Mapping[str, str], cfg: ClientConfig) -> list[str]:
+    """Warnings for the base URLs `cli` reads from the environment that the recorder would
+    forward to over plain http:// to another host. Only a warning, where the same URL in
+    [upstreams] is refused: the CLI sent its prompts there in the clear without seatbelt too,
+    and refusing would stop a setup that works. `allow_http` quiets it, and [upstreams]
+    replaces the URL."""
+    if cfg.allow_http:
+        return []
+    chained = chained_upstreams(env)
+    return [
+        f"warning: {var} is plain http://: {cli}'s prompts, and the credentials sent with "
+        "them, cross the network to it in the clear. Use its https:// URL, or, if the "
+        f"network to it is private, set allow_http = true at the top of "
+        f"{cfg.path or DEFAULT_CONFIG}"
+        for var, name in _CHAINED.items()
+        if var in LOCAL_PRESETS.get(cli, {})
+        and name in chained
+        and name not in cfg.upstreams
+        and urls.plain_http(chained[name])
+    ]
 
 
 # Claude Code turns MCP tool search off behind any ANTHROPIC_BASE_URL but Anthropic's, since a
@@ -175,6 +197,8 @@ class ClientConfig:
     key = "sbk_..."                      # your issued key; unset: record locally
     ledgers = "~/seatbelt/runs"          # local: where ledgers go
     html = false                         # local: no HTML page beside each ledger
+    allow_http = true                    # http:// to other hosts for the gateway and
+                                         # upstreams (else only to this machine)
     [upstreams]                          # local: providers' URLs, e.g. a proxy
     anthropic = "https://llm-proxy.corp.example"
     [sink]                               # local: also ship ledgers to object storage
@@ -190,9 +214,12 @@ class ClientConfig:
     upstreams: dict[str, str] = field(default_factory=dict[str, str])
     sink: dict[str, Any] | None = None
     path: Path | None = None  # the file it came from, if any
+    # plain http to another host sends your key or provider credentials, and every prompt,
+    # in the clear: only for a gateway or proxy on a private network
+    allow_http: bool = False
 
 
-_CLIENT_KEYS = {"gateway", "url", "key", "ledgers", "html", "upstreams", "sink"}
+_CLIENT_KEYS = {"gateway", "url", "key", "ledgers", "html", "upstreams", "sink", "allow_http"}
 
 
 def default_config_path() -> Path | None:
@@ -221,11 +248,29 @@ def load_client_config(path: Path | None = None) -> ClientConfig:
     key = data.get("key")
     if gateway is not None and not (isinstance(gateway, str) and isinstance(key, str) and key):
         raise ValueError(f'{path}: a gateway needs your key: key = "sbk_..."')
+    allow_http = data.get("allow_http", False)
+    if not isinstance(allow_http, bool):
+        raise ValueError(f"{path}: allow_http is true or false")
+    private = f"or, if the network to it is private, set allow_http = true at the top of {path}"
+    if isinstance(gateway, str) and not urls.allowed(gateway, allow_http):
+        raise ValueError(
+            f"{path}: gateway must be {urls.HTTPS}: over http:// your key and every prompt "
+            f"cross the network in the clear. Use the gateway's https:// URL, {private}"
+        )
     upstreams = data.get("upstreams", {})
+    if isinstance(upstreams, dict) and "allow_http" in upstreams:  # TOML: under the table
+        raise ValueError(f"{path}: allow_http goes at the top of the file, above [upstreams]")
     if not isinstance(upstreams, dict) or not all(
         isinstance(v, str) for v in cast(dict[str, Any], upstreams).values()
     ):
         raise ValueError(f"{path}: [upstreams] maps a provider to its URL")
+    for name, url in cast(dict[str, str], upstreams).items():
+        if not urls.allowed(url, allow_http):
+            raise ValueError(
+                f"{path}: [upstreams] {name} must be {urls.HTTPS}: over http:// your prompts "
+                "and the credentials sent with them cross the network in the clear. Use its "
+                f"https:// URL, {private}"
+            )
     sink = data.get("sink")
     if sink is not None and not isinstance(sink, dict):
         raise ValueError(f"{path}: [sink] is a table")
@@ -246,6 +291,7 @@ def load_client_config(path: Path | None = None) -> ClientConfig:
         upstreams=cast(dict[str, str], upstreams),
         sink=cast(dict[str, Any], sink) if sink is not None else None,
         path=path,
+        allow_http=allow_http,
     )
 
 
@@ -773,13 +819,17 @@ def _run_local(
         raise ValueError(f"recording locally needs seatbelt's server packages: {exc}") from exc
     root = data_dir()
     ledgers = cfg.ledgers or root / "runs"
-    upstreams = {**chained_upstreams(os.environ), **cfg.upstreams}
+    chained = chained_upstreams(os.environ)
+    upstreams = {**chained, **cfg.upstreams}
+    # [upstreams] was checked as the config was read; the environment's are only warned about
+    plain = upstreams.keys() if cfg.allow_http else chained.keys() - cfg.upstreams.keys()
+    warnings = [*warnings, *chained_warnings(cli, os.environ, cfg)]
     code, ran = 0, False  # the CLI's exit status, once it has run
     written: list[Path] = []  # this run's ledgers as they are closed and signed, and their pages
     pages: list[Path] = []
     try:
         with local_recorder(
-            ledgers, root / "keys", run, cfg.sink, upstreams, html=cfg.html
+            ledgers, root / "keys", run, cfg.sink, upstreams, html=cfg.html, allow_http=plain
         ) as recorder:
             written, pages = recorder.written, recorder.pages
             url = local_url(recorder.url, recorder.key, run)

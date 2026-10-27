@@ -31,7 +31,7 @@ The container image runs as uid 1000 and writes ledgers under `/var/lib/seatbelt
      max_output_tokens: 16000
    ```
 
-   `key_env` names the environment variable holding the provider key; the key itself never goes in the file. Unknown keys are rejected at startup. `models` is an exact match, so list every model id your clients send, including the smaller model Claude Code uses for background tasks, or those requests are refused.
+   `key_env` names the environment variable holding the provider key; the key itself never goes in the file. Each upstream's `url` is `https://`, or `http://` to the gateway's own machine (`127.0.0.1`, `::1` or `localhost`). Plain `http://` to another host sends every prompt and the provider key in the clear, and is accepted only with `allow_http: true` on that upstream, for a proxy on a private network (one behind a service mesh that adds TLS, say): `anthropic: {url: http://llm-proxy:4000, key_env: PROXY_KEY, allow_http: true}`. Unknown keys are rejected at startup. `models` is an exact match, so list every model id your clients send, including the smaller model Claude Code uses for background tasks, or those requests are refused.
 
 3. Issue a key to each employee. The key is printed once; the config keeps only its SHA-256. `keygen` rewrites the file, so comments in it are lost. To revoke, delete the principal's entry. A running gateway picks up either change within 30 seconds ([Changing the config while it runs](#changing-the-config-while-it-runs)).
 
@@ -65,6 +65,8 @@ The container image runs as uid 1000 and writes ledgers under `/var/lib/seatbelt
    gateway = "https://gw.corp.example"
    key = "sbk_..."
    ```
+
+   `gateway` is the `https://` URL of the TLS in front of the gateway (step 4). `seatbelt run` sends the key as a Bearer token on every request, so it refuses a plain `http://` gateway on another host before the CLI starts. `http://` to the employee's own machine (`127.0.0.1`, `::1` or `localhost`) is accepted, and so is any `http://` with `allow_http = true` at the top of `config.toml`, for a test gateway on a private network.
 
    A 0.2.0 `~/.config/seatbelt/gateway.toml` is read only when there is no `config.toml`. Beside a `config.toml` it is ignored: with no `gateway` in `config.toml`, `seatbelt run` records on the machine, not through the gateway. Move its `url` (as `gateway`) and `key` into `config.toml`.
 
@@ -119,7 +121,7 @@ The gateway checks its config file every 30 seconds and reloads it when the cont
 - When a principal's entry is deleted, or its key reissued, its key is refused from the reload on, and its open sessions are ended and signed (a session with a request in flight ends when that request finishes). Sessions are per issued key, so a reissued key starts a new ledger and each ledger's `principal.key_id` names the one key that wrote it.
 - A change made while the gateway is starting is picked up at the first check.
 - `listen`, `ledgers` and `signing_key` need a restart. A reload that changes them logs a warning, applies everything else, and keeps the running values.
-- A file that fails to load (bad YAML, an unknown key, a missing file mid-edit) is logged once, and the running config stays until the file loads again.
+- A file that fails to load (bad YAML, an unknown key, a plain `http://` upstream, a missing file mid-edit) is logged once, and the running config stays until the file loads again.
 
 Each reload is logged as `config reloaded:` with the number of principals, the ids given a new key and the ids whose key was withdrawn.
 
