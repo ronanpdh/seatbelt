@@ -37,6 +37,7 @@ compliance:
   since: 2026-09-01T00:00:00Z      # first run only; default: all Anthropic still keeps
   settle: 3600                     # seconds a conversation must be quiet before import
   overlap: 900                     # seconds each run looks back, for late-indexed sessions
+  url: https://api.anthropic.com   # https:// only (http:// to this machine, for a test server)
 ```
 
 4. **Run it on a schedule**, for example every 15 minutes from cron, a systemd timer or a Coolify scheduled task:

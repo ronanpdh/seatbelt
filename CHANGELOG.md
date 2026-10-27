@@ -52,6 +52,9 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
   - A `gateway` or `[upstreams]` URL in `~/.config/seatbelt/config.toml` that is plain `http://` to another host now stops `seatbelt run` before the CLI starts. `allow_http = true`, at the top of the file, accepts it, for a gateway or proxy on a private network.
   - A gateway upstream that is plain `http://` to another host now stops the gateway at startup, and a reload that adds one keeps the running config. `allow_http: true` on that upstream accepts it.
   - A base URL in your environment (`ANTHROPIC_BASE_URL`, `GOOGLE_GEMINI_BASE_URL` or `CODE_ASSIST_ENDPOINT`) that is plain `http://` to another host is still forwarded to by the local recorder, with a warning, since refusing it would stop a setup that works. `allow_http = true` quiets it.
+- `https://` is required for the OIDC `issuer` and `jwks_url`, and for `compliance.url`. Over plain `http://`, anyone on the network path could swap a sign-in provider's key set and then sign in to the gateway as anyone, and the Compliance API key, which reads every transcript in the org, crossed the network in the clear. `http://` to this machine (`127.0.0.1`, `::1` or `localhost`) is still accepted, for a test server. There is no opt-out: providers and Anthropic's API serve these over `https://`.
+  - A gateway config whose `oidc.issuer`, `oidc.jwks_url` or `compliance.url` is plain `http://` to another host now stops the gateway, or `seatbelt import compliance`, at startup, and a reload that adds one keeps the running config.
+  - A provider whose discovery document names a plain `http://` `jwks_uri` now counts as a failed key fetch: keys already held stay in use for up to an hour, then its sign-ins are refused.
 
 ## [0.6.0] - 2026-10-09
 

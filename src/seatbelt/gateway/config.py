@@ -109,6 +109,19 @@ class OidcConfig(_Strict):
     leeway: int = Field(default=60, ge=0, le=300)  # seconds of clock skew allowed
     allow: list[str] | None = None  # principal ids allowed; unset: anyone the provider signs in
 
+    # no allow_http: the keys are public and served over https, and fetched over http anyone
+    # on the path could swap in their own and sign in as anyone
+    @field_validator("issuer", "jwks_url")
+    @classmethod
+    def _https(cls, value: str | None) -> str | None:
+        if value is not None and not urls.allowed(value):
+            raise ValueError(
+                f"must be {urls.HTTPS}: over http:// anyone on the network path can put their "
+                "own key in the provider's key set and sign in as anyone. Use the provider's "
+                "https:// URL"
+            )
+        return value
+
     @field_validator("algorithms")
     @classmethod
     def _asymmetric(cls, value: list[str]) -> list[str]:
@@ -135,6 +148,17 @@ class ComplianceConfig(_Strict):
     settle: int = Field(default=3600, ge=0)  # seconds a conversation must be quiet
     overlap: int = Field(default=900, ge=0)  # seconds each local-session window reaches back
     url: str = "https://api.anthropic.com"
+
+    @field_validator("url")
+    @classmethod
+    def _https(cls, value: str) -> str:
+        if not urls.allowed(value):  # no allow_http: Anthropic's API is https only anyway
+            raise ValueError(
+                f"must be {urls.HTTPS}: over http:// the Compliance API key, which reads every "
+                "transcript in the org, and the transcripts cross the network in the clear. "
+                "Leave it unset for https://api.anthropic.com"
+            )
+        return value
 
     @field_validator("since")
     @classmethod
