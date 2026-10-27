@@ -222,12 +222,17 @@ class ClientConfig:
 _CLIENT_KEYS = {"gateway", "url", "key", "ledgers", "html", "upstreams", "sink", "allow_http"}
 
 
+def default_config_path() -> Path | None:
+    """The config read when none is named: `config.toml`, else 0.2.0's `gateway.toml`."""
+    return next((p for p in (DEFAULT_CONFIG, LEGACY_CONFIG) if p.exists()), None)
+
+
 def load_client_config(path: Path | None = None) -> ClientConfig:
     """The config at `path`; with none given, `config.toml`, else 0.2.0's `gateway.toml`
     (`url` is read as `gateway`), else none: record locally."""
     ignored: Path | None = None
     if path is None:
-        path = next((p for p in (DEFAULT_CONFIG, LEGACY_CONFIG) if p.exists()), None)
+        path = default_config_path()
         if path is None:
             return ClientConfig()
         if path == DEFAULT_CONFIG and LEGACY_CONFIG.exists():
@@ -477,6 +482,13 @@ def gemini_warnings(
 _CLAUDE_SWITCHES = ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX")
 
 
+def claude_switches(values: Mapping[str, Any]) -> list[str]:
+    """Which of Claude Code's Bedrock and Vertex AI switches `values` (an environment, or a
+    settings file's `env` block) turns on."""
+    off = ("", "0", "false")  # which values it reads as false is not known here: a guess
+    return [n for n in _CLAUDE_SWITCHES if str(values.get(n, "")).lower() not in off]
+
+
 def claude_warnings(config_dir: Path, cwd: Path) -> list[str]:
     """What in Claude Code's settings would take its traffic around the gateway: an `env`
     block, which Claude Code applies over the environment it is given, switching it to
@@ -491,9 +503,7 @@ def claude_warnings(config_dir: Path, cwd: Path) -> list[str]:
         env = _setting(_settings(path) or {}, "env")
         if not isinstance(env, dict):
             continue
-        values = cast(dict[str, Any], env)
-        off = ("", "0", "false")  # which values it reads as false is not known here: a guess
-        found = [n for n in _CLAUDE_SWITCHES if str(values.get(n, "")).lower() not in off]
+        found = claude_switches(cast(dict[str, Any], env))
         if found:
             warnings.append(
                 f"{path} sets {', '.join(found)}, which sends Claude Code to Bedrock or Vertex "
@@ -601,6 +611,17 @@ def _claude_warnings() -> list[str]:
     return [f"warning: {w}" for w in claude_warnings(_claude_config_dir(), Path.cwd())]
 
 
+def _claude_local_warnings() -> list[str]:
+    """Recording locally, Claude Code keeps its own sign-in, and nothing takes it off Bedrock
+    or Vertex AI: say so when either is switched on, here or in its settings."""
+    found = claude_switches(os.environ)
+    switched = [
+        f"warning: your environment sets {', '.join(found)}, which sends Claude Code to "
+        "Bedrock or Vertex AI directly, unrecorded. Unset it to record this run"
+    ]
+    return (switched if found else []) + _claude_warnings()
+
+
 def cli_arguments(
     cli: str, args: list[str], denied: Collection[str] = (), note: str = claude_code.RECORDING
 ) -> tuple[list[str], list[str]]:
@@ -693,6 +714,8 @@ def _run(
     run = f"{cli}-{secrets.token_hex(4)}"
     report = Path(os.environ[RUN_REPORT_ENV]) if os.environ.get(RUN_REPORT_ENV) else None
     if gateway is None:
+        if cli == "claude":
+            warnings += _claude_local_warnings()
         return _run_local(cli, args, cfg, exe, run, warnings, report)
     url, key = gateway
     env = environment(cli, url, key, run, os.environ, drop=own_secrets(cfg))
@@ -727,6 +750,7 @@ def _run(
                 "ledgers": [],  # on the gateway
                 "pages": [],
                 "exit": code,
+                "error": None,
             },
         )
     if status == 204:
@@ -744,6 +768,33 @@ def _run(
     return code
 
 
+def _found_by_name(ledgers: Path) -> bool:
+    """Whether `seatbelt reconstruct <run>` looks in `ledgers`: it reads the default config,
+    not one a run was given with `--config`."""
+    try:
+        default = default_config_path()
+        named = load_client_config(default).ledgers if default is not None else None
+    except ValueError:  # it cannot find any run by name then
+        return False
+    return (named or data_dir() / "runs").resolve() == ledgers.resolve()
+
+
+def _local_report(
+    run: str, cli: str, written: list[Path], pages: list[Path], code: int, error: str | None
+) -> dict[str, Any]:
+    return {
+        "run": run,
+        "cli": cli,
+        "recorded_by": "local",
+        "gateway": None,
+        "recorded": bool(written),
+        "ledgers": [str(p) for p in written],
+        "pages": [str(p) for p in pages],
+        "exit": code,
+        "error": error,
+    }
+
+
 def _run_local(
     cli: str,
     args: list[str],
@@ -756,6 +807,7 @@ def _run_local(
     environment(cli, "", "", run, {}, local=True)  # an unsupported CLI fails before any start
     where = f"no gateway in {cfg.path}" if cfg.path is not None else "no client config"
     try:
+        from seatbelt.attest.sign import PUB_FILE
         from seatbelt.gateway.local import UPSTREAMS, local_recorder
     except ImportError as exc:  # a broken install: the server packages are dependencies
         raise ValueError(f"recording locally needs seatbelt's server packages: {exc}") from exc
@@ -766,40 +818,43 @@ def _run_local(
     # [upstreams] was checked as the config was read; the environment's are only warned about
     plain = upstreams.keys() if cfg.allow_http else chained.keys() - cfg.upstreams.keys()
     warnings = [*warnings, *chained_warnings(cli, os.environ, cfg)]
-    with local_recorder(
-        ledgers, root / "keys", run, cfg.sink, upstreams, html=cfg.html, allow_http=plain
-    ) as recorder:
-        url = local_url(recorder.url, recorder.key, run)
-        env = environment(cli, url, recorder.key, run, os.environ, True, own_secrets(cfg))
-        env.update(local_defaults(cli, upstreams, UPSTREAMS["anthropic"], os.environ))
-        extra = arguments(cli, recorder.url, run, local=True)
-        own, more = cli_arguments(cli, args)
-        command = [exe or cli, *extra, *own]
-        _buckle_up([f"recording {cli} on this machine ({where})", *warnings, *more])
-        try:
-            code = _spawn(command, env)
-        finally:
-            badge.unbuckle()
-            recorder.end(run)
-    if recorder.written:
+    code, ran = 0, False  # the CLI's exit status, once it has run
+    written: list[Path] = []  # this run's ledgers as they are closed and signed, and their pages
+    pages: list[Path] = []
+    try:
+        with local_recorder(
+            ledgers, root / "keys", run, cfg.sink, upstreams, html=cfg.html, allow_http=plain
+        ) as recorder:
+            written, pages = recorder.written, recorder.pages
+            url = local_url(recorder.url, recorder.key, run)
+            env = environment(cli, url, recorder.key, run, os.environ, True, own_secrets(cfg))
+            env.update(local_defaults(cli, upstreams, UPSTREAMS["anthropic"], os.environ))
+            extra = arguments(cli, recorder.url, run, local=True)
+            own, more = cli_arguments(cli, args)
+            command = [exe or cli, *extra, *own]
+            _buckle_up([f"recording {cli} on this machine ({where})", *warnings, *more])
+            try:
+                code, ran = _spawn(command, env), True
+            finally:
+                badge.unbuckle()
+                recorder.end(run)
+    except Exception as exc:
+        if report is not None and ran:  # the CLI ran, but its run did not close
+            write_run_report(report, _local_report(run, cli, written, pages, code, str(exc)))
+        raise
+    if written:
         # quoted to paste into a shell: the macOS data folder, Application Support, has a space
-        paths = "\n".join(f"  file:      {shlex.quote(str(p))}" for p in recorder.written)
-        pages = "".join(f"\n  page:      {shlex.quote(str(p))}" for p in recorder.pages)
-        _inform(f"recorded run {run}\n  replay it: seatbelt reconstruct {run}\n{paths}{pages}")
-    else:
-        _inform(f"nothing recorded ({cli} sent no model requests)")
+        if _found_by_name(ledgers):
+            replays = [f"seatbelt reconstruct {run}"]
+        else:  # by its path then, checked against this machine's key as a run found by name is
+            key = f"--pubkey {shlex.quote(str(root / 'keys' / PUB_FILE))}"
+            replays = [f"seatbelt reconstruct {shlex.quote(str(p))} {key}" for p in written]
+        replay = "".join(f"\n  replay it: {r}" for r in replays)
+        paths = "".join(f"\n  file:      {shlex.quote(str(p))}" for p in written)
+        shown = "".join(f"\n  page:      {shlex.quote(str(p))}" for p in pages)
+        _inform(f"recorded run {run}{replay}{paths}{shown}")
+    else:  # it sent none, or none through seatbelt: see the warnings it was started with
+        _inform(f"nothing recorded: no model requests from {cli} reached seatbelt")
     if report is not None:
-        write_run_report(
-            report,
-            {
-                "run": run,
-                "cli": cli,
-                "recorded_by": "local",
-                "gateway": None,
-                "recorded": bool(recorder.written),
-                "ledgers": [str(p) for p in recorder.written],
-                "pages": [str(p) for p in recorder.pages],
-                "exit": code,
-            },
-        )
+        write_run_report(report, _local_report(run, cli, written, pages, code, None))
     return code

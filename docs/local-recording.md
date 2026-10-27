@@ -47,7 +47,7 @@ Claude Code's status line ends with seatbelt's badge and `recording` (`recording
 
 seatbelt passes a SIGTERM or SIGHUP it gets on to the CLI, waits up to 10 seconds for it to exit (then kills it), and closes the run. It exits with the CLI's status, or 128 + N when signal N ended the CLI, as a shell does.
 
-A program that runs `seatbelt run` for you, such as a desktop app, can set `SEATBELT_RUN_REPORT` to a file path. As it exits, `seatbelt run` writes a JSON report there: `run`, `cli`, `recorded_by` (`local` or `gateway`), `gateway`, `recorded`, `ledgers`, `pages` and `exit`. Through a gateway the ledgers stay on the gateway, so both lists are empty. `seatbelt runs --json` lists this machine's runs the same way, with each ledger's and page's path.
+A program that runs `seatbelt run` for you, such as a desktop app, can set `SEATBELT_RUN_REPORT` to a file path. As it exits, `seatbelt run` writes a JSON report there: `run`, `cli`, `recorded_by` (`local` or `gateway`), `gateway`, `recorded`, `ledgers`, `pages`, `exit` and `error`. `error` is null unless the run's ledger could not be closed and signed, which `seatbelt run` reports as an error, exiting 1; it then says why. Through a gateway the ledgers stay on the gateway, so both lists are empty. `seatbelt runs --json` lists this machine's runs the same way, with each ledger's and page's path.
 
 seatbelt's own secrets never reach the CLI or the tools it runs: `SEATBELT_SIGNING_KEY`, every `SEATBELT_SINK_*` variable, and the variables a `[sink]` names for its credentials are removed from the CLI's environment. Wherever you keep them (a shell profile, a `.envrc`), an agent running as you may still be able to read them.
 
@@ -66,6 +66,7 @@ seatbelt's own secrets never reach the CLI or the tools it runs: `SEATBELT_SIGNI
 | Claude Code | Claude subscription (Pro, Max, Team, Enterprise) | yes [R1][R2] | `ANTHROPIC_BASE_URL`, `ENABLE_TOOL_SEARCH` (below) |
 | Claude Code | API key or `apiKeyHelper` | yes [R2] | `ANTHROPIC_BASE_URL`, `ENABLE_TOOL_SEARCH` (below) |
 | Claude Code | your own LLM gateway (`ANTHROPIC_BASE_URL` with `ANTHROPIC_AUTH_TOKEN`) | yes, then on to your gateway | `ANTHROPIC_BASE_URL`; the recorder forwards to the URL you had |
+| Claude Code | Bedrock or Vertex AI (`CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`) | **no** | `ANTHROPIC_BASE_URL`, which Bedrock and Vertex AI do not use; `seatbelt run` warns, whether the switch is in the environment or in Claude Code's settings |
 | Codex | ChatGPT | yes [R3] | a `seatbelt` model provider on the command line, using Codex's own login |
 | Codex | API key | yes [R3] | the same provider |
 | Gemini CLI | API key | yes [R4] | `GOOGLE_GEMINI_BASE_URL` |

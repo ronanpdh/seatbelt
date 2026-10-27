@@ -22,7 +22,7 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
   - **Runs, a run and usage:** search and filter runs by name, outcome, verification, CLI and date; a run shows what its page shows, with its verification; usage counts this machine's runs by model, person and tool.
 - **A run as a PDF:** `seatbelt reconstruct [run] --pdf [--out run.pdf]` writes `<run id>.pdf` beside the ledger, after the same checks as `--html` ([design](docs/plans/2026-10-13-pdf-run-report-design.md)). It shows the page's facts, what was checked and the summary, then every event on one line, and in full the events refused by policy or that failed. A view, not evidence, written mode 0600; it loads nothing. `seatbelt erase` removes it with the ledger (counted in `erasure.pages`); `pack` and the sink leave it out. In the desktop app, a run's view has "Open as PDF".
   - New optional extra, `pdf`: WeasyPrint (`>=70.0`, the first release from which no later one has a known advisory), which needs the Pango library. On macOS, seatbelt looks for it where Homebrew and MacPorts install it.
-- With `SEATBELT_RUN_REPORT=<file>` in its environment, `seatbelt run` writes a JSON report there as it exits: the run's name, the CLI, whether it recorded locally or through a gateway, its ledgers and pages, and the CLI's exit code. Mode 0600, written whole; the variable is not passed on to the CLI.
+- With `SEATBELT_RUN_REPORT=<file>` in its environment, `seatbelt run` writes a JSON report there as it exits: the run's name, the CLI, whether it recorded locally or through a gateway, its ledgers and pages, the CLI's exit code, and why its ledger could not be closed and signed, if it could not. Mode 0600, written whole; the variable is not passed on to the CLI.
 
 ### Added
 - **An HTML page for each run** ([design](docs/plans/2026-10-09-html-run-report-design.md)). `seatbelt run` writes `<run id>.html` beside each ledger when it closes and signs it, and prints its path. A killed run's ledger gets its page when the next run closes it. Any ledger can be rendered with `seatbelt reconstruct [run] --html`, beside the ledger, or elsewhere with `--out page.html`.
@@ -33,7 +33,19 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
   - `seatbelt erase` removes a person's pages with their ledgers, and counts them in its record (`erasure.pages`). `pack` and the sink leave pages out.
 - New dependency: Jinja2 (`>=3.1.6`, the first release with no known advisory).
 
+### Fixed
+- `seatbelt run claude` recording on this machine warns when `CLAUDE_CODE_USE_BEDROCK` or `CLAUDE_CODE_USE_VERTEX` is set, in the environment or in Claude Code's settings. Claude Code then goes to Bedrock or Vertex AI directly, unrecorded; the run used to say it was recording, then that Claude Code had sent no model requests. That last line now says only that none reached seatbelt.
+- A run whose ledger cannot be closed and signed when `seatbelt run` ends, such as one edited while it ran, is an error with exit 1, and the run report is still written, with `recorded` false and the reason in `error`. It used to end in a traceback and no report.
+- A traceback never shows local variables, which can hold keys and the CLI's environment. Typer 0.17 to 0.22, which seatbelt allows, showed them by default.
+- `seatbelt run`'s warnings and errors from its own log say the exception they report, not only what failed.
+- A run whose `--config` keeps its ledgers somewhere other than the default config does now ends with a replay command that works: the ledger's path and this machine's public key. `seatbelt reconstruct <run>` looks only where the default config says.
+
 ### Security
+- A command that checks a ledger now signs, shows, counts or packs the bytes it checked, from one read of the file. Each used to read the file again after checking it, so a ledger changed in between was used unchecked:
+  - `seatbelt attest` could sign an edited, re-chained ledger it had not checked, which `seatbelt verify --pubkey` then called attested.
+  - `seatbelt reconstruct` could print events other than the ones it verified.
+  - `seatbelt verify`, `report` and `runs --json` checked the signature against a later read than the chain, and `seatbelt pack` could pack a ledger other than the one it checked.
+  - The signature file is read before the ledger. A ledger is not written to once it is signed, so a run that closes and is signed while it is checked is reported as it was read, open and unsigned, never as forged.
 - `https://` is required for the gateway URL and the upstreams, as it already was for the sink. Over plain `http://`, the employee's `sbk_` key (sent as a Bearer token), the provider credentials and every prompt crossed the network in the clear. `http://` to this machine (`127.0.0.1`, `::1` or `localhost`) is still accepted.
   - A `gateway` or `[upstreams]` URL in `~/.config/seatbelt/config.toml` that is plain `http://` to another host now stops `seatbelt run` before the CLI starts. `allow_http = true`, at the top of the file, accepts it, for a gateway or proxy on a private network.
   - A gateway upstream that is plain `http://` to another host now stops the gateway at startup, and a reload that adds one keeps the running config. `allow_http: true` on that upstream accepts it.

@@ -49,7 +49,7 @@ Rationale for src layout: https://packaging.python.org/en/latest/discussions/src
 | Data models | Pydantic | https://docs.pydantic.dev/latest/ |
 | CLI | Typer | https://typer.tiangolo.com/ |
 | Terminal output | Rich | https://rich.readthedocs.io/en/stable/ |
-| Logging | structlog, JSON to stderr | https://www.structlog.org/en/stable/ |
+| Logging | stdlib `logging`, plain text (see [Logging](#logging)) | https://docs.python.org/3/library/logging.html |
 | Report templates | Jinja2 | https://jinja.palletsprojects.com/en/stable/ |
 | Project template | copier-uv | https://github.com/pawamoy/copier-uv |
 
@@ -65,6 +65,14 @@ Rationale for src layout: https://packaging.python.org/en/latest/discussions/src
 - Pin what you test. A run records the exact model identifier and version string, adapter version, harness version, corpus hash and sandbox image digest.
 - Trace schema follows OpenTelemetry GenAI semantic conventions, not a home-grown one: https://github.com/open-telemetry/semantic-conventions-genai
 - Use the standard threat vocabulary. Every scenario maps to at least one OWASP Agentic Top 10 item and, where one exists, a MITRE ATLAS technique.
+
+## Logging
+
+Logs are the standard library's `logging`, written as plain text for a person to read. `seatbelt gateway serve` and `seatbelt import compliance` set it up with `logging.basicConfig`: one `LEVEL: logger: message` line per record, on stderr. uvicorn prints its own lines in its own format, and its access log goes to stdout. `seatbelt run` prints warnings and errors after its badge (`SayHandler` in `gateway/badge.py`), on the terminal the person is watching; the desktop app shows those stderr lines in a chat's log, with escape sequences and other control characters removed.
+
+Plain text, and no structlog, because the signed ledger is the record of what happened and a log is for whoever runs the process. The gateway's deployment guide has the operator read its logs for lines such as `config reloaded`, and no part of seatbelt parses a log line. uvicorn and the HTTP clients already log through `logging`, so one setup covers all of them, with one dependency fewer. Structured logs for the gateway are on the [roadmap](ROADMAP.md) for when an operator's log pipeline needs them.
+
+No key reaches a log. The gateway takes keys out of uvicorn's access log lines (`_RedactKeys` in `gateway/serve.py`) and drops the HTTP clients' INFO lines, which name each upstream URL. A change to the gateway's logging keeps both; `tests/unit/test_review_gateway_core.py` checks them.
 
 ## Testing
 

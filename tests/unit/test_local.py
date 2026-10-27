@@ -485,3 +485,87 @@ def test_a_user_with_no_login_name_is_named_by_uid(monkeypatch: pytest.MonkeyPat
 
     monkeypatch.setattr(getpass, "getuser", nobody)
     assert local.login_name() == f"uid-{os.getuid()}"
+
+
+def test_a_local_claude_run_says_bedrock_or_vertex_ai_is_not_recorded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    provider: Provider,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """Recording locally, Claude Code keeps its sign-in, Bedrock or Vertex AI included, which
+    do not use the base URL: the run must not look recorded."""
+    monkeypatch.setenv("SEATBELT_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    monkeypatch.chdir(tmp_path)
+    settings = tmp_path / "claude" / "settings.json"
+    settings.parent.mkdir()
+    settings.write_text(json.dumps({"env": {"CLAUDE_CODE_USE_VERTEX": "1"}}))
+    run_cli("claude", ["-c", "pass"], config=_config(tmp_path, provider), exe=fake_claude(tmp_path))
+    err = capfd.readouterr().err
+    assert "your environment sets CLAUDE_CODE_USE_BEDROCK, which sends Claude Code to" in err
+    assert f"{settings} sets CLAUDE_CODE_USE_VERTEX" in err
+    assert "nothing recorded: no model requests from claude reached seatbelt" in err
+
+
+# Claude Code's request, then an edit to its own ledger, as an agent that runs commands can
+TAMPERING = (
+    CLAUDE.replace("sys.exit(7)", "")
+    + """
+import glob
+for ledger in glob.glob(os.path.join(os.environ["SEATBELT_HOME"], "runs", "*.jsonl")):
+    with open(ledger, "a") as fh:
+        fh.write("not an event\\n")
+sys.exit(7)
+"""
+)
+
+
+def test_a_ledger_that_cannot_be_closed_is_an_error_and_still_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: Provider
+) -> None:
+    from typer.testing import CliRunner
+
+    from seatbelt.cli import app
+
+    monkeypatch.setenv("SEATBELT_HOME", str(tmp_path / "home"))
+    report = tmp_path / "report.json"
+    monkeypatch.setenv("SEATBELT_RUN_REPORT", str(report))
+    config, claude = _config(tmp_path, provider), fake_claude(tmp_path)
+    result = CliRunner().invoke(
+        app, ["run", "claude", "--config", str(config), "--exe", claude, "--", "-c", TAMPERING]
+    )
+    assert isinstance(result.exception, SystemExit) and result.exit_code == 1  # no traceback
+    assert "error: " in result.output and "is not a valid event" in result.output
+    data = json.loads(report.read_text())
+    assert (data["recorded"], data["exit"], data["ledgers"]) == (False, 7, [])
+    assert "is not a valid event" in data["error"]
+
+
+def test_a_run_its_config_keeps_elsewhere_is_replayed_by_its_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    provider: Provider,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """`seatbelt reconstruct <run>` looks where the default config says, not where the run's
+    `--config` put it: the replay line names the ledger and this machine's key."""
+    from typer.testing import CliRunner
+
+    from seatbelt.cli import app
+    from seatbelt.gateway import launcher
+
+    monkeypatch.setattr(launcher, "DEFAULT_CONFIG", tmp_path / "config.toml")
+    monkeypatch.setattr(launcher, "LEGACY_CONFIG", tmp_path / "gateway.toml")
+    monkeypatch.setenv("SEATBELT_HOME", str(tmp_path / "home"))
+    config = tmp_path / "team.toml"
+    config.write_text(f'ledgers = "elsewhere"\n[upstreams]\nanthropic = "{provider.url}"\n')
+    run_cli("claude", ["-c", CLAUDE], config=config, exe=fake_claude(tmp_path))
+    lines = [x.removeprefix("[seatbelt]").strip() for x in capfd.readouterr().err.splitlines()]
+    (replay,) = [x for x in lines if x.startswith("replay it:")]
+    command = shlex.split(replay.removeprefix("replay it:"))
+    assert command[:2] == ["seatbelt", "reconstruct"]
+    assert CliRunner().invoke(app, command[1:]).exit_code == 0
+    checked = CliRunner().invoke(app, ["verify", *command[2:]])
+    assert checked.exit_code == 0 and "attested" in checked.output
