@@ -4,11 +4,13 @@ buckles as a run starts."""
 import io
 import logging
 import re
+import sys
 
 import pytest
 
 from seatbelt.gateway import badge
 from seatbelt.gateway.badge import BADGE, belt, buckle, said_logs, say, styled, unbuckle
+from seatbelt.gateway.sink import StoreError
 
 TERMINAL = {"TERM": "xterm-256color", "COLUMNS": "120"}  # too narrow for issue #46's belt
 ROOMY = {"TERM": "xterm-256color", "COLUMNS": "130", "LINES": "40"}
@@ -172,6 +174,77 @@ def test_seatbelts_logs_are_said_with_the_badge_while_a_run_is_on(
         log.info("not shown")
     assert capsys.readouterr().err == "[seatbelt] warning: closed 2 ledgers\n"
     assert logging.getLogger("seatbelt").handlers == before
+
+
+def test_held_logs_wait_on_a_terminal_and_are_said_when_let_go(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A line written while a full-screen CLI such as Claude Code has the terminal lands in
+    its drawing. Errors wait too: the CLI can do nothing about them."""
+    tty = Terminal()
+    monkeypatch.setattr(sys, "stderr", tty)
+    mark = badge.badge(tty)
+    log = logging.getLogger("seatbelt.gateway.sink")
+    with said_logs("seatbelt") as logs:
+        logs.hold()
+        log.warning("could not ship %s (retry in %.0fs)", "a.jsonl", 5)
+        log.error("could not ship %s in %d attempts", "a.jsonl", 5)
+        assert tty.getvalue() == ""
+        logs.let_go()
+        assert tty.getvalue() == (
+            f"{mark} warning: could not ship a.jsonl (retry in 5s)\n"
+            f"{mark} error: could not ship a.jsonl in 5 attempts\n"
+        )
+        log.warning("closed %d ledgers", 2)  # the terminal is seatbelt's again: said at once
+        assert tty.getvalue().endswith(f"{mark} warning: closed 2 ledgers\n")
+
+
+def test_piped_logs_are_said_as_they_come_even_when_held(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A host such as the desktop app reads them from a pipe while the run goes on."""
+    with said_logs("seatbelt") as logs:
+        logs.hold()
+        logging.getLogger("seatbelt.gateway.local").warning("closed %d ledgers", 2)
+        assert capsys.readouterr().err == "[seatbelt] warning: closed 2 ledgers\n"
+
+
+def test_a_long_hold_keeps_the_first_lines_and_counts_the_rest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sink's retries can go on all session; what is held is said as the block exits."""
+    tty = Terminal()
+    monkeypatch.setattr(sys, "stderr", tty)
+    log = logging.getLogger("seatbelt.gateway.sink")
+    with said_logs("seatbelt") as logs:
+        logs.hold()
+        for n in range(badge.HELD + 3):
+            log.warning("retry %d", n)
+    lines = tty.getvalue().splitlines()
+    assert len(lines) == badge.HELD + 1
+    assert lines[0].endswith(" warning: retry 0")
+    assert lines[-2].endswith(f" warning: retry {badge.HELD - 1}")
+    assert lines[-1].endswith(" warning: 3 more log lines left out")
+
+
+def test_control_characters_in_what_is_said_are_shown_not_obeyed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sink error quotes the object store's reply: it could clear the screen or write the
+    clipboard (OSC 52). The badge's own styles stay."""
+    reply = "\x1b]52;c;aGk=\x07\x1b[2J\x9b2J"
+    shown = r"\x1b]52;c;aGk=\x07\x1b[2J\x9b2J"
+    tty = Terminal()
+    say(f"error: {reply}", tty, TERMINAL)
+    assert tty.getvalue() == f"{BADGE} error: {shown}\n"
+    tty = Terminal()
+    monkeypatch.setattr(sys, "stderr", tty)
+    with said_logs("seatbelt"):
+        logging.getLogger("seatbelt.gateway.sink").warning(
+            "could not ship %s: %s", "a.jsonl", StoreError(f"403: {reply}")
+        )
+    mark = badge.badge(tty)
+    assert tty.getvalue() == f"{mark} warning: could not ship a.jsonl: 403: {shown}\n"
 
 
 def test_the_belt_fits_the_width_it_asks_for() -> None:

@@ -39,6 +39,8 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 - A traceback never shows local variables, which can hold keys and the CLI's environment. Typer 0.17 to 0.22, which seatbelt allows, showed them by default.
 - `seatbelt run`'s warnings and errors from its own log say the exception they report, not only what failed.
 - A run whose `--config` keeps its ledgers somewhere other than the default config does now ends with a replay command that works: the ledger's path and this machine's public key. `seatbelt reconstruct <run>` looks only where the default config says.
+- `seatbelt run` no longer writes its log lines over the CLI it launched. Warnings and errors from its background work (the sink's retries, closing the ledgers of killed runs, the local recorder's server) came out while a full-screen CLI such as Claude Code had the terminal, and landed in its drawing. On a terminal they now wait until the CLI exits and are printed before what the run recorded: the first 50, and a count of the rest. Piped, as the desktop app reads them, they are printed as they come. `SEATBELT_QUIET` still prints them.
+- Control characters in what `seatbelt run` prints, such as an object store's reply quoted in a sink error, are shown as escapes, not obeyed, as elsewhere in the CLI.
 
 ### Security
 - A command that checks a ledger now signs, shows, counts or packs the bytes it checked, from one read of the file. Each used to read the file again after checking it, so a ledger changed in between was used unchecked:
