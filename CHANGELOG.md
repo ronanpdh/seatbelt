@@ -33,6 +33,13 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
   - `seatbelt erase` removes a person's pages with their ledgers, and counts them in its record (`erasure.pages`). `pack` and the sink leave pages out.
 - New dependency: Jinja2 (`>=3.1.6`, the first release with no known advisory).
 
+### Security
+- A command that checks a ledger now signs, shows, counts or packs the bytes it checked, from one read of the file. Each used to read the file again after checking it, so a ledger changed in between was used unchecked:
+  - `seatbelt attest` could sign an edited, re-chained ledger it had not checked, which `seatbelt verify --pubkey` then called attested.
+  - `seatbelt reconstruct` could print events other than the ones it verified.
+  - `seatbelt verify`, `report` and `runs --json` checked the signature against a later read than the chain, and `seatbelt pack` could pack a ledger other than the one it checked.
+  - The signature file is read before the ledger. A ledger is not written to once it is signed, so a run that closes and is signed while it is checked is reported as it was read, open and unsigned, never as forged.
+
 ## [0.6.0] - 2026-10-09
 
 ### Added
