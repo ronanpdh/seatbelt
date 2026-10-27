@@ -2,6 +2,7 @@
 its own credentials, and the ledger lands in the local data folder, signed."""
 
 import ast
+import io
 import json
 import shlex
 import stat
@@ -472,6 +473,61 @@ def test_a_run_closes_what_a_killed_run_left_open_in_the_background(
     assert list(read_events(dead))[-1].kind is Kind.RUN_END
     assert page_path(dead).exists()  # closed and signed by this run: it gets its page too
     assert list((home / "runs" / ".running").iterdir()) == []  # this run's lock is gone too
+
+
+class _Terminal(io.StringIO):
+    """seatbelt's stderr as a terminal, noting with each write whether the CLI had exited."""
+
+    encoding = "utf-8"  # pyright: ignore[reportIncompatibleVariableOverride]
+
+    def __init__(self, exited: Path) -> None:
+        super().__init__()
+        self.exited = exited
+        self.writes: list[tuple[str, bool]] = []
+
+    def isatty(self) -> bool:
+        return True
+
+    def write(self, s: str) -> int:
+        self.writes.append((s, self.exited.exists()))
+        return super().write(s)
+
+
+@pytest.mark.parametrize("quiet", [False, True], ids=["", "quiet"])
+def test_what_seatbelt_logs_while_the_cli_runs_is_said_after_it_exits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, quiet: bool
+) -> None:
+    """A line written while a full-screen CLI such as Claude Code has the terminal lands in
+    its drawing. Here the start-up tidy warns that it closed a killed run's ledger while the
+    CLI runs: the CLI exits only once that ledger's page is written, after the warning.
+    Quiet, the warning is still said."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("SEATBELT_HOME", str(home))
+    monkeypatch.setenv("SEATBELT_NO_ANIMATION", "1")
+    if quiet:
+        monkeypatch.setenv("SEATBELT_QUIET", "1")
+    (home / "runs").mkdir(parents=True)
+    dead = _open_ledger(home / "runs", "claude-dead")
+    exited = tmp_path / "exited"
+    cli = (
+        "import pathlib, time\n"
+        "for _ in range(3000):\n"
+        f"    if pathlib.Path({str(page_path(dead))!r}).exists(): break\n"
+        "    time.sleep(0.01)\n"
+        f"pathlib.Path({str(exited)!r}).touch()\n"
+    )
+    terminal = _Terminal(exited)
+    monkeypatch.setattr(sys, "stderr", terminal)
+    empty = tmp_path / "config.toml"
+    empty.write_text("")
+    assert run_cli("claude", ["-c", cli], config=empty, exe=fake_claude(tmp_path)) == 0
+    assert page_path(dead).exists()
+    warned = [after for s, after in terminal.writes if "closed 1 ledgers" in s]
+    assert warned == [True]  # said once, and only once the CLI had exited
+    said = terminal.getvalue()
+    assert ("nothing recorded" in said) is not quiet
+    if not quiet:  # before seatbelt's closing lines
+        assert said.index("closed 1 ledgers") < said.index("nothing recorded")
 
 
 def test_a_user_with_no_login_name_is_named_by_uid(monkeypatch: pytest.MonkeyPatch) -> None:

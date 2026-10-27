@@ -2,7 +2,8 @@
 launches: every line it prints starts with its badge, and a seatbelt buckles as the run
 starts and unbuckles when the CLI exits, as issue #46 drew them.
 
-Stdlib only: the launcher imports it, and Claude Code's status line runs `BADGE`."""
+Stdlib only, and so is `seatbelt.terminal`, which it uses: the launcher imports it, and
+Claude Code's status line runs `BADGE`."""
 
 from __future__ import annotations
 
@@ -17,6 +18,8 @@ from dataclasses import dataclass
 from importlib import resources
 from typing import TextIO
 
+from seatbelt.terminal import printable
+
 BADGE = "\x1b[1;7m seatbelt \x1b[0m"  # bold and reversed, on a terminal
 PLAIN = "[seatbelt]"  # anywhere else: a pipe, a log file, NO_COLOR, a dumb terminal
 NO_ANIMATION_ENV = "SEATBELT_NO_ANIMATION"
@@ -27,6 +30,7 @@ _DIM, _RESET = "\x1b[2m", "\x1b[0m"
 _CLICK = "CLICK"
 _UNBUCKLE_STEP = 0.06  # seconds a frame, unbuckling: faster than buckling up
 _UNBUCKLED_HOLD = 0.3  # seconds the unbuckled belt stays before seatbelt goes on
+HELD = 50  # log lines a hold keeps (`SayHandler.hold`); the rest are counted
 
 # a terminal too small for the drawn seatbelt gets a line: a tongue that travels into the
 # buckle, on a strap
@@ -105,15 +109,18 @@ def belt() -> Belt:
     return parse_belt(resources.files(__package__).joinpath("buckle.txt").read_text("utf-8"))
 
 
+def _tty(stream: TextIO) -> bool:
+    try:
+        return stream.isatty()
+    except (AttributeError, ValueError):  # closed, or not a real stream
+        return False
+
+
 def styled(stream: TextIO, env: Mapping[str, str] = os.environ) -> bool:
     """Whether `stream` is a terminal that shows styles: a TTY, `NO_COLOR` unset
     (https://no-color.org), not a dumb terminal, and on Windows a terminal known to read
     escape sequences."""
-    try:
-        tty = stream.isatty()
-    except (AttributeError, ValueError):  # closed, or not a real stream
-        return False
-    if not tty or env.get("NO_COLOR") or env.get("TERM") == "dumb":
+    if not _tty(stream) or env.get("NO_COLOR") or env.get("TERM") == "dumb":
         return False
     return sys.platform != "win32" or "WT_SESSION" in env or "TERM" in env
 
@@ -123,33 +130,73 @@ def badge(stream: TextIO, env: Mapping[str, str] = os.environ) -> str:
 
 
 def say(message: str, stream: TextIO | None = None, env: Mapping[str, str] = os.environ) -> None:
-    """Print `message` to `stream` (stderr by default), each line after seatbelt's badge."""
+    """Print `message` to `stream` (stderr by default), each line after seatbelt's badge.
+    Control characters in it are shown, not obeyed (`printable`): a message can quote
+    untrusted text, such as an object store's reply to the sink."""
     out = stream if stream is not None else sys.stderr
     mark = badge(out, env)
     for line in message.splitlines() or [""]:
-        print(f"{mark} {line}", file=out, flush=True)
+        print(f"{mark} {printable(line)}", file=out, flush=True)
 
 
 class SayHandler(logging.Handler):
-    """Log records said with the badge: what seatbelt logs while a run is on the screen."""
+    """Log records said with the badge: what seatbelt logs while a run is on the screen.
+
+    Most of it comes from threads beside the CLI (the start-up tidy, the sink, the local
+    recorder's server), and a line written while a full-screen CLI such as Claude Code has
+    the terminal lands in its drawing. So a hold keeps them until `let_go`: the first HELD,
+    and a count of the rest."""
 
     def __init__(self, stream: TextIO | None = None) -> None:
         super().__init__(logging.WARNING)
         self._stream = stream
+        self._held: list[str] | None = None  # None: said as they come
+        self._left_out = 0
+
+    def hold(self) -> None:
+        """Keep what is logged until `let_go`, errors too, if it goes to a terminal. Piped,
+        as the desktop app reads it, it is said as it comes: no CLI draws on a pipe."""
+        self.acquire()
+        try:
+            out = self._stream if self._stream is not None else sys.stderr
+            if self._held is None and _tty(out):
+                self._held = []
+        finally:
+            self.release()
+
+    def let_go(self) -> None:
+        """Say what was held, and from now on each line as it is logged."""
+        self.acquire()
+        try:
+            held, self._held = self._held or [], None
+            if self._left_out:
+                held.append(f"warning: {self._left_out} more log lines left out")
+                self._left_out = 0
+            for line in held:
+                say(line, self._stream)
+        finally:
+            self.release()
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
             message = record.getMessage()
             if record.exc_info and (exc := record.exc_info[1]) is not None:  # `_log.exception`
                 message = f"{message}: {type(exc).__name__}: {exc}"
-            say(f"{record.levelname.lower()}: {message}", self._stream)
+            line = f"{record.levelname.lower()}: {message}"
+            if self._held is None:
+                say(line, self._stream)
+            elif len(self._held) < HELD:
+                self._held.append(line)
+            else:
+                self._left_out += 1
         except Exception:
             self.handleError(record)
 
 
 @contextmanager
-def said_logs(*names: str) -> Generator[None]:
-    """While the block runs, the loggers `names` print through `say` and nowhere else."""
+def said_logs(*names: str) -> Generator[SayHandler]:
+    """While the block runs, the loggers `names` print through `say` and nowhere else. The
+    block gets the handler, to hold them; what it still holds is said as the block exits."""
     handler = SayHandler()
     loggers = [logging.getLogger(n) for n in names]
     before = [(lg.handlers[:], lg.propagate) for lg in loggers]
@@ -157,11 +204,12 @@ def said_logs(*names: str) -> Generator[None]:
         lg.handlers = [handler]
         lg.propagate = False
     try:
-        yield
+        yield handler
     finally:
         for lg, (handlers, propagate) in zip(loggers, before, strict=True):
             lg.handlers = handlers
             lg.propagate = propagate
+        handler.let_go()
 
 
 def _size(stream: TextIO, env: Mapping[str, str]) -> tuple[int, int]:

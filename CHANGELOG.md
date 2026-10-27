@@ -39,6 +39,8 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 - A traceback never shows local variables, which can hold keys and the CLI's environment. Typer 0.17 to 0.22, which seatbelt allows, showed them by default.
 - `seatbelt run`'s warnings and errors from its own log say the exception they report, not only what failed.
 - A run whose `--config` keeps its ledgers somewhere other than the default config does now ends with a replay command that works: the ledger's path and this machine's public key. `seatbelt reconstruct <run>` looks only where the default config says.
+- `seatbelt run` no longer writes its log lines over the CLI it launched. Warnings and errors from its background work (the sink's retries, closing the ledgers of killed runs, the local recorder's server) came out while a full-screen CLI such as Claude Code had the terminal, and landed in its drawing. On a terminal they now wait until the CLI exits and are printed before what the run recorded: the first 50, and a count of the rest. Piped, as the desktop app reads them, they are printed as they come. `SEATBELT_QUIET` still prints them.
+- Control characters in what `seatbelt run` prints, such as an object store's reply quoted in a sink error, are shown as escapes, not obeyed, as elsewhere in the CLI.
 
 ### Security
 - A command that checks a ledger now signs, shows, counts or packs the bytes it checked, from one read of the file. Each used to read the file again after checking it, so a ledger changed in between was used unchecked:
@@ -50,7 +52,9 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
   - A `gateway` or `[upstreams]` URL in `~/.config/seatbelt/config.toml` that is plain `http://` to another host now stops `seatbelt run` before the CLI starts. `allow_http = true`, at the top of the file, accepts it, for a gateway or proxy on a private network.
   - A gateway upstream that is plain `http://` to another host now stops the gateway at startup, and a reload that adds one keeps the running config. `allow_http: true` on that upstream accepts it.
   - A base URL in your environment (`ANTHROPIC_BASE_URL`, `GOOGLE_GEMINI_BASE_URL` or `CODE_ASSIST_ENDPOINT`) that is plain `http://` to another host is still forwarded to by the local recorder, with a warning, since refusing it would stop a setup that works. `allow_http = true` quiets it.
-- `https://` is required for the OIDC `issuer` and `jwks_url`, the `jwks_uri` a provider's discovery document names, and `compliance.url`, with `http://` to this machine still accepted, and no opt-out. Fetched over plain `http://`, a provider's key set could be swapped by anyone on the network path, who could then sign in to the gateway as anyone; the Compliance API key, which reads every transcript in the org, crossed the network in the clear. A config with such a URL is refused at startup; a discovery document naming an `http://` `jwks_uri` counts as a failed fetch.
+- `https://` is required for the OIDC `issuer` and `jwks_url`, and for `compliance.url`. Over plain `http://`, anyone on the network path could swap a sign-in provider's key set and then sign in to the gateway as anyone, and the Compliance API key, which reads every transcript in the org, crossed the network in the clear. `http://` to this machine (`127.0.0.1`, `::1` or `localhost`) is still accepted, for a test server. There is no opt-out: providers and Anthropic's API serve these over `https://`.
+  - A gateway config whose `oidc.issuer`, `oidc.jwks_url` or `compliance.url` is plain `http://` to another host now stops the gateway, or `seatbelt import compliance`, at startup, and a reload that adds one keeps the running config.
+  - A provider whose discovery document names a plain `http://` `jwks_uri` now counts as a failed key fetch: keys already held stay in use for up to an hour, then its sign-ins are refused.
 
 ## [0.6.0] - 2026-10-09
 

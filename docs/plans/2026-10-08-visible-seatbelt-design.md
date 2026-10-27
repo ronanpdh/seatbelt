@@ -11,6 +11,7 @@
   - A hook that exits 2 instead puts its own command path in that content [C2], so seatbelt's hook prints JSON (ours).
 - **Claude Code reads only the last `--settings`.** With two, a hook in the first did not run [C4]. `--settings` takes inline JSON or a file path, and is accepted before a subcommand and as `--settings=<path>` [C5, D1].
 - **Settings precedence:** managed settings, then `--settings`, then `.claude/settings.local.json`, `.claude/settings.json`, and `~/.claude/settings.json` [D1]. So a status line given in `--settings` replaces the user's own, and seatbelt's has to run theirs.
+- **A status line waits for folder trust, `--settings` included.** Claude Code runs no status line command until its trust prompt is accepted for the folder, or for a folder above it whose trust covers it, whichever settings file the statusLine comes from [C10, D4]. So a cloned repository's statusLine, which seatbelt's status line runs, runs no earlier under seatbelt than without it. In `-p` mode no status line runs at all, with or without seatbelt's `--settings` [C11]. The folder's own hooks do run there, untrusted, as Claude Code's documentation says for `-p` [C11, D8]; seatbelt leaves that as it is.
 - **A matcher of only letters, digits, `_`, `-`, spaces, `,` and `|` is a list of exact tool names,** separated by `|` or `,`. Any other character makes it an unanchored JavaScript regex [D2]. Seatbelt joins names of only letters, digits, `_` and `-` with `|`, and anchors and escapes anything else as a regex.
 - **`disableAllHooks` turns off hooks and a custom status line** [D3]. `allowManagedHooksOnly`, a managed setting, blocks hooks and status lines that are not managed [D2, D4].
 - **A status line command** gets the session's JSON on stdin. Each line it prints is a row, ANSI colours show, and its output is shown only when it exits 0 [D4].
@@ -53,6 +54,8 @@
 | C7 | `seatbelt run claude` in a pseudo-terminal, with `statusLine` `echo my-own-line` in `~/.claude/settings.json` | Claude Code's status line: `my-own-line \| ` and the reversed badge; the belt drawn before Claude Code and after it exited |
 | C8 | `buckle()` written to a 130×40 screen of the `pyte` terminal emulator, from the built wheel, each frame compared with the issue's recording [G1] | all 11 frames the same, cell for cell, shown for the same milliseconds |
 | C9 | C7 again on 2026-10-09 (Claude Code 2.1.295), a 140×45 pseudo-terminal, through a gateway that denies `Bash`, rendered with `pyte` | the belt and CLICK, then seatbelt's three lines below it; Claude Code's status line `my-own-line \|  seatbelt  recording · org policy`, the badge bold and reversed; the belt unbuckled after `/exit` |
+| C10 | 2026-10-27, Claude Code 2.1.311 in a 140×40 pseudo-terminal, a fresh home with no trust record, in a new git repository whose `.claude/settings.json` has a statusLine that writes a marker file: with no `--settings`; with a `--settings` whose statusLine writes a second marker; with `launch_arguments`' `--settings` | the trust prompt each time, and no marker after 8 seconds at it. After "Yes, I trust this folder": the project's marker with no `--settings`; the `--settings` marker, not the project's, with the plain `--settings`; the project's marker, through seatbelt's status line, with seatbelt's |
+| C11 | 2026-10-27, Claude Code 2.1.311 in the same untrusted repository, a `SessionStart` hook that writes a marker added to its `.claude/settings.json`: `-p`, and `-p` with stream-json input and output, each with and without `launch_arguments`' `--settings`; `-p` with seatbelt's `--settings` in a pseudo-terminal | each time, the hook's marker and no status line marker |
 
 ## Docs
 
@@ -61,10 +64,11 @@
 | D1 | https://code.claude.com/docs/en/settings, https://code.claude.com/docs/en/cli-reference | precedence; `--settings` takes JSON or a path |
 | D2 | https://code.claude.com/docs/en/hooks | matcher rules; a deny's reason goes to Claude; `allowManagedHooksOnly` |
 | D3 | https://code.claude.com/docs/en/settings-reference | `disableAllHooks` turns off hooks and a custom status line |
-| D4 | https://code.claude.com/docs/en/statusline | stdin JSON, rows, ANSI, exit 0; hidden under `disableAllHooks` or `allowManagedHooksOnly` |
+| D4 | https://code.claude.com/docs/en/statusline | stdin JSON, rows, ANSI, exit 0; hidden under `disableAllHooks` or `allowManagedHooksOnly`; "Workspace trust required": "Until you accept the workspace trust dialog, the status line stays blank", under "the same workspace trust rule as hooks in settings files" |
 | D5 | https://code.claude.com/docs/en/env-vars | `CLAUDE_CODE_MAX_OUTPUT_TOKENS` |
 | D6 | https://code.claude.com/docs/en/commands | `/model`, `/clear` |
 | D7 | https://code.claude.com/docs/en/checkpointing | `/rewind` |
+| D8 | https://code.claude.com/docs/en/permissions ("What runs before you trust a folder") | hooks in settings files: "Used" in "`claude -p` or the SDK, folder never trusted" |
 
 ## Issue #46's drawings
 
