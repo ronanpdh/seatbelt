@@ -16,7 +16,10 @@ from pydantic import (
     Field,
     ValidationError,
     field_validator,
+    model_validator,
 )
+
+from seatbelt.gateway import urls
 
 KEY_PREFIX = "sbk_"
 
@@ -32,6 +35,20 @@ class Upstream(_Strict):
     # x-seatbelt-key header or a /_seatbelt/<key>/<run>/ path prefix (`seatbelt run`
     # recording locally)
     key_env: str | None = None
+    # plain http to another host sends every prompt and the provider credentials in the
+    # clear: only for a hop known to be private, such as a proxy behind a service mesh's TLS
+    allow_http: bool = False
+
+    @model_validator(mode="after")
+    def _https(self) -> Upstream:
+        if not urls.allowed(self.url, self.allow_http):
+            raise ValueError(
+                f"url must be {urls.HTTPS}: over http:// every prompt and the provider "
+                "credentials cross the network in the clear. Use the provider's https:// "
+                "URL, or, for a proxy on a private network, add allow_http: true to this "
+                "upstream"
+            )
+        return self
 
 
 def _none_is_empty(value: object) -> object:

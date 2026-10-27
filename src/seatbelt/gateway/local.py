@@ -15,7 +15,7 @@ import re
 import secrets
 import threading
 import time
-from collections.abc import Generator, Mapping
+from collections.abc import Collection, Generator, Mapping
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from datetime import date
@@ -166,12 +166,14 @@ def local_recorder(
     upstreams: Mapping[str, str] | None = None,
     env: Mapping[str, str] = os.environ,
     html: bool = True,
+    allow_http: Collection[str] = (),
 ) -> Generator[LocalRecorder]:
     """Serve on 127.0.0.1 in a background thread until the block exits, then close and sign
     every ledger this run opened, and ship them when a sink is configured. `run` is the run's
     name, which its lock is known by. `upstreams` replaces the providers' URLs by name (a
-    corporate proxy, say). `html` writes each closed ledger's HTML page beside it. Raises
-    ValueError for a bad sink or upstream.
+    corporate proxy, say); those named in `allow_http` may be plain http:// to another host.
+    `html` writes each closed ledger's HTML page beside it. Raises ValueError for a bad sink
+    or upstream.
 
     Meanwhile, in the background: ledgers dead runs left open are closed and signed (and get
     their pages), and a sink ships what earlier runs did not."""
@@ -181,13 +183,19 @@ def local_recorder(
         sink_cfg = SinkConfig.model_validate(sink) if sink is not None else None
     except ValidationError as exc:
         raise ValueError(f"sink: {exc}") from exc
+    targets: dict[str, Upstream] = {}
+    for name, url in urls.items():
+        try:
+            targets[name] = Upstream(url=url, allow_http=name in allow_http)
+        except ValidationError as exc:
+            raise ValueError(f"upstream {name}: {exc}") from exc
     key = KEY_PREFIX + secrets.token_urlsafe(32)
     principal = login_name()
     cfg = GatewayConfig(
         listen="127.0.0.1:0",
         ledgers=ledgers,
         session_idle=int(IDLE),
-        upstreams={name: Upstream(url=url) for name, url in urls.items()},
+        upstreams=targets,
         principals=[Principal(id=principal, key_sha256=key_hash(key), issued=date.today())],
         sink=sink_cfg,
     )

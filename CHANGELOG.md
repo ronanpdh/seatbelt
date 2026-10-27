@@ -33,6 +33,12 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
   - `seatbelt erase` removes a person's pages with their ledgers, and counts them in its record (`erasure.pages`). `pack` and the sink leave pages out.
 - New dependency: Jinja2 (`>=3.1.6`, the first release with no known advisory).
 
+### Security
+- `https://` is required for the gateway URL and the upstreams, as it already was for the sink. Over plain `http://`, the employee's `sbk_` key (sent as a Bearer token), the provider credentials and every prompt crossed the network in the clear. `http://` to this machine (`127.0.0.1`, `::1` or `localhost`) is still accepted.
+  - A `gateway` or `[upstreams]` URL in `~/.config/seatbelt/config.toml` that is plain `http://` to another host now stops `seatbelt run` before the CLI starts. `allow_http = true`, at the top of the file, accepts it, for a gateway or proxy on a private network.
+  - A gateway upstream that is plain `http://` to another host now stops the gateway at startup, and a reload that adds one keeps the running config. `allow_http: true` on that upstream accepts it.
+  - A base URL in your environment (`ANTHROPIC_BASE_URL`, `GOOGLE_GEMINI_BASE_URL` or `CODE_ASSIST_ENDPOINT`) that is plain `http://` to another host is still forwarded to by the local recorder, with a warning, since refusing it would stop a setup that works. `allow_http = true` quiets it.
+
 ## [0.6.0] - 2026-10-09
 
 ### Added

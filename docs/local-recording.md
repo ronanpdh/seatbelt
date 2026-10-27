@@ -80,7 +80,7 @@ How each sign-in is routed:
 - **Gemini CLI with a Google account** talks to Google's Code Assist service (`/v1internal:generateContent` and `:streamGenerateContent`). The gateway unwraps each request and records the conversation inside it [R4].
   - Forwarded unrecorded: Gemini CLI's account, quota and settings calls (`loadCodeAssist`, `retrieveUserQuota` and the like), its token counts, its usage metrics (`recordCodeAssistMetrics`), and reads of a long-running onboarding operation.
   - Refused: any other call.
-- **A base URL you already had** is where the recorder forwards: `ANTHROPIC_BASE_URL`, `GOOGLE_GEMINI_BASE_URL` or `CODE_ASSIST_ENDPOINT` in your environment, your company's LLM gateway, say. Its credentials go on with it. `[upstreams]` in the settings overrides it.
+- **A base URL you already had** is where the recorder forwards: `ANTHROPIC_BASE_URL`, `GOOGLE_GEMINI_BASE_URL` or `CODE_ASSIST_ENDPOINT` in your environment, your company's LLM gateway, say. Its credentials go on with it. `[upstreams]` in the settings overrides it. One that is plain `http://` to another host is still forwarded to, as the CLI did without seatbelt, since refusing it would stop a setup that works; `seatbelt run` warns that your prompts and the credentials sent with them reach it in the clear. Use its `https://` URL, or set `allow_http = true` ([Settings](#settings)) to keep `http://` on a private network without the warning.
 - **Claude Code's MCP tool search** stays on. Behind any `ANTHROPIC_BASE_URL` but Anthropic's, Claude Code turns it off, as a proxy may not forward the `tool_reference` blocks it uses, and sends every MCP tool's schema with every request instead [R5]. The recorder forwards those blocks unchanged, so when it forwards to `api.anthropic.com`, `seatbelt run` sets `ENABLE_TOOL_SEARCH=true`, unless you set it yourself. Behind a base URL you already had, or an `[upstreams]` proxy, it is left to Claude Code: that proxy may not forward them.
 - **Gemini CLI with nothing selected** needs `security.auth.selectedType` set in `~/.gemini/settings.json`. Otherwise the base URL makes it pick a sign-in mode it refuses to run [R4]. `seatbelt run gemini` warns about this.
 
@@ -113,7 +113,8 @@ bucket = "ledgers"
 region = "fsn1"
 ```
 
-- **`[upstreams]`** keys are `anthropic`, `openai`, `chatgpt`, `gemini` and `codeassist`. They override a base URL taken from your environment.
+- **`[upstreams]`** keys are `anthropic`, `openai`, `chatgpt`, `gemini` and `codeassist`. They override a base URL taken from your environment. Each URL is `https://`, or `http://` to this machine (`127.0.0.1`, `::1` or `localhost`). Over plain `http://` to another host your prompts and the credentials sent with them cross the network in the clear, so `seatbelt run` refuses it before the CLI starts.
+- **`allow_http = true`** accepts plain `http://` to other hosts for `gateway` and `[upstreams]`, and quiets the warning about one from your environment: only for a proxy or gateway on a network you know is private. Put it at the top of the file, above any `[table]`, or TOML reads it as part of that table. The sink has its own, in `[sink]`.
 - **`[sink]`** takes the same settings as the gateway's sink ([deploy/gateway.md](deploy/gateway.md#shipping-ledgers-to-object-storage)), `url` included: `https://` with a host and optional port only. It reads the credentials from `SEATBELT_SINK_ACCESS_KEY` and `SEATBELT_SINK_SECRET_KEY`.
   - At exit, the run waits up to 30 seconds for the upload.
   - Any closed ledger not shipped by then is shipped by the next run.
@@ -126,6 +127,8 @@ To record centrally, give the gateway's URL and your issued key:
 gateway = "https://gw.corp.example"
 key = "sbk_..."
 ```
+
+`gateway` is `https://`, or `http://` to this machine. Over plain `http://` to another host your key and every prompt would cross the network in the clear, so `seatbelt run` refuses it before the CLI starts, unless `allow_http = true` is set (see [Settings](#settings)).
 
 With a gateway set, `seatbelt run` behaves as before:
 - The CLI uses the gateway, with your issued key.

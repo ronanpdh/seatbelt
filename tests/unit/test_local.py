@@ -373,6 +373,38 @@ def test_a_base_url_the_cli_already_has_is_where_the_recorder_forwards(
     assert sent["path"] == "/v1/messages?beta=true"
 
 
+def test_a_plain_http_base_url_in_the_environment_is_warned_about_not_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """Claude Code sent its prompts there in the clear without seatbelt too: refusing it
+    would stop a setup that works. The same URL in [upstreams] is refused."""
+    monkeypatch.setenv("SEATBELT_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://llm-proxy.corp.example")
+    empty = tmp_path / "config.toml"
+    empty.write_text("")
+    assert run_cli("claude", ["-c", "pass"], config=empty, exe=fake_claude(tmp_path)) == 0
+    err = capfd.readouterr().err
+    assert "warning: ANTHROPIC_BASE_URL is plain http://" in err
+    empty.write_text('[upstreams]\nanthropic = "http://llm-proxy.corp.example"\n')
+    with pytest.raises(ValueError, match=r"\[upstreams\] anthropic must be https://"):
+        run_cli("claude", ["-c", "pass"], config=empty, exe=fake_claude(tmp_path))
+
+
+def test_the_local_recorder_refuses_a_plain_http_upstream_not_allowed(tmp_path: Path) -> None:
+    from seatbelt.gateway.local import local_recorder
+
+    proxy = {"anthropic": "http://llm-proxy.corp.example"}
+    with (
+        pytest.raises(ValueError, match=r"(?s)upstream anthropic: .*url must be https://"),
+        local_recorder(tmp_path / "runs", tmp_path / "keys", "r", upstreams=proxy),
+    ):
+        pass
+    with local_recorder(
+        tmp_path / "runs", tmp_path / "keys", "r", upstreams=proxy, allow_http={"anthropic"}
+    ) as recorder:
+        assert recorder.url.startswith("http://127.0.0.1:")
+
+
 def _open_ledger(ledgers: Path, run: str) -> Path:
     """A ledger a run opened and never closed, as a killed run leaves it."""
     from seatbelt.ledger.events import Actor, ActorType
