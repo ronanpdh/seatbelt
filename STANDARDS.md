@@ -68,7 +68,7 @@ Rationale for src layout: https://packaging.python.org/en/latest/discussions/src
 
 ## Logging
 
-Logs are the standard library's `logging`, written as plain text for a person to read. `seatbelt gateway serve` and `seatbelt import compliance` set it up with `logging.basicConfig`: one `LEVEL: logger: message` line per record, on stderr. uvicorn prints its own lines in its own format, and its access log goes to stdout. `seatbelt run` prints warnings and errors after its badge (`SayHandler` in `gateway/badge.py`), on the terminal the person is watching; the desktop app shows those stderr lines in a chat's log as they are.
+Logs are the standard library's `logging`, written as plain text for a person to read. `seatbelt gateway serve` and `seatbelt import compliance` set it up with `logging.basicConfig`: one `LEVEL: logger: message` line per record, on stderr. uvicorn prints its own lines in its own format, and its access log goes to stdout. `seatbelt run` prints warnings and errors after its badge (`SayHandler` in `gateway/badge.py`), on the terminal the person is watching; the desktop app shows those stderr lines in a chat's log, with escape sequences and other control characters removed.
 
 Plain text, and no structlog, because the signed ledger is the record of what happened and a log is for whoever runs the process. The gateway's deployment guide has the operator read its logs for lines such as `config reloaded`, and no part of seatbelt parses a log line. uvicorn and the HTTP clients already log through `logging`, so one setup covers all of them, with one dependency fewer. Structured logs for the gateway are on the [roadmap](ROADMAP.md) for when an operator's log pipeline needs them.
 
