@@ -249,3 +249,18 @@ def test_control_characters_in_what_is_said_are_shown_not_obeyed(
 
 def test_the_belt_fits_the_width_it_asks_for() -> None:
     assert len(f"{badge.PLAIN} {badge.frame(badge._TRAVEL, '  unbuckled')}") <= badge._WIDTH  # pyright: ignore[reportPrivateUsage]
+
+
+def test_a_logged_exception_is_said_with_what_it_was(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    log = logging.getLogger("seatbelt.gateway.local")
+    with said_logs("seatbelt"):
+        try:
+            raise PermissionError(13, "Permission denied")
+        except PermissionError:
+            log.exception("could not close the ledgers killed runs left open")
+    assert capsys.readouterr().err == (
+        "[seatbelt] error: could not close the ledgers killed runs left open: "
+        "PermissionError: [Errno 13] Permission denied\n"
+    )

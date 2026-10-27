@@ -179,7 +179,10 @@ class SayHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            line = f"{record.levelname.lower()}: {record.getMessage()}"
+            message = record.getMessage()
+            if record.exc_info and (exc := record.exc_info[1]) is not None:  # `_log.exception`
+                message = f"{message}: {type(exc).__name__}: {exc}"
+            line = f"{record.levelname.lower()}: {message}"
             if self._held is None:
                 say(line, self._stream)
             elif len(self._held) < HELD:
