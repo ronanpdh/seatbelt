@@ -73,3 +73,7 @@ Signed Ed25519 attestation of each run (`seatbelt.attest`, `keygen`, `attest`, `
 ## 0.6.0 (released)
 
 - Done: `seatbelt run` shows that it is recording: its badge on every line it prints, a seatbelt that buckles as the CLI starts, and Claude Code's status line; through a gateway it checks the gateway and the key first (`GET /seatbelt/policy`) and says the policy; Claude Code stops a tool the policy denies before it runs; refusals say what to do, as 422 to Claude Code; the gateway returns the run id in `X-Seatbelt-Run-Id`
+
+## Not scheduled
+
+- Structured logs for `seatbelt gateway serve`, opt-in, for an operator whose log pipeline needs them: one JSON object per line for seatbelt's records and uvicorn's (whose access log now goes to stdout), through stdlib `logging`, with the access log's key redaction kept. Plain text stays the default and `seatbelt run` is unchanged. Why plain text today: [STANDARDS.md](STANDARDS.md#logging).
