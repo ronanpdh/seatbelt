@@ -40,6 +40,13 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
 - `seatbelt run`'s warnings and errors from its own log say the exception they report, not only what failed.
 - A run whose `--config` keeps its ledgers somewhere other than the default config does now ends with a replay command that works: the ledger's path and this machine's public key. `seatbelt reconstruct <run>` looks only where the default config says.
 
+### Security
+- A command that checks a ledger now signs, shows, counts or packs the bytes it checked, from one read of the file. Each used to read the file again after checking it, so a ledger changed in between was used unchecked:
+  - `seatbelt attest` could sign an edited, re-chained ledger it had not checked, which `seatbelt verify --pubkey` then called attested.
+  - `seatbelt reconstruct` could print events other than the ones it verified.
+  - `seatbelt verify`, `report` and `runs --json` checked the signature against a later read than the chain, and `seatbelt pack` could pack a ledger other than the one it checked.
+  - The signature file is read before the ledger. A ledger is not written to once it is signed, so a run that closes and is signed while it is checked is reported as it was read, open and unsigned, never as forged.
+
 ## [0.6.0] - 2026-10-09
 
 ### Added
