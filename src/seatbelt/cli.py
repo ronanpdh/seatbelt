@@ -40,7 +40,12 @@ from seatbelt.terminal import printable
 from seatbelt.verify.attest import Attestation, AttestVerdict, verify_attestation
 from seatbelt.verify.chain import Snapshot, Verdict, read_verified, snapshot, verify_events
 
-app = typer.Typer(help="Attributable, reconstructable, provable records of agent interactions.")
+app = typer.Typer(
+    help="Attributable, reconstructable, provable records of agent interactions.",
+    # a traceback's local variables hold keys and the CLI's environment: Typer up to 0.22,
+    # which seatbelt allows, printed them by default
+    pretty_exceptions_show_locals=False,
+)
 console = Console(soft_wrap=True)  # never split a path or reason across lines
 
 
@@ -902,7 +907,8 @@ def run(
     except FileNotFoundError as exc:
         say(f"error: {exc}")
         raise typer.Exit(code=127) from exc
-    except (AttestError, OSError) as exc:  # a bad signing key, a CLI that cannot be run
+    # a bad signing key, a CLI that cannot be run, a ledger that cannot be closed and signed
+    except (AttestError, LedgerError, OSError) as exc:
         say(f"error: {exc}")
         raise typer.Exit(code=1) from exc
     raise typer.Exit(code=code)

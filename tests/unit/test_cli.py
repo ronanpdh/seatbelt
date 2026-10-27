@@ -22,6 +22,11 @@ def test_version_prints_package_version() -> None:
     assert __version__ in result.output
 
 
+def test_a_traceback_never_shows_local_variables() -> None:
+    """They hold keys and the CLI's environment; Typer up to 0.22 showed them by default."""
+    assert app.pretty_exceptions_show_locals is False
+
+
 def test_demo_then_verify_then_reconstruct(tmp_path: Path) -> None:
     demo = runner.invoke(app, ["demo", "--out", str(tmp_path)])
     assert demo.exit_code == 0, demo.output
