@@ -33,6 +33,10 @@ All notable changes to seatbelt are recorded here. Format: [Keep a Changelog](ht
   - `seatbelt erase` removes a person's pages with their ledgers, and counts them in its record (`erasure.pages`). `pack` and the sink leave pages out.
 - New dependency: Jinja2 (`>=3.1.6`, the first release with no known advisory).
 
+### Fixed
+- `seatbelt run` no longer writes its log lines over the CLI it launched. Warnings and errors from its background work (the sink's retries, closing the ledgers of killed runs, the local recorder's server) came out while a full-screen CLI such as Claude Code had the terminal, and landed in its drawing. On a terminal they now wait until the CLI exits and are printed before what the run recorded: the first 50, and a count of the rest. Piped, as the desktop app reads them, they are printed as they come. `SEATBELT_QUIET` still prints them.
+- Control characters in what `seatbelt run` prints, such as an object store's reply quoted in a sink error, are shown as escapes, not obeyed, as elsewhere in the CLI.
+
 ## [0.6.0] - 2026-10-09
 
 ### Added

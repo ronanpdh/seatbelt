@@ -626,9 +626,12 @@ def run_cli(
 ) -> int:
     """Launch `cli` recorded: through the configured gateway, else on this machine.
     `preflight` asks the gateway for its policy (default `fetch_policy`)."""
-    # seatbelt's log lines (and, recording locally, its server's) carry the badge too
-    with badge.said_logs("seatbelt", "uvicorn"):
-        return _run(cli, args, config, exe, end, preflight or fetch_policy)
+    # seatbelt's log lines (and, recording locally, its server's) carry the badge too. They
+    # come from threads that run beside the belt and the CLI, so on a terminal they are held
+    # from the start and said when the CLI exits: not drawn over a full-screen CLI
+    with badge.said_logs("seatbelt", "uvicorn") as logs:
+        logs.hold()
+        return _run(cli, args, config, exe, end, preflight or fetch_policy, logs)
 
 
 def _run(
@@ -638,6 +641,7 @@ def _run(
     exe: str | None,
     end: EndRun,
     preflight: Preflight,
+    logs: badge.SayHandler,
 ) -> int:
     cfg = load_client_config(config)
     if cfg.path is not None and cfg.key and readable_by_others(cfg.path):
@@ -647,7 +651,7 @@ def _run(
     run = f"{cli}-{secrets.token_hex(4)}"
     report = Path(os.environ[RUN_REPORT_ENV]) if os.environ.get(RUN_REPORT_ENV) else None
     if gateway is None:
-        return _run_local(cli, args, cfg, exe, run, warnings, report)
+        return _run_local(cli, args, cfg, exe, run, warnings, logs, report)
     url, key = gateway
     env = environment(cli, url, key, run, os.environ, drop=own_secrets(cfg))
     removed = [n for n in _AROUND_GATEWAY if os.environ.get(n)]
@@ -668,6 +672,7 @@ def _run(
         code = _spawn(command, env)
     finally:
         badge.unbuckle()
+        logs.let_go()  # what was logged while the CLI ran, before seatbelt's closing lines
         status = end(url, key, run)
     if report is not None:
         write_run_report(
@@ -705,6 +710,7 @@ def _run_local(
     exe: str | None,
     run: str,
     warnings: list[str],
+    logs: badge.SayHandler,
     report: Path | None = None,
 ) -> int:
     environment(cli, "", "", run, {}, local=True)  # an unsupported CLI fails before any start
@@ -730,6 +736,7 @@ def _run_local(
             code = _spawn(command, env)
         finally:
             badge.unbuckle()
+            logs.let_go()  # what was logged while the CLI ran, before seatbelt's closing lines
             recorder.end(run)
     if recorder.written:
         # quoted to paste into a shell: the macOS data folder, Application Support, has a space
