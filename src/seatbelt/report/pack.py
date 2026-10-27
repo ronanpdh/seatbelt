@@ -27,7 +27,7 @@ from seatbelt.verify.attest import (
     verify_attestation,
     verify_signature,
 )
-from seatbelt.verify.chain import verify_file
+from seatbelt.verify.chain import read_verified, verify_file
 
 PACK_VERSION = 1
 MANIFEST = "pack.json"
@@ -90,28 +90,29 @@ def build(
     blobs: list[tuple[str, bytes]] = []
     runs: list[RunSummary] = []
     for ledger in ledgers:
-        verdict = verify_file(ledger)
-        if not verdict.ok:
+        snap, _, verdict = read_verified(ledger)  # one read: what is packed is what is checked
+        if snap is None or not verdict.ok:
             raise PackError(
                 f"{ledger}: BROKEN at seq {verdict.first_bad_seq}: {verdict.reason}; "
                 "a pack never carries a broken ledger"
             )
         if not RUN_ID.fullmatch(ledger.stem):
             raise PackError(f"{ledger}: a run id must match {RUN_ID.pattern}; rename the file")
-        blobs.append((f"runs/{ledger.name}", _read(ledger)))
+        blobs.append((f"runs/{ledger.name}", snap.data))
         side = sidecar(ledger)
         # never pack a sidecar that contradicts its ledger, nor sign over one another key made
-        att = check_attestation(ledger, signer.public_key() if signer is not None else None)
+        key = signer.public_key() if signer is not None else None
+        att = check_attestation(ledger, key, snap)
         if att.status is Attestation.FORGED:
             raise PackError(f"{side}: {att.reason}")
-        if side.exists():
-            blobs.append((f"runs/{side.name}", _read(side)))
+        if snap.signature is not None:
+            blobs.append((f"runs/{side.name}", snap.signature))
         runs.append(
             RunSummary(
                 run_id=ledger.stem,
                 events=verdict.events,
                 complete=verdict.complete,
-                attested=side.exists(),
+                attested=snap.signature is not None,
             )
         )
     findings: int | None = None

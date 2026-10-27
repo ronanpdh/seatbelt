@@ -28,7 +28,6 @@ from pathlib import Path
 import jinja2
 
 from seatbelt import __version__
-from seatbelt.attest.manifest import Manifest, sidecar
 from seatbelt.ledger.events import Event, Kind
 from seatbelt.ledger.store import LedgerError, parse_events
 from seatbelt.report import page_path
@@ -36,7 +35,7 @@ from seatbelt.report.fleet import Usage, count_response, counted, response_model
 from seatbelt.report.timeline import summary
 from seatbelt.terminal import printable
 from seatbelt.verify.attest import Attestation, verify_attestation
-from seatbelt.verify.chain import verify_events
+from seatbelt.verify.chain import snapshot, verify_events
 
 DETAIL_LIMIT = 64 * 1024  # bytes of one event's detail on the page; the ledger keeps it all
 # of a longer one, its start and its end: a request's newest turn is at the end of its messages
@@ -201,15 +200,6 @@ _SIGNATURE_NOTES = {
 }
 
 
-def _signed_sha256(ledger: Path) -> str | None:
-    """The ledger SHA-256 its signature pins, which the attestation check compared with the
-    file as it read it."""
-    try:
-        return Manifest.model_validate_json(sidecar(ledger).read_bytes()).ledger_sha256
-    except (OSError, ValueError):
-        return None
-
-
 def build(
     ledger: Path,
     pubkey: Path | None = None,
@@ -225,9 +215,10 @@ def build(
     read, a broken chain, a forged signature, or, with `pubkey`, no signature. AttestError for
     a key file that cannot be read."""
     try:  # one read: the page shows, hashes and checks the same bytes
-        raw = ledger.read_bytes()
+        snap = snapshot(ledger)
+        raw = snap.data
         events = list(parse_events(raw, ledger))
-    except (OSError, UnicodeDecodeError, LedgerError) as exc:
+    except (OSError, LedgerError) as exc:
         raise PageError(f"{ledger}: {exc}") from exc
     sha256 = hashlib.sha256(raw).hexdigest()
     if not events:
@@ -236,14 +227,11 @@ def build(
     if not verdict.ok:
         where = "" if verdict.first_bad_seq is None else f" at seq {verdict.first_bad_seq}"
         raise PageError(f"{ledger}: chain broken{where}: {verdict.reason}")
-    att = verify_attestation(ledger, pubkey)
+    att = verify_attestation(ledger, pubkey, snap)
     if att.status is Attestation.FORGED:
         raise PageError(f"{ledger}: forged: {att.reason}")
     if att.status is Attestation.UNATTESTED and pubkey is not None:
         raise PageError(f"{ledger}: no signature to check against the key")
-    if att.status is not Attestation.UNATTESTED and _signed_sha256(ledger) != sha256:
-        # the check above read the file again: it was written to in between
-        raise PageError(f"{ledger}: changed while its page was being made; try again")
     first, last = events[0], events[-1]
     meta = first.attrs
     ended = last.kind is Kind.RUN_END

@@ -22,8 +22,8 @@ from seatbelt.attest.sign import attest as sign_ledger
 from seatbelt.attest.sign import keygen as make_keys
 from seatbelt.gateway.config import add_principal
 from seatbelt.gateway.launcher import data_dir, load_client_config, run_cli
-from seatbelt.ledger.events import Kind
-from seatbelt.ledger.store import LedgerError, read_events
+from seatbelt.ledger.events import Event, Kind
+from seatbelt.ledger.store import LedgerError, parse_events, read_events
 from seatbelt.record.recorder import Recorder
 from seatbelt.report import page_path
 from seatbelt.report.fleet import Fleet, People, Usage
@@ -38,7 +38,7 @@ from seatbelt.scenarios.runner import run as run_corpus
 from seatbelt.scenarios.sandbox import SandboxError, run_sandboxed
 from seatbelt.terminal import printable
 from seatbelt.verify.attest import Attestation, AttestVerdict, verify_attestation
-from seatbelt.verify.chain import Verdict, verify_events, verify_file
+from seatbelt.verify.chain import Snapshot, Verdict, read_verified, snapshot, verify_events
 
 app = typer.Typer(help="Attributable, reconstructable, provable records of agent interactions.")
 console = Console(soft_wrap=True)  # never split a path or reason across lines
@@ -165,15 +165,25 @@ def _shown(text: str) -> str:
     return escape(printable(text))
 
 
-def _check(ledger: Path, pubkey: Path | None = None) -> tuple[Verdict, AttestVerdict]:
+@dataclasses.dataclass(frozen=True)
+class _Checked:
+    """What `_check` found, and the ledger as it read it once: what a caller shows or signs."""
+
+    verdict: Verdict
+    att: AttestVerdict
+    snap: Snapshot
+    events: list[Event]
+
+
+def _check(ledger: Path, pubkey: Path | None = None) -> _Checked:
     """Exit 1 on a broken chain, a forged attestation, or none when a key was given."""
-    verdict = verify_file(ledger)
-    if not verdict.ok:
+    snap, events, verdict = read_verified(ledger)
+    if snap is None or not verdict.ok:
         where = "" if verdict.first_bad_seq is None else f" at seq {verdict.first_bad_seq}"
         console.print(f"[red]BROKEN[/]{where}: {_shown(verdict.reason or '')}")
         raise typer.Exit(code=1)
     try:
-        att = verify_attestation(ledger, pubkey)
+        att = verify_attestation(ledger, pubkey, snap)
     except AttestError as exc:
         console.print(f"[red]{_shown(str(exc))}[/]")
         raise typer.Exit(code=1) from exc
@@ -190,14 +200,14 @@ def _check(ledger: Path, pubkey: Path | None = None) -> tuple[Verdict, AttestVer
             f"[yellow]INCOMPLETE[/] {verdict.events} events, chain intact but no matching "
             "run.end: truncated or still running"
         )
-    return verdict, att
+    return _Checked(verdict, att, snap, events)
 
 
 def _verification(ledger: Path, pubkey: Path | None) -> dict[str, Any]:
     """The checks `verify` makes, as data. `ok` is what exit 0 means; `reason` says why not,
     or, when ok, notes an unchecked signature. `signature` is an Attestation value, None when
     the chain is broken or the key cannot be read."""
-    verdict = verify_file(ledger)
+    snap, _, verdict = read_verified(ledger)
     out: dict[str, Any] = {
         "ledger": str(ledger),
         "ok": False,
@@ -208,10 +218,10 @@ def _verification(ledger: Path, pubkey: Path | None) -> dict[str, Any]:
         "signature": None,
         "reason": verdict.reason,
     }
-    if not verdict.ok:
+    if snap is None or not verdict.ok:
         return out
     try:
-        att = verify_attestation(ledger, pubkey)
+        att = verify_attestation(ledger, pubkey, snap)
     except AttestError as exc:
         out["reason"] = str(exc)
         return out
@@ -251,10 +261,12 @@ def verify(ledger: LedgerRef = None, pubkey: PubKey = None, json_out: JsonOut = 
             raise typer.Exit(code=1)
         return
     path, pubkey = _resolved(ledger, pubkey)
-    verdict, att = _check(path, pubkey)
-    if not verdict.complete:
+    checked = _check(path, pubkey)
+    if not checked.verdict.complete:
         raise typer.Exit(code=1)
-    console.print(f"[green]ok[/] {verdict.events} events, chain intact, {att.status}")
+    console.print(
+        f"[green]ok[/] {checked.verdict.events} events, chain intact, {checked.att.status}"
+    )
 
 
 @app.command()
@@ -297,9 +309,9 @@ def reconstruct(
         console.print(f"[red]{_shown(str(out))}: a PDF's name ends in .pdf[/]")
         raise typer.Exit(code=1)
     path, pubkey = _resolved(ledger, pubkey)
-    _check(path, pubkey)
+    checked = _check(path, pubkey)
     if not (html or pdf):
-        timeline(path, console)
+        timeline(path, console, checked.events)  # the events checked, not a second read
         return
     from seatbelt.report.html import PageError, write_page
     from seatbelt.report.pdf import PdfUnavailable, write_pdf
@@ -348,9 +360,10 @@ def _run_row(path: Path, pubkey: Path | None = None, checks: bool = True) -> dic
         "ledger": str(path),
         "page": str(page) if page.exists() else None,
     }
-    try:
-        events = list(read_events(path))
-    except (OSError, UnicodeDecodeError, LedgerError):
+    try:  # one read: the events shown are the ones checked
+        snap = snapshot(path)
+        events = list(parse_events(snap.data, path))
+    except (OSError, LedgerError):
         return row
     first = events[0] if events else None
     name = first.attrs.get("run.name") if first is not None else None
@@ -362,7 +375,7 @@ def _run_row(path: Path, pubkey: Path | None = None, checks: bool = True) -> dic
         chain = "intact" if verdict.ok else "broken"
         if verdict.ok:
             with contextlib.suppress(AttestError):
-                signature = verify_attestation(path, pubkey).status.value
+                signature = verify_attestation(path, pubkey, snap).status.value
     row.update(
         chain=chain,
         signature=signature,
@@ -440,11 +453,11 @@ def attest(
     if sidecar(ledger).exists():
         console.print(f"[red]{_shown(str(sidecar(ledger)))} exists; delete it to re-sign[/]")
         raise typer.Exit(code=1)
-    verdict, _ = _check(ledger)
-    if not verdict.complete:
+    checked = _check(ledger)
+    if not checked.verdict.complete:
         raise typer.Exit(code=1)
-    try:
-        out = sign_ledger(ledger, Signer.from_file(key))
+    try:  # the bytes checked are the bytes signed: never a second read, which could differ
+        out = sign_ledger(ledger, Signer.from_file(key), checked.snap.data)
     except AttestError as exc:
         console.print(f"[red]{_shown(str(exc))}[/]")
         raise typer.Exit(code=1) from exc

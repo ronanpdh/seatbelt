@@ -10,7 +10,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 
 from seatbelt import __version__
-from seatbelt.ledger.store import read_events
+from seatbelt.ledger.store import parse_events
 
 ATTEST_VERSION = 1
 
@@ -47,8 +47,11 @@ def sidecar(ledger: Path) -> Path:
     return ledger.with_suffix(".attest.json")
 
 
-def build(ledger: Path) -> Manifest:
-    events = list(read_events(ledger))
+def build(ledger: Path, data: bytes | None = None) -> Manifest:
+    """The manifest of `ledger`'s bytes: `data`, as a caller read and checked them, else the
+    file read once here. Its events, final hash and SHA-256 all come from those bytes."""
+    raw = ledger.read_bytes() if data is None else data
+    events = list(parse_events(raw, ledger))
     if not events:
         raise AttestError(f"{ledger} has no events")
     last = events[-1]
@@ -58,6 +61,6 @@ def build(ledger: Path) -> Manifest:
         schema_version=last.schema_version,
         events=len(events),
         final_hash=last.hash,
-        ledger_sha256=hashlib.sha256(ledger.read_bytes()).hexdigest(),
+        ledger_sha256=hashlib.sha256(raw).hexdigest(),
         harness=f"seatbelt {__version__}",
     )
